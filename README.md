@@ -1,11 +1,11 @@
-# Vite + React + Typescript + TailWindCSS
+<h1 align="center">Electron + Vite + React + Typescript + TailWindCSS + ShadCN</h1>
 
-This is an Electron template using Vite, React, Typescript and TailWindCSS. It includes hot reloading.
+This is an Electron template using Vite, React, Typescript, TailWindCSS and ShadCN. It includes hot reloading.
 
-## Prerequisites
+## Project Setup
+#### It works on Windows but I haven't tested it on neither Linux nor Mac
 1. Clone the repository
 1. Run ```npm install``` inside the cloned repository
-1. It works on Windows but I haven't tested on neither Linux nor Mac
 
 ## For development
 1. Run ```npm run dev``` - This starts the application as well as a local server on port ```3524``` 
@@ -15,3 +15,6 @@ This is an Electron template using Vite, React, Typescript and TailWindCSS. It i
 1. To create a production for Windows run ```npm run dist:win```
 1. To create a production for Linux run ```npm run dist:linux```
 1. To create a production for Mac run ```npm run dist:mac```
+
+I hope you find this template useful and if you want to support me you can-
+[<h1 align="center">!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)</h1>](https://www.buymeacoffee.com/georgimy)
