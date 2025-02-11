@@ -1,50 +1,17 @@
-# React + TypeScript + Vite
+# Vite + React + Typescript + TailWindCSS
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This is an Electron template using Vite, React, Typescript and TailWindCSS. It includes hot reloading.
 
-Currently, two official plugins are available:
+## Prerequisites
+1. Clone the repository
+1. Run ```npm install``` inside the cloned repository
+1. It works on Windows but I haven't tested on neither Linux nor Mac
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## For development
+1. Run ```npm run dev``` - This starts the application as well as a local server on port ```3524``` 
+1. You can change the server port at the ```vite.config.ts```
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
-
-- Configure the top-level `parserOptions` property like this:
-
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
-```
-
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
-
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react'
-
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-})
-```
+## For production
+1. To create a production for Windows run ```npm run dist:win```
+1. To create a production for Linux run ```npm run dist:linux```
+1. To create a production for Mac run ```npm run dist:mac```

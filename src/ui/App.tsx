@@ -6,25 +6,26 @@ function App() {
 	const [count, setCount] = useState(0)
 
 	return (
-		<>
-			<div>
+		<div className='text-center mt-5'>
+			<h1 className="text-3xl font-bold">
+				Vite + React + Typescript + TailWindCSS
+			</h1>
+			<div className='flex justify-center items-center my-5'>
 				<a href="https://react.dev" target="_blank">
-					<img src={reactLogo} className="logo react" alt="React logo" />
+					<img src={reactLogo} className="w-32 h-32" alt="React logo" />
 				</a>
 			</div>
-			<h1>Vite + React</h1>
-			<div className="card">
-				<button onClick={() => setCount((count) => count + 1)}>
+			<div className="card mb-8">
+				<button className='bg-gray-300 py-4 px-5 rounded-xl cursor-pointer mb-4 hover:bg-sky-400 active:bg-sky-300' onClick={() => setCount((count) => count + 1)}>
 					count is {count}
 				</button>
 				<p>
-					Edit <code>src/App.tsx</code> and save to test HMR
+					Edit <code>src/ui/App.tsx</code> to change the page
 				</p>
 			</div>
-			<p className="read-the-docs">
-				Click on the Vite and React logos to learn more
-			</p>
-		</>
+
+			<p><a href="https://buymeacoffee.com/georgimy" target="_blank" className='text-2xl font-bold bg-yellow-300 py-4 px-5 rounded-xl cursor-pointer my-4 active:outline-2 active:outline-offset-2'>☕Buy me a coffee☕</a></p>
+		</div>
 	)
 }
 
