@@ -1,13 +1,22 @@
 import { app, BrowserWindow } from "electron"
-import path from "path"
-import { isDev } from "./util.js";
+import { ipcMainHandle, isDev } from "./util.js";
+import { getPreloadPath, getUIPath } from "./pathResolver.js";
+import { getStaticData, pollResources } from "./test.js";
 
 app.on("ready", () => {
-	const mainWindow = new BrowserWindow({});
+    const mainWindow = new BrowserWindow({
+        // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
+        webPreferences: {
+            preload: getPreloadPath(),
+        }
+    });
 
-	if (isDev()) {
-		mainWindow.loadURL("http://localhost:3524")
-	} else {
-		mainWindow.loadFile(path.join(app.getAppPath() + '/dist-react/index.html'));
-	}
+    if (isDev()) mainWindow.loadURL("http://localhost:3524")
+    else mainWindow.loadFile(getUIPath());
+
+    pollResources(mainWindow);
+
+    ipcMainHandle("getStaticData", () => {
+        return getStaticData();
+    })
 })
