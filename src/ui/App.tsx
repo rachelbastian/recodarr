@@ -1,17 +1,18 @@
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
-import './App.css'
+import './App.css';
 
 function App() {
-
     return (
-        <div className='flex h-screen bg-gray-900 text-white'>
-            <Sidebar />
-            <main className="flex-1 overflow-y-auto">
-                <Dashboard />
-            </main>
+        <div className="dark h-screen bg-background text-foreground">
+            <div className="flex h-full">
+                <Sidebar />
+                <div className="flex-1">
+                    <Dashboard />
+                </div>
+            </div>
         </div>
-    )
+    );
 }
 
-export default App
+export default App;
