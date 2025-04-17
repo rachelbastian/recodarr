@@ -5,11 +5,20 @@ electron.contextBridge.exposeInMainWorld("electron", {
         ipcOn("statistics", stats => {
             callback(stats);
         }),
-    getStaticData: () => ipcInvoke("getStaticData")
+    getStaticData: () => ipcInvoke("getStaticData"),
+    subscribeSystemStats: (callback) => 
+        ipcOn("system-stats-update", stats => {
+            callback(stats);
+        }),
+    getAvailableGpus: () => ipcInvoke("getAvailableGpus"),
+    getSelectedGpu: () => ipcInvoke("getSelectedGpu"),
+    setSelectedGpu: (model) => ipcInvoke("setSelectedGpu", model),
+    getPsGpuMonitoringEnabled: () => ipcInvoke("getPsGpuMonitoringEnabled"),
+    setPsGpuMonitoringEnabled: (isEnabled) => ipcInvoke("setPsGpuMonitoringEnabled", isEnabled),
 } satisfies Window['electron'])
 
-function ipcInvoke<Key extends keyof EventPayloadMapping>(key: Key): Promise<EventPayloadMapping[Key]> {
-    return electron.ipcRenderer.invoke(key);
+function ipcInvoke<Key extends keyof EventPayloadMapping>(key: Key, ...args: any[]): Promise<EventPayloadMapping[Key]> {
+    return electron.ipcRenderer.invoke(key, ...args);
 }
 
 function ipcOn<Key extends keyof EventPayloadMapping>(key: Key, callback: (payload: EventPayloadMapping[Key]) => void) {

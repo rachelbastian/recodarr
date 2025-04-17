@@ -1,8 +1,40 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Search } from 'lucide-react';
 import { Input } from "../../components/ui/input";
 
+// Default state structure matching SystemStats type
+const defaultStats: SystemStats = {
+  cpuLoad: null,
+  memLoad: null,
+  gpuLoad: null,
+  gpuMemoryUsed: null,
+  gpuMemoryTotal: null,
+};
+
 const Dashboard: React.FC = () => {
+  const [systemStats, setSystemStats] = useState<SystemStats>(defaultStats);
+
+  useEffect(() => {
+    // Subscribe to system stats updates
+    const unsubscribe = window.electron.subscribeSystemStats((stats) => {
+      // console.log("Received system stats:", stats); // Removed log
+      setSystemStats(stats);
+    });
+
+    // Clean up subscription on component unmount
+    return () => {
+      unsubscribe();
+    };
+  }, []); // Empty dependency array ensures this runs only once on mount
+
+  // Helper function to format percentages
+  const formatPercent = (value: number | null) => 
+    value !== null ? `${value.toFixed(1)}%` : 'N/A';
+
+  // Helper function to format memory (MB to GB)
+  const formatMemory = (valueMB: number | null) => 
+    valueMB !== null ? `${(valueMB / 1024).toFixed(1)} GB` : 'N/A';
+
   return (
     <div className="h-screen flex flex-col">
       <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -43,7 +75,21 @@ const Dashboard: React.FC = () => {
               </div>
               <div className="rounded-lg border bg-card p-4 text-card-foreground">
                 <h3 className="font-medium text-muted-foreground">CPU Usage</h3>
-                <p className="text-2xl font-bold">0%</p>
+                <p className="text-2xl font-bold">{formatPercent(systemStats.cpuLoad)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4 text-card-foreground">
+                <h3 className="font-medium text-muted-foreground">Memory Usage</h3>
+                <p className="text-2xl font-bold">{formatPercent(systemStats.memLoad)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4 text-card-foreground">
+                <h3 className="font-medium text-muted-foreground">GPU Usage</h3>
+                <p className="text-2xl font-bold">{formatPercent(systemStats.gpuLoad)}</p>
+              </div>
+              <div className="rounded-lg border bg-card p-4 text-card-foreground">
+                <h3 className="font-medium text-muted-foreground">GPU Memory Used</h3>
+                <p className="text-2xl font-bold">
+                  {formatMemory(systemStats.gpuMemoryUsed)}
+                </p>
               </div>
             </div>
           </div>
