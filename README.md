@@ -1,6 +1,10 @@
-<h1 align="center">Electron + Vite + React + Typescript + TailWindCSS + ShadCN</h1>
+<h1 align="center">RE:CODARR</h1>
 
-This is an **Electron** template using **Vite, React, Typescript, TailWindCSS and ShadCN**. It includes hot reloading, IPC type-safety and general security.
+A minimal effort Windows App to reclaim storage space in your home media library. 
+
+Features: 
+System Monitor for CPU/GPU Stats (AMD/Nvidia)
+Powershell Integration for Intel IGPU's and ARC (WARNING: MAY TRIGGER AV USE AT OWN DISCRETION!)
 
 ## Project Setup
 #### It works on Windows but I haven't tested it on neither Linux nor Mac
@@ -17,4 +21,4 @@ This is an **Electron** template using **Vite, React, Typescript, TailWindCSS an
 1. To create a production for Mac run **```npm run dist:mac```**
 
 **I hope you find this template useful!** If you want to support me you can-
-[<h1 align="center">!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)</h1>](https://www.buymeacoffee.com/georgimy)
+[<h1 align="center">!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)</h1>](buymeacoffee.com/rachelbastian)

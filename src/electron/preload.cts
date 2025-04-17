@@ -15,6 +15,10 @@ electron.contextBridge.exposeInMainWorld("electron", {
     setSelectedGpu: (model) => ipcInvoke("setSelectedGpu", model),
     getPsGpuMonitoringEnabled: () => ipcInvoke("getPsGpuMonitoringEnabled"),
     setPsGpuMonitoringEnabled: (isEnabled) => ipcInvoke("setPsGpuMonitoringEnabled", isEnabled),
+    dbQuery: (sql: string, params: any[] = []) => ipcInvoke("db-query", sql, params),
+    getWatchedFolders: () => ipcInvoke('get-watched-folders'),
+    addWatchedFolder: (folderInfo: Omit<WatchedFolder, 'path'>) => ipcInvoke('add-watched-folder', folderInfo),
+    removeWatchedFolder: (folderPath: string) => ipcInvoke('remove-watched-folder', folderPath),
 } satisfies Window['electron'])
 
 function ipcInvoke<Key extends keyof EventPayloadMapping>(key: Key, ...args: any[]): Promise<EventPayloadMapping[Key]> {
