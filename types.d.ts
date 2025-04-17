@@ -45,6 +45,9 @@ type EventPayloadMapping = {
     'get-watched-folders': WatchedFolder[];
     'add-watched-folder': WatchedFolder | null; // Payload: Omit<WatchedFolder, 'path'>
     'remove-watched-folder': void; // Payload: string (folderPath)
+    // Added types for scanner
+    'trigger-scan': { status: string }; // Payload: none
+    'scan-status-update': { status: 'running' | 'finished' | 'error'; message: string }; // Event sent FROM main TO renderer
 }
 
 // --- Added Watched Folder Type --- Duplicated from main.ts for global scope
@@ -72,5 +75,9 @@ interface Window {
         getWatchedFolders: () => Promise<WatchedFolder[]>;
         addWatchedFolder: (folderInfo: Omit<WatchedFolder, 'path'>) => Promise<WatchedFolder | null>;
         removeWatchedFolder: (folderPath: string) => Promise<void>;
+        // Added scanner function types
+        triggerScan: () => Promise<{ status: string }>;
+        // Added listener for scan status updates
+        subscribeScanStatus: (callback: (payload: EventPayloadMapping['scan-status-update']) => void) => UnsubscribeFunction;
     }
 }

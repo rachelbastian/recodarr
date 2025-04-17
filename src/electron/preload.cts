@@ -19,6 +19,11 @@ electron.contextBridge.exposeInMainWorld("electron", {
     getWatchedFolders: () => ipcInvoke('get-watched-folders'),
     addWatchedFolder: (folderInfo: Omit<WatchedFolder, 'path'>) => ipcInvoke('add-watched-folder', folderInfo),
     removeWatchedFolder: (folderPath: string) => ipcInvoke('remove-watched-folder', folderPath),
+    triggerScan: () => ipcInvoke('trigger-scan'),
+    subscribeScanStatus: (callback) => 
+        ipcOn("scan-status-update", payload => {
+            callback(payload);
+        }),
 } satisfies Window['electron'])
 
 function ipcInvoke<Key extends keyof EventPayloadMapping>(key: Key, ...args: any[]): Promise<EventPayloadMapping[Key]> {

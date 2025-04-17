@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button } from "../../../@/components/ui/button"; // Corrected path
-import { Input } from "../../../@/components/ui/input"; // Corrected path
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../@/components/ui/select"; // Corrected path
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../@/components/ui/table"; // Corrected path
-import { Trash2 } from 'lucide-react'; // Icon for remove button
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Trash2, RefreshCw } from 'lucide-react'; // Added RefreshCw icon
+import { cn } from "@/lib/utils";
 
 // Define the type for a watched folder, matching types.d.ts
 // Note: Duplicating this here for component scope, could be imported from a shared types file
@@ -13,16 +14,26 @@ interface WatchedFolder {
     libraryType: 'TV' | 'Movies' | 'Anime';
 }
 
+// Define Scan Status type (matching EventPayloadMapping['scan-status-update'])
+interface ScanStatusUpdate {
+    status: 'running' | 'finished' | 'error';
+    message: string;
+}
+
 const Libraries: React.FC = () => {
     const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
     const [newLibraryName, setNewLibraryName] = useState<string>('');
     const [newLibraryType, setNewLibraryType] = useState<'TV' | 'Movies' | 'Anime' | ''>( '' ); // Initialize as empty
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
+    const [scanStatus, setScanStatus] = useState<ScanStatusUpdate | null>(null); // Added state for scan status
 
     // Fetch watched folders
     const fetchFolders = useCallback(async () => {
-        setIsLoading(true);
+        // Only set loading if not already scanning
+        if (scanStatus?.status !== 'running') {
+             setIsLoading(true);
+        }
         setError(null);
         try {
             const folders = await window.electron.getWatchedFolders();
@@ -31,14 +42,33 @@ const Libraries: React.FC = () => {
             console.error("Error fetching watched folders:", err);
             setError(err instanceof Error ? err.message : 'Failed to fetch libraries');
         } finally {
-            setIsLoading(false);
+             if (scanStatus?.status !== 'running') {
+                 setIsLoading(false);
+            }
         }
-    }, []);
+    }, [scanStatus]); // Re-run if scan status changes, to potentially reset loading
 
     // Fetch folders on component mount
     useEffect(() => {
         fetchFolders();
     }, [fetchFolders]);
+
+    // Subscribe to scan status updates
+    useEffect(() => {
+        const unsubscribe = window.electron.subscribeScanStatus((update) => {
+            console.log("Scan Status Update:", update);
+            setScanStatus(update);
+            // If scan finishes or errors, allow loading state to be set again
+            if (update.status === 'finished' || update.status === 'error') {
+                 setIsLoading(false); 
+            }
+        });
+
+        // Cleanup subscription on unmount
+        return () => {
+            unsubscribe();
+        };
+    }, []); // Empty dependency array, runs once on mount
 
     // Handle adding a new library
     const handleAddLibrary = async () => {
@@ -83,11 +113,45 @@ const Libraries: React.FC = () => {
         }
     };
 
+    // Handle triggering a manual scan
+    const handleScanTrigger = async () => {
+        setError(null);
+        setScanStatus({ status: 'running', message: 'Initializing scan...' });
+        setIsLoading(true); // Use isLoading to disable buttons during scan
+        try {
+            const result = await window.electron.triggerScan();
+            console.log("Scan triggered result:", result);
+             // Status will be updated via the subscription
+        } catch (err) {
+            console.error("Error triggering scan:", err);
+            setError(err instanceof Error ? err.message : 'Failed to trigger scan');
+            setScanStatus({ status: 'error', message: err instanceof Error ? err.message : 'Failed to trigger scan' });
+            setIsLoading(false); // Re-enable buttons on trigger error
+        }
+        // Don't setIsLoading(false) here, wait for 'finished' or 'error' status update
+    };
+
+    const isScanning = scanStatus?.status === 'running';
+
     return (
         <div className="container mx-auto p-6 space-y-6">
-            <h1 className="text-3xl font-bold tracking-tight text-foreground">Manage Libraries</h1>
+            <div className="flex justify-between items-center">
+                 <h1 className="text-3xl font-bold tracking-tight text-foreground">Manage Libraries</h1>
+                 {/* Scan Trigger Button */}
+                 <Button onClick={handleScanTrigger} disabled={isLoading || isScanning}>
+                     <RefreshCw className={cn("mr-2 h-4 w-4", isScanning && "animate-spin")} />
+                     {isScanning ? 'Scanning...' : 'Scan Libraries'}
+                 </Button>
+            </div>
 
-            {error && <p className="text-red-500 bg-red-100 p-3 rounded-md">{error}</p>}
+            {/* Display Scan Status */}
+            {scanStatus && (scanStatus.status === 'running' || scanStatus.status === 'finished' || scanStatus.status === 'error') && (
+                <div className={`p-3 rounded-md text-sm ${scanStatus.status === 'error' ? 'bg-red-100 text-red-700' : scanStatus.status === 'finished' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                    <strong>Scan Status:</strong> {scanStatus.message}
+                </div>
+            )}
+
+            {error && !scanStatus && <p className="text-red-500 bg-red-100 p-3 rounded-md">{error}</p>}
 
             {/* Add New Library Section */}
             <div className="p-4 border rounded-lg bg-card text-card-foreground space-y-4">
@@ -99,9 +163,9 @@ const Libraries: React.FC = () => {
                             id="libraryName"
                             placeholder="e.g., My Movie Collection"
                             value={newLibraryName}
-                            onChange={(e) => setNewLibraryName(e.target.value)}
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewLibraryName(e.target.value)}
                             className="text-foreground"
-                            disabled={isLoading}
+                            disabled={isLoading || isScanning}
                         />
                     </div>
                      <div className="space-y-1">
@@ -109,7 +173,7 @@ const Libraries: React.FC = () => {
                          <Select
                             value={newLibraryType}
                             onValueChange={(value: 'TV' | 'Movies' | 'Anime') => setNewLibraryType(value)}
-                            disabled={isLoading}
+                            disabled={isLoading || isScanning}
                          >
                             <SelectTrigger id="libraryType" className="w-full">
                                 <SelectValue placeholder="Select type..." />
@@ -121,8 +185,8 @@ const Libraries: React.FC = () => {
                             </SelectContent>
                         </Select>
                     </div>
-                    <Button onClick={handleAddLibrary} disabled={isLoading || !newLibraryName || !newLibraryType}>
-                        {isLoading ? 'Adding...' : 'Add Library Folder'}
+                    <Button onClick={handleAddLibrary} disabled={isLoading || isScanning || !newLibraryName || !newLibraryType}>
+                        {isLoading && !isScanning ? 'Adding...' : 'Add Library Folder'}
                     </Button>
                 </div>
                  <p className="text-xs text-muted-foreground">Clicking 'Add' will open a dialog to select the folder to monitor.</p>
@@ -160,7 +224,7 @@ const Libraries: React.FC = () => {
                                             variant="ghost"
                                             size="icon"
                                             onClick={() => handleRemoveLibrary(folder.path)}
-                                            disabled={isLoading}
+                                            disabled={isLoading || isScanning} // Disable during scan too
                                             aria-label="Remove folder"
                                         >
                                             <Trash2 className="h-4 w-4" />

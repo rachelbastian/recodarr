@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Settings, BarChart2, Search, Library, PlusCircle } from 'lucide-react';
+import { Home, Settings, BarChart2, Search, Library, PlusCircle, Film } from 'lucide-react';
 import { cn } from "@/lib/utils"; // Assuming @ alias is setup
 import { Button } from "@/components/ui/button"; // Assuming @ alias is setup
 
@@ -35,7 +35,7 @@ const Navbar: React.FC = () => {
 
   return (
     <div className="w-64 h-screen bg-background border-r flex flex-col">
-      <div className="p-4 border-b">
+      <div className="p-4 border-b h-14 flex items-center">
         <h2 className="text-xl font-semibold text-foreground">Recodarr</h2>
       </div>
       
@@ -43,8 +43,8 @@ const Navbar: React.FC = () => {
         <div className="space-y-1">
           <SidebarItem icon={<Home className="h-4 w-4" />} label="Dashboard" href="/" active={isActive('/')} />
           <SidebarItem icon={<BarChart2 className="h-4 w-4" />} label="Statistics" href="/statistics" active={isActive('/statistics')} />
-          {/* Updated Library link */}
-          <SidebarItem icon={<Library className="h-4 w-4" />} label="Library" href="/libraries" active={isActive('/libraries')} /> 
+          <SidebarItem icon={<Film className="h-4 w-4" />} label="Media" href="/media" active={isActive('/media')} />
+          <SidebarItem icon={<Library className="h-4 w-4" />} label="Libraries" href="/libraries" active={isActive('/libraries')} />
         </div>
         
         <div className="mt-8">
