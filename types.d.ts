@@ -17,13 +17,15 @@ type SystemStats = {
     gpuLoad: number | null;
     gpuMemoryUsed: number | null;
     gpuMemoryTotal: number | null;
+    gpuMemoryUsagePercent?: number | null; // Added optional GPU memory usage percentage
     error?: string;
 }
 
-// Added type for basic GPU info for selection
+// Define GPU information structure
 type GpuInfo = {
     vendor: string;
     model: string;
+    memoryTotal: number | null; // Added total memory detected by SI
 }
 
 type UnsubscribeFunction = () => void;
@@ -48,6 +50,9 @@ type EventPayloadMapping = {
     // Added types for scanner
     'trigger-scan': { status: string }; // Payload: none
     'scan-status-update': { status: 'running' | 'finished' | 'error'; message: string }; // Event sent FROM main TO renderer
+    // Added types for manual VRAM override
+    'get-manual-gpu-vram': number | null;
+    'set-manual-gpu-vram': void; // Payload: number | null
 }
 
 // --- Added Watched Folder Type --- Duplicated from main.ts for global scope
@@ -79,5 +84,8 @@ interface Window {
         triggerScan: () => Promise<{ status: string }>;
         // Added listener for scan status updates
         subscribeScanStatus: (callback: (payload: EventPayloadMapping['scan-status-update']) => void) => UnsubscribeFunction;
+        // Added functions for manual VRAM
+        getManualGpuVram: () => Promise<number | null>;
+        setManualGpuVram: (vramMb: number | null) => Promise<void>;
     }
 }

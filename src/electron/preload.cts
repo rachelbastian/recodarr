@@ -24,6 +24,8 @@ electron.contextBridge.exposeInMainWorld("electron", {
         ipcOn("scan-status-update", payload => {
             callback(payload);
         }),
+    getManualGpuVram: () => ipcInvoke("get-manual-gpu-vram"),
+    setManualGpuVram: (vramMb) => ipcInvoke("set-manual-gpu-vram", vramMb),
 } satisfies Window['electron'])
 
 function ipcInvoke<Key extends keyof EventPayloadMapping>(key: Key, ...args: any[]): Promise<EventPayloadMapping[Key]> {

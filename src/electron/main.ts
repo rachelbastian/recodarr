@@ -17,6 +17,7 @@ const store = new Store();
 const SELECTED_GPU_KEY = 'selectedGpuModel';
 const ENABLE_PS_GPU_KEY = 'enablePsGpuMonitoring'; // Key for the toggle
 const WATCHED_FOLDERS_KEY = 'watchedFolders'; // Added key for watched folders
+const MANUAL_GPU_VRAM_MB_KEY = 'manualGpuVramMb'; // Key for manual VRAM override
 
 // --- Define Watched Folder Type ---
 interface WatchedFolder {
@@ -317,58 +318,64 @@ async function getSystemStats(): Promise<SystemStats> {
             si.mem(),
         ]);
 
-        // Check if PowerShell GPU monitoring is enabled for GPU *Load*
+        // Check if PowerShell GPU monitoring is enabled
         const psGpuEnabled = store.get(ENABLE_PS_GPU_KEY, false) as boolean;
 
         let gpuLoadPs: number | null = null;
-        // Removed gpuMemoryUsedPsMb as we'll get used memory from SI
+        let gpuMemoryUsedPsMb: number | null = null;
 
-        // Only run PS commands for GPU Load if enabled
+        // Only run PS commands if enabled
         if (psGpuEnabled) {
-            // Define PS command for GPU Utilisation
+            // Define PS commands for GPU stats (Counters)
             const gpuUtilCommand = `(Get-Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage').CounterSamples | Where-Object {$_.CookedValue -ne $null} | Measure-Object -Sum CookedValue | Select-Object -ExpandProperty Sum`;
-            // Removed gpuMemUsedCommand
+            const gpuMemUsedCommand = `(Get-Counter '\\GPU Process Memory(*)\\Local Usage').CounterSamples | Where-Object {$_.CookedValue -ne $null} | Measure-Object -Sum CookedValue | Select-Object -ExpandProperty Sum`;
 
             try {
-                // Fetch only GPU Utilisation via PS
-                const gpuUtilOutput = await runPsCommand(gpuUtilCommand);
+                const [gpuUtilOutput, gpuMemUsedOutput] = await Promise.all([
+                    runPsCommand(gpuUtilCommand),
+                    runPsCommand(gpuMemUsedCommand)
+                ]);
                 gpuLoadPs = gpuUtilOutput ? parseFloat(gpuUtilOutput) : null;
+                gpuMemoryUsedPsMb = gpuMemUsedOutput ? parseFloat(gpuMemUsedOutput) / (1024 * 1024) : null;
             } catch (psCounterError) {
-                console.error("Error executing PowerShell Get-Counter command for GPU Util:", psCounterError);
-                // Ensure load value is null if PS fails even when enabled
+                console.error("Error executing PowerShell Get-Counter commands:", psCounterError);
+                // Ensure values are null if PS fails even when enabled
                 gpuLoadPs = null;
+                gpuMemoryUsedPsMb = null;
             }
         }
 
-        // Fetch GPU Memory (Used and Total) via systeminformation
+        // Fetch Total GPU Memory via systeminformation (always attempt this)
         let gpuMemoryTotalSiMb: number | null = null;
-        let gpuMemoryUsedSiMb: number | null = null; // Added variable for used memory from SI
-
         try {
             const gpuData = await si.graphics();
+            // console.log("si.graphics() output:", gpuData); // Log the output - keep commented out unless debugging
             const preferredGpuModel = store.get(SELECTED_GPU_KEY) as string | null;
-            const targetGpu = findGpu(gpuData.controllers, preferredGpuModel); // Assumes findGpu selects the correct controller
-            
-            if (targetGpu) {
-                 // Use memoryTotal and memoryUsed if available, otherwise fallback to vram
-                 // Note: systeminformation types might not list vramUsed, but it can exist on some platforms.
-                 // We'll cast to 'any' to attempt access, falling back to null if not present.
-                 gpuMemoryTotalSiMb = targetGpu.memoryTotal ?? targetGpu.vram ?? null;
-                 gpuMemoryUsedSiMb = targetGpu.memoryUsed ?? (targetGpu as any).vramUsed ?? null;
-            } else {
-                 console.warn("Could not find target GPU for memory stats.");
-            }
-
+            const targetGpu = findGpu(gpuData.controllers, preferredGpuModel);
+            gpuMemoryTotalSiMb = targetGpu?.memoryTotal ?? null;
         } catch (siError) {
              console.error("Error fetching GPU graphics info via systeminformation:", siError);
+        }
+
+        // Fetch manual VRAM override
+        const manualVramMb = store.get(MANUAL_GPU_VRAM_MB_KEY) as number | null;
+
+        // Determine effective total VRAM (prioritize manual override)
+        const effectiveTotalVramMb = manualVramMb ?? gpuMemoryTotalSiMb;
+
+        // Calculate GPU Memory Usage Percentage using effective total
+        let gpuMemoryUsagePercent: number | null = null;
+        if (gpuMemoryUsedPsMb !== null && effectiveTotalVramMb !== null && effectiveTotalVramMb > 0) {
+             gpuMemoryUsagePercent = (gpuMemoryUsedPsMb / effectiveTotalVramMb) * 100;
         }
 
         return {
             cpuLoad: cpuData.currentLoad,
             memLoad: (memData.active / memData.total) * 100,
-            gpuLoad: gpuLoadPs,                // Still sourced from PS if enabled
-            gpuMemoryUsed: gpuMemoryUsedSiMb,  // Now sourced from systeminformation
-            gpuMemoryTotal: gpuMemoryTotalSiMb, // Sourced from systeminformation
+            gpuLoad: gpuLoadPs,             // Null if PS monitoring is disabled or fails
+            gpuMemoryUsed: gpuMemoryUsedPsMb, // Null if PS monitoring is disabled or fails
+            gpuMemoryTotal: effectiveTotalVramMb, // Return the effective total used
+            gpuMemoryUsagePercent: gpuMemoryUsagePercent, // Added percentage
         };
     } catch (e: unknown) {
         console.error("Error fetching system stats:", e);
@@ -378,7 +385,8 @@ async function getSystemStats(): Promise<SystemStats> {
             memLoad: null,
             gpuLoad: null,
             gpuMemoryUsed: null,
-            gpuMemoryTotal: null,
+            gpuMemoryTotal: null, // Return null if error occurs
+            gpuMemoryUsagePercent: null, // Ensure percentage is null on error
             error: errorMessage
         };
     }
@@ -616,7 +624,11 @@ app.on("ready", () => {
             // Filter out potential RDP adapter from selection if desired
             return gpus.controllers
                 .filter(gpu => !gpu.vendor?.includes('Microsoft')) // Example filter
-                .map(gpu => ({ vendor: gpu.vendor ?? 'Unknown', model: gpu.model ?? 'Unknown' }));
+                .map(gpu => ({ 
+                    vendor: gpu.vendor ?? 'Unknown', 
+                    model: gpu.model ?? 'Unknown', 
+                    memoryTotal: gpu.memoryTotal ?? null // Include detected VRAM
+                }));
         } catch (error) {
             console.error("Error fetching available GPUs:", error);
             return [];
@@ -643,6 +655,21 @@ app.on("ready", () => {
 
     ipcMain.handle("setPsGpuMonitoringEnabled", async (_event: Electron.IpcMainInvokeEvent, isEnabled: boolean): Promise<void> => {
         store.set(ENABLE_PS_GPU_KEY, isEnabled);
+    });
+
+    // --- Added Handlers for Manual VRAM Override ---
+    ipcMain.handle("get-manual-gpu-vram", async (): Promise<number | null> => {
+        return store.get(MANUAL_GPU_VRAM_MB_KEY, null) as number | null;
+    });
+
+    ipcMain.handle("set-manual-gpu-vram", async (_event: Electron.IpcMainInvokeEvent, vramMb: number | null): Promise<void> => {
+        if (vramMb === null || typeof vramMb !== 'number' || vramMb <= 0) {
+            store.delete(MANUAL_GPU_VRAM_MB_KEY);
+            console.log("Cleared manual GPU VRAM override.");
+        } else {
+            store.set(MANUAL_GPU_VRAM_MB_KEY, vramMb);
+            console.log(`Set manual GPU VRAM override to: ${vramMb} MB`);
+        }
     });
     // --- End IPC Handlers ---
 

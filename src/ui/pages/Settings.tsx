@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Select,
   SelectContent,
@@ -8,25 +8,35 @@ import {
 } from "../../../@/components/ui/select";
 import { Label } from "../../../@/components/ui/label";
 import { Switch } from "../../../@/components/ui/switch";
+import { Input } from "../../../@/components/ui/input";
+import { Button } from "../../../@/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "../../../@/components/ui/alert";
+import { Terminal } from 'lucide-react';
 
 const Settings: React.FC = () => {
   const [availableGpus, setAvailableGpus] = useState<GpuInfo[]>([]);
-  const [selectedGpu, setSelectedGpu] = useState<string | null>(null);
+  const [selectedGpuModel, setSelectedGpuModel] = useState<string>('default');
   const [psMonEnabled, setPsMonEnabled] = useState<boolean>(false);
+  const [manualVramInput, setManualVramInput] = useState<string>("");
+  const [currentManualVram, setCurrentManualVram] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSavingVram, setIsSavingVram] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
       try {
-        const [gpus, currentSelection, currentPsMonSetting] = await Promise.all([
+        const [gpus, currentSelection, currentPsMonSetting, manualVram] = await Promise.all([
           window.electron.getAvailableGpus(),
           window.electron.getSelectedGpu(),
-          window.electron.getPsGpuMonitoringEnabled()
+          window.electron.getPsGpuMonitoringEnabled(),
+          window.electron.getManualGpuVram()
         ]);
         setAvailableGpus(gpus);
-        setSelectedGpu(currentSelection ?? 'default');
+        setSelectedGpuModel(currentSelection ?? 'default');
         setPsMonEnabled(currentPsMonSetting);
+        setCurrentManualVram(manualVram);
+        setManualVramInput(manualVram?.toString() ?? "");
       } catch (error) {
         console.error("Error fetching settings:", error);
       } finally {
@@ -36,9 +46,16 @@ const Settings: React.FC = () => {
     fetchData();
   }, []);
 
+  const selectedGpuDetails = useMemo(() => {
+    if (selectedGpuModel === 'default') {
+        return availableGpus.find(gpu => !gpu.vendor?.includes('Microsoft')) || availableGpus[0] || null;
+    }
+    return availableGpus.find(gpu => gpu.model === selectedGpuModel);
+  }, [selectedGpuModel, availableGpus]);
+
   const handleGpuChange = async (newModel: string) => {
     const valueToSave = newModel === 'default' ? null : newModel;
-    setSelectedGpu(newModel);
+    setSelectedGpuModel(newModel);
     try {
       await window.electron.setSelectedGpu(valueToSave);
     } catch (error) {
@@ -55,6 +72,48 @@ const Settings: React.FC = () => {
     }
   };
 
+  const handleSaveManualVram = async () => {
+      const vramValue = manualVramInput.trim();
+      let vramToSave: number | null = null;
+
+      if (vramValue !== "") {
+          const parsedVram = parseInt(vramValue, 10);
+          if (isNaN(parsedVram) || parsedVram <= 0) {
+              alert("Please enter a valid positive number for VRAM in MB, or leave it blank to use auto-detection.");
+              return;
+          }
+          vramToSave = parsedVram;
+      } 
+      // If vramValue is empty, vramToSave remains null
+
+      setIsSavingVram(true);
+      try {
+          await window.electron.setManualGpuVram(vramToSave); // Pass null or the valid number
+          setCurrentManualVram(vramToSave); // Update local state on success
+          console.log("Manual VRAM saved:", vramToSave);
+      } catch (error) {
+          console.error("Error saving manual VRAM:", error);
+          alert("Failed to save manual VRAM setting."); // Provide user feedback
+      } finally {
+          setIsSavingVram(false);
+      }
+  };
+
+  const handleClearManualVram = async () => {
+      setIsSavingVram(true);
+      try {
+          await window.electron.setManualGpuVram(null);
+          setCurrentManualVram(null);
+          setManualVramInput("");
+          console.log("Manual VRAM cleared.");
+      } catch (error) {
+          console.error("Error clearing manual VRAM:", error);
+          alert("Failed to clear manual VRAM setting.");
+      } finally {
+          setIsSavingVram(false);
+      }
+  };
+
   return (
     <div className="flex-1 overflow-auto">
       <div className="container mx-auto p-6">
@@ -67,7 +126,7 @@ const Settings: React.FC = () => {
               <div className="grid gap-2">
                 <Label htmlFor="gpu-select">Monitored GPU</Label>
                 <Select 
-                  value={selectedGpu ?? 'default'} 
+                  value={selectedGpuModel} 
                   onValueChange={handleGpuChange}
                   disabled={isLoading}
                 >
@@ -83,6 +142,49 @@ const Settings: React.FC = () => {
                     ))}
                   </SelectContent>
                 </Select>
+                {selectedGpuDetails && (
+                    <div className="mt-2 text-sm text-muted-foreground p-3 bg-muted/50 rounded-md border border-border">
+                        <p><strong>Vendor:</strong> {selectedGpuDetails.vendor}</p>
+                        <p><strong>Model:</strong> {selectedGpuDetails.model}</p>
+                        <p><strong>Detected VRAM:</strong> {selectedGpuDetails.memoryTotal ? `${selectedGpuDetails.memoryTotal} MB` : 'N/A'}</p>
+                    </div>
+                )}
+              </div>
+
+              <div className="grid gap-2">
+                  <Label htmlFor="manual-vram">Manual Total VRAM (MB)</Label>
+                  <div className="flex items-center gap-2 max-w-sm">
+                    <Input
+                        id="manual-vram"
+                        type="number"
+                        placeholder="Leave blank for auto-detect"
+                        value={manualVramInput}
+                        onChange={(e) => setManualVramInput(e.target.value)}
+                        disabled={isLoading || isSavingVram}
+                        min="1"
+                        step="1"
+                    />
+                    <Button 
+                        onClick={handleSaveManualVram}
+                        disabled={isLoading || isSavingVram || manualVramInput === (currentManualVram?.toString() ?? "")}
+                        size="sm"
+                    >
+                       {isSavingVram ? 'Saving...' : 'Save'}
+                    </Button>
+                    {currentManualVram !== null && (
+                         <Button 
+                            variant="outline"
+                            onClick={handleClearManualVram}
+                            disabled={isLoading || isSavingVram}
+                            size="sm"
+                        >
+                           Clear
+                        </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Override the detected total VRAM if incorrect. Used for VRAM usage percentage calculation.
+                  </p>
               </div>
 
               <div className="grid gap-2">

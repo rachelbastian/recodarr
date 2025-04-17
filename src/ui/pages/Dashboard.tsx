@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import GaugeWidget from '../components/GaugeWidget';
 
 // Helper to format bytes
 function formatBytes(bytes: number | null, decimals = 2): string {
@@ -31,11 +32,12 @@ interface DashboardMediaStats {
 
 // Default state structure matching SystemStats type
 const defaultSystemStats: SystemStats = {
-  cpuLoad: null,
-  memLoad: null,
-  gpuLoad: null,
-  gpuMemoryUsed: null,
-  gpuMemoryTotal: null,
+    cpuLoad: null,
+    memLoad: null,
+    gpuLoad: null,
+    gpuMemoryUsed: null,
+    gpuMemoryTotal: null,
+    gpuMemoryUsagePercent: null,
 };
 
 // Default state for media stats
@@ -101,68 +103,62 @@ const Dashboard: React.FC = () => {
         };
     }, []); // Empty dependency array ensures this runs only once on mount
 
-  // Helper function to format percentages
-  const formatPercent = (value: number | null) => 
-    value !== null ? `${value.toFixed(1)}%` : 'N/A';
-
-  // Helper function to format memory (MB to GB)
-  const formatMemory = (valueMB: number | null) => 
-    valueMB !== null ? `${(valueMB / 1024).toFixed(1)} GB` : 'N/A';
-
   return (
-    <div className="flex-1 overflow-auto">
+    <div className="flex-1 overflow-auto bg-background">
       <main className="container mx-auto p-6">
         <div className="grid gap-6">
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">Welcome back</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">System Dashboard</h1>
           
           {mediaStatsError && <p className="text-red-500 bg-red-100 p-3 rounded-md">{mediaStatsError}</p>}
 
+          {/* System Performance Gauges */}
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+            <GaugeWidget
+              value={systemStats.cpuLoad}
+              label="CPU Usage"
+              colorScheme="blue"
+            />
+            <GaugeWidget
+              value={systemStats.memLoad}
+              label="Memory Usage"
+              colorScheme="green"
+            />
+            <GaugeWidget
+              value={systemStats.gpuLoad}
+              label="GPU Usage"
+              colorScheme="purple"
+            />
+            <GaugeWidget
+              value={systemStats.gpuMemoryUsagePercent ?? null}
+              label="GPU Memory"
+              colorScheme="orange"
+            />
+          </div>
+
+          {/* Media Stats Cards */}
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {/* Row 1: Media Stats */}
-            <div className="rounded-lg border bg-card p-4 text-card-foreground">
+            <div className="rounded-lg border bg-card/40 p-4 text-card-foreground shadow-sm">
               <h3 className="font-medium text-muted-foreground">Total Media Files</h3>
               <p className="text-2xl font-bold">
                 {isLoadingMediaStats ? 'Loading...' : mediaStats.totalCount}
               </p>
             </div>
-            <div className="rounded-lg border bg-card p-4 text-card-foreground">
+            <div className="rounded-lg border bg-card/40 p-4 text-card-foreground shadow-sm">
               <h3 className="font-medium text-muted-foreground">Total Current Storage</h3>
               <p className="text-2xl font-bold">
                 {isLoadingMediaStats ? 'Loading...' : formatBytes(mediaStats.totalCurrentSize)}
               </p>
             </div>
-            <div className="rounded-lg border bg-card p-4 text-card-foreground">
+            <div className="rounded-lg border bg-card/40 p-4 text-card-foreground shadow-sm">
               <h3 className="font-medium text-muted-foreground">Total Original Storage</h3>
               <p className="text-2xl font-bold">
                 {isLoadingMediaStats ? 'Loading...' : formatBytes(mediaStats.totalOriginalSize)}
               </p>
             </div>
-            <div className="rounded-lg border bg-card p-4 text-card-foreground">
-              <h3 className="font-medium text-muted-foreground">Total Space Saved (%)</h3>
+            <div className="rounded-lg border bg-card/40 p-4 text-card-foreground shadow-sm">
+              <h3 className="font-medium text-muted-foreground">Space Saved</h3>
               <p className="text-2xl font-bold">
-                {isLoadingMediaStats ? 'Loading...' : 
-                  `${formatBytes(mediaStats.totalSavedSize)} (${formatPercent(mediaStats.percentageSaved)})`
-                }
-              </p>
-            </div>
-
-            {/* Row 2: System Stats */}
-            <div className="rounded-lg border bg-card p-4 text-card-foreground">
-              <h3 className="font-medium text-muted-foreground">CPU Usage</h3>
-              <p className="text-2xl font-bold">{formatPercent(systemStats.cpuLoad)}</p>
-            </div>
-            <div className="rounded-lg border bg-card p-4 text-card-foreground">
-              <h3 className="font-medium text-muted-foreground">Memory Usage</h3>
-              <p className="text-2xl font-bold">{formatPercent(systemStats.memLoad)}</p>
-            </div>
-            <div className="rounded-lg border bg-card p-4 text-card-foreground">
-              <h3 className="font-medium text-muted-foreground">GPU Usage</h3>
-              <p className="text-2xl font-bold">{formatPercent(systemStats.gpuLoad)}</p>
-            </div>
-            <div className="rounded-lg border bg-card p-4 text-card-foreground">
-              <h3 className="font-medium text-muted-foreground">GPU Memory Used</h3>
-              <p className="text-2xl font-bold">
-                {formatMemory(systemStats.gpuMemoryUsed)}
+                {isLoadingMediaStats ? 'Loading...' : formatBytes(mediaStats.totalSavedSize)}
               </p>
             </div>
           </div>
