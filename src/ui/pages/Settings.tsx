@@ -5,9 +5,9 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "../components/select";
-import { Label } from "../components/label";
-import { Switch } from "../components/switch";
+} from "../../../@/components/ui/select";
+import { Label } from "../../../@/components/ui/label";
+import { Switch } from "../../../@/components/ui/switch";
 
 const Settings: React.FC = () => {
   const [availableGpus, setAvailableGpus] = useState<GpuInfo[]>([]);
