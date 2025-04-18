@@ -21,6 +21,20 @@ import {
     DropdownMenuTrigger,
 } from "../../../@/components/ui/dropdown-menu";
 import { Columns } from 'lucide-react';
+import { SlidersHorizontal } from 'lucide-react'; // Import icon for advanced search
+import {
+    Sheet,
+    SheetContent,
+    SheetDescription,
+    SheetHeader,
+    SheetTitle,
+    SheetTrigger,
+    SheetFooter,
+    SheetClose,
+} from "../../../@/components/ui/sheet"; // Import Sheet components
+import { Input } from "../../../@/components/ui/input"; // Import Input
+import { Label } from "../../../@/components/ui/label"; // Import Label
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../@/components/ui/select"; // Import Select
 
 // Define the type for a media item from the DB
 interface MediaItem {
@@ -139,6 +153,36 @@ const Media: React.FC = () => {
     const [columnOrder, setColumnOrder] = useState<ColumnOrderState>(initialColumnOrder);
     const [columnVisibility, setColumnVisibility] = useState({});
     const [sorting, setSorting] = useState<SortingState>([]);
+    const [isAdvancedSearchOpen, setIsAdvancedSearchOpen] = useState(false); // State for flyout
+    // Add state for filters
+    const [libraryNameFilter, setLibraryNameFilter] = useState('');
+    const [libraryTypeFilter, setLibraryTypeFilter] = useState<'All' | 'TV' | 'Movies' | 'Anime'>('All');
+    const [videoCodecFilter, setVideoCodecFilter] = useState('');
+    const [audioCodecFilter, setAudioCodecFilter] = useState('');
+    // Add state for distinct filter options
+    const [libraryNames, setLibraryNames] = useState<string[]>([]);
+    const [videoCodecs, setVideoCodecs] = useState<string[]>([]);
+    const [audioCodecs, setAudioCodecs] = useState<string[]>([]);
+
+    // Fetch distinct values for filters on mount
+    useEffect(() => {
+        const fetchFilterOptions = async () => {
+            try {
+                const [libs, vCodecs, aCodecs] = await Promise.all([
+                    window.electron.dbQuery('SELECT DISTINCT libraryName FROM media WHERE libraryName IS NOT NULL ORDER BY libraryName'),
+                    window.electron.dbQuery('SELECT DISTINCT videoCodec FROM media WHERE videoCodec IS NOT NULL ORDER BY videoCodec'),
+                    window.electron.dbQuery('SELECT DISTINCT audioCodec FROM media WHERE audioCodec IS NOT NULL ORDER BY audioCodec'),
+                ]);
+                setLibraryNames(['All', ...(libs as { libraryName: string }[]).map(l => l.libraryName)]);
+                setVideoCodecs(['All', ...(vCodecs as { videoCodec: string }[]).map(c => c.videoCodec)]);
+                setAudioCodecs(['All', ...(aCodecs as { audioCodec: string }[]).map(c => c.audioCodec)]);
+            } catch (err) {
+                console.error("Error fetching filter options:", err);
+                // Handle error appropriately, maybe show a notification
+            }
+        };
+        fetchFilterOptions();
+    }, []); // Empty dependency array ensures this runs only once on mount
 
     const fetchMedia = useCallback(async () => {
         setIsLoading(true);
@@ -150,10 +194,12 @@ const Media: React.FC = () => {
                 originalSize, currentSize, lastSizeCheckAt,
                 videoCodec, audioCodec, addedAt 
             FROM media 
-            ORDER BY addedAt DESC
+            WHERE 1=1 -- Start WHERE clause
         `;
         let params: any[] = [];
+        let conditions: string[] = [];
 
+        // Add FTS search if query exists
         if (query) {
             console.log(`Fetching media matching: ${query}`);
             sql = `
@@ -163,11 +209,37 @@ const Media: React.FC = () => {
                     m.videoCodec, m.audioCodec, m.addedAt
                 FROM media AS m
                 JOIN media_fts AS fts ON m.id = fts.rowid
-                WHERE fts.media_fts MATCH ? 
-                ORDER BY rank, m.addedAt DESC
+                WHERE 1=1 -- Start WHERE clause
             `;
-            params = [`${query.replace(/'/g, "''")}*`];
+            conditions.push('fts.media_fts MATCH ?');
+            params.push(`${query.replace(/'/g, "''")}*`); // Keep FTS param first if used
         }
+
+        // Add filter conditions
+        if (libraryNameFilter && libraryNameFilter !== 'All') { // Check for 'All'
+            conditions.push('libraryName = ?'); // Use = for exact match
+            params.push(libraryNameFilter);
+        }
+        if (libraryTypeFilter !== 'All') {
+            conditions.push('libraryType = ?');
+            params.push(libraryTypeFilter);
+        }
+        if (videoCodecFilter && videoCodecFilter !== 'All') { // Check for 'All'
+            conditions.push('videoCodec = ?'); // Use = for exact match
+            params.push(videoCodecFilter);
+        }
+        if (audioCodecFilter && audioCodecFilter !== 'All') { // Check for 'All'
+            conditions.push('audioCodec = ?'); // Use = for exact match
+            params.push(audioCodecFilter);
+        }
+
+        // Append conditions to SQL
+        if (conditions.length > 0) {
+            sql += ' AND ' + conditions.join(' AND ');
+        }
+
+        // Add ordering (FTS uses rank, otherwise addedAt)
+        sql += query ? ' ORDER BY rank, m.addedAt DESC' : ' ORDER BY addedAt DESC';
 
         try {
             const results = await window.electron.dbQuery(sql, params);
@@ -179,7 +251,7 @@ const Media: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [searchParams]);
+    }, [searchParams, libraryNameFilter, libraryTypeFilter, videoCodecFilter, audioCodecFilter]);
 
     useEffect(() => {
         fetchMedia();
@@ -214,30 +286,134 @@ const Media: React.FC = () => {
                 </h1>
 
                 {/* Column Visibility Dropdown */}
-                <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="ml-auto">
-                            <Columns className="mr-2 h-4 w-4" />
-                            Columns
-                        </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                        {table.getAllColumns()
-                            .filter(column => column.getCanHide())
-                            .map(column => {
-                                return (
-                                    <DropdownMenuCheckboxItem
-                                        key={column.id}
-                                        className="capitalize"
-                                        checked={column.getIsVisible()}
-                                        onCheckedChange={(value) => column.toggleVisibility(!!value)}
+                <div className="flex items-center space-x-2"> {/* Wrap buttons */} 
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm" className="ml-auto">
+                                <Columns className="mr-2 h-4 w-4" />
+                                Columns
+                            </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                            {table.getAllColumns()
+                                .filter(column => column.getCanHide())
+                                .map(column => {
+                                    return (
+                                        <DropdownMenuCheckboxItem
+                                            key={column.id}
+                                            className="capitalize"
+                                            checked={column.getIsVisible()}
+                                            onCheckedChange={(value) => column.toggleVisibility(!!value)}
+                                        >
+                                            {column.id}
+                                        </DropdownMenuCheckboxItem>
+                                    )
+                                })}
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+
+                    {/* Advanced Search Flyout Trigger */}
+                    <Sheet open={isAdvancedSearchOpen} onOpenChange={setIsAdvancedSearchOpen}>
+                        <SheetTrigger asChild>
+                            <Button variant="outline" size="sm">
+                                <SlidersHorizontal className="mr-2 h-4 w-4" />
+                                Filter
+                            </Button>
+                        </SheetTrigger>
+                        <SheetContent>
+                            <SheetHeader>
+                                <SheetTitle>Advanced Search & Filters</SheetTitle>
+                                <SheetDescription>
+                                    Refine your media view by applying specific filters.
+                                </SheetDescription>
+                            </SheetHeader>
+                            {/* Filter Controls */}
+                            <div className="grid gap-6 py-4">
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="libraryName" className="text-right col-span-1">
+                                        Library
+                                    </Label>
+                                    <Select
+                                        value={libraryNameFilter || 'All'}
+                                        onValueChange={(value) => setLibraryNameFilter(value === 'All' ? '' : value)}
                                     >
-                                        {column.id}
-                                    </DropdownMenuCheckboxItem>
-                                )
-                            })}
-                    </DropdownMenuContent>
-                </DropdownMenu>
+                                        <SelectTrigger className="col-span-3">
+                                            <SelectValue placeholder="Select library" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {libraryNames.map(name => (
+                                                <SelectItem key={name} value={name}>{name}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="libraryType" className="text-right col-span-1">
+                                        Type
+                                    </Label>
+                                    <Select
+                                        value={libraryTypeFilter}
+                                        onValueChange={(value: 'All' | 'TV' | 'Movies' | 'Anime') => setLibraryTypeFilter(value)}
+                                    >
+                                        <SelectTrigger className="col-span-3">
+                                            <SelectValue placeholder="Select type" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="All">All Types</SelectItem>
+                                            <SelectItem value="TV">TV Shows</SelectItem>
+                                            <SelectItem value="Movies">Movies</SelectItem>
+                                            <SelectItem value="Anime">Anime</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="videoCodec" className="text-right col-span-1">
+                                        Video Codec
+                                    </Label>
+                                    <Select
+                                        value={videoCodecFilter || 'All'}
+                                        onValueChange={(value) => setVideoCodecFilter(value === 'All' ? '' : value)}
+                                    >
+                                        <SelectTrigger className="col-span-3">
+                                            <SelectValue placeholder="Select video codec" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {videoCodecs.map(codec => (
+                                                <SelectItem key={codec} value={codec}>{codec}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="audioCodec" className="text-right col-span-1">
+                                        Audio Codec
+                                    </Label>
+                                    <Select
+                                        value={audioCodecFilter || 'All'}
+                                        onValueChange={(value) => setAudioCodecFilter(value === 'All' ? '' : value)}
+                                    >
+                                        <SelectTrigger className="col-span-3">
+                                            <SelectValue placeholder="Select audio codec" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {audioCodecs.map(codec => (
+                                                <SelectItem key={codec} value={codec}>{codec}</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+                            <SheetFooter>
+                                <SheetClose asChild>
+                                    <Button type="button" variant="outline">Close</Button>
+                                </SheetClose>
+                                <SheetClose asChild>
+                                    <Button type="button" onClick={() => fetchMedia()}>Apply Filters</Button>
+                                </SheetClose>
+                            </SheetFooter>
+                        </SheetContent>
+                    </Sheet>
+                </div>
             </div>
 
             {error && <p className="text-red-500 bg-red-100 p-3 rounded-md">{error}</p>}
@@ -282,7 +458,7 @@ const Media: React.FC = () => {
                                         >
                                             <div 
                                                 className="flex items-center space-x-1 overflow-hidden text-ellipsis cursor-grab active:cursor-grabbing"
-                                                onClick={header.column.getToggleSortingHandler()}
+                                                onClick={header.column.getCanSort() ? header.column.getToggleSortingHandler() : undefined}
                                                 title={header.column.getCanSort() ? 'Click to sort' : undefined}
                                             >
                                                 <span>
