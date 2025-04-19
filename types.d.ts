@@ -30,6 +30,21 @@ type GpuInfo = {
 
 type UnsubscribeFunction = () => void;
 
+// Added Hardware Info Types
+type HardwareInfo = {
+    id: number;
+    device_type: 'CPU' | 'GPU';
+    vendor: string;
+    model: string;
+    cores_threads: number | null;
+    base_clock_mhz: number | null;
+    memory_mb: number | null;
+    is_enabled: boolean;
+    priority: number;
+    added_at: string;
+    last_updated: string;
+}
+
 type EventPayloadMapping = {
     statistics: Statistics;
     getStaticData: StaticData;
@@ -53,6 +68,11 @@ type EventPayloadMapping = {
     // Added types for manual VRAM override
     'get-manual-gpu-vram': number | null;
     'set-manual-gpu-vram': void; // Payload: number | null
+    // Added hardware info mappings
+    "get-hardware-info": HardwareInfo[];
+    "update-hardware-priority": void;
+    "update-hardware-enabled": void;
+    "refresh-hardware-info": HardwareInfo[];
 }
 
 // --- Added Watched Folder Type --- Duplicated from main.ts for global scope
@@ -87,5 +107,10 @@ interface Window {
         // Added functions for manual VRAM
         getManualGpuVram: () => Promise<number | null>;
         setManualGpuVram: (vramMb: number | null) => Promise<void>;
+        // Added hardware info methods
+        getHardwareInfo: () => Promise<HardwareInfo[]>;
+        updateHardwarePriority: (deviceId: number, priority: number) => Promise<void>;
+        updateHardwareEnabled: (deviceId: number, isEnabled: boolean) => Promise<void>;
+        refreshHardwareInfo: () => Promise<HardwareInfo[]>;
     }
 }

@@ -26,6 +26,10 @@ electron.contextBridge.exposeInMainWorld("electron", {
         }),
     getManualGpuVram: () => ipcInvoke("get-manual-gpu-vram"),
     setManualGpuVram: (vramMb) => ipcInvoke("set-manual-gpu-vram", vramMb),
+    getHardwareInfo: () => ipcInvoke("get-hardware-info"),
+    updateHardwarePriority: (deviceId: number, priority: number) => ipcInvoke("update-hardware-priority", deviceId, priority),
+    updateHardwareEnabled: (deviceId: number, isEnabled: boolean) => ipcInvoke("update-hardware-enabled", deviceId, isEnabled),
+    refreshHardwareInfo: () => ipcInvoke("refresh-hardware-info"),
 } satisfies Window['electron'])
 
 function ipcInvoke<Key extends keyof EventPayloadMapping>(key: Key, ...args: any[]): Promise<EventPayloadMapping[Key]> {

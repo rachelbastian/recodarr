@@ -36,7 +36,7 @@ const Navbar: React.FC = () => {
   return (
     <div className="w-64 h-screen bg-background border-r flex flex-col">
       <div className="p-4 border-b h-14 flex items-center">
-        <h2 className="text-xl font-semibold text-foreground">Recodarr</h2>
+        <h2 className="text-xl font-semibold text-foreground">RE : COD | ARR</h2>
       </div>
       
       <div className="flex-1 overflow-y-auto p-3">

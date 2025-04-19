@@ -402,6 +402,104 @@ function pollSystemStats(window: BrowserWindow) {
     }, 2000); // Poll every 2 seconds
 }
 
+// --- Hardware Info Management ---
+function sanitizeHardwareString(str: string): string {
+    return str
+        .replace(/[^\x20-\x7E]/g, '') // Remove non-printable ASCII characters
+        .replace(/[®™©]/g, '')        // Remove common symbols that often get mangled
+        .replace(/\s+/g, ' ')         // Normalize whitespace
+        .trim();                      // Remove leading/trailing whitespace
+}
+
+interface CPUCore {
+    socket?: string;
+    speed: number;
+}
+
+interface CPUSpeed {
+    cores: Array<{
+        socket?: string;
+        speed: number;
+    }>;
+}
+
+async function gatherAndStoreHardwareInfo(): Promise<void> {
+    if (!db) {
+        console.error("Database not initialized. Cannot store hardware info.");
+        return;
+    }
+
+    try {
+        // Get CPU information
+        const [cpuData, gpuData] = await Promise.all([
+            si.cpu(),
+            si.graphics()
+        ]);
+
+        // Process CPU information
+        // For multi-CPU systems, we'll create an entry for each physical CPU package
+        const physicalCPUs = new Set(Array.isArray(cpuData.processors) ? cpuData.processors : [0]); // Default to single CPU if no processor info
+        
+        for (const processor of physicalCPUs) {
+            const cpuEntry = {
+                device_type: 'CPU',
+                vendor: sanitizeHardwareString(cpuData.manufacturer),
+                model: sanitizeHardwareString(cpuData.brand),
+                device_id: `cpu${processor}`,
+                cores_threads: Math.floor(cpuData.cores / physicalCPUs.size), // Divide cores among physical CPUs
+                base_clock_mhz: cpuData.speed,
+                memory_mb: Math.round((cpuData.cache?.l3 || 0) / 1024),
+            };
+
+            const cpuStmt = db.prepare(`
+                INSERT INTO hardware_info 
+                (device_type, vendor, model, device_id, cores_threads, base_clock_mhz, memory_mb, last_updated)
+                VALUES (@device_type, @vendor, @model, @device_id, @cores_threads, @base_clock_mhz, @memory_mb, CURRENT_TIMESTAMP)
+                ON CONFLICT(device_type, model, vendor, device_id) 
+                DO UPDATE SET 
+                    cores_threads=excluded.cores_threads,
+                    base_clock_mhz=excluded.base_clock_mhz,
+                    memory_mb=excluded.memory_mb,
+                    last_updated=CURRENT_TIMESTAMP
+            `);
+
+            cpuStmt.run(cpuEntry);
+        }
+
+        // Process each GPU with sanitized strings
+        for (const gpu of gpuData.controllers) {
+            // Skip Microsoft Basic Display Adapter and similar
+            if (gpu.vendor?.includes('Microsoft')) continue;
+
+            const gpuInfo = {
+                device_type: 'GPU',
+                vendor: sanitizeHardwareString(gpu.vendor || 'Unknown'),
+                model: sanitizeHardwareString(gpu.model || 'Unknown'),
+                device_id: gpu.deviceId || gpu.busAddress || String(Math.random()), // Use PCI ID or bus address if available
+                cores_threads: null,
+                base_clock_mhz: null,
+                memory_mb: gpu.memoryTotal || null,
+            };
+
+            const gpuStmt = db.prepare(`
+                INSERT INTO hardware_info 
+                (device_type, vendor, model, device_id, memory_mb, last_updated)
+                VALUES (@device_type, @vendor, @model, @device_id, @memory_mb, CURRENT_TIMESTAMP)
+                ON CONFLICT(device_type, model, vendor, device_id) 
+                DO UPDATE SET 
+                    memory_mb=excluded.memory_mb,
+                    last_updated=CURRENT_TIMESTAMP
+            `);
+
+            gpuStmt.run(gpuInfo);
+        }
+
+        console.log("Hardware information updated successfully");
+    } catch (error) {
+        console.error("Error gathering hardware information:", error);
+    }
+}
+
 app.on("ready", () => {
     const mainWindow = new BrowserWindow({
         // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
@@ -436,6 +534,25 @@ app.on("ready", () => {
                 encodingNodeId TEXT,
                 -- Ensure filePath is unique
                 UNIQUE(filePath)
+            );
+        `);
+
+        // Create hardware_info table
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS hardware_info (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_type TEXT NOT NULL CHECK(device_type IN ('CPU', 'GPU')),
+                vendor TEXT,
+                model TEXT NOT NULL,
+                device_id TEXT,                  -- Unique identifier for the device (e.g., CPU socket ID or GPU PCI ID)
+                cores_threads INTEGER,           -- For CPUs: physical_cores * threads_per_core
+                base_clock_mhz REAL,            -- Base clock speed in MHz
+                memory_mb INTEGER,              -- For GPUs: VRAM in MB, For CPUs: Cache size in MB
+                is_enabled BOOLEAN DEFAULT 1,    -- Whether this device should be used for transcoding
+                priority INTEGER DEFAULT 0,      -- Higher number = higher priority
+                added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(device_type, model, vendor, device_id) -- Unique combination including device_id
             );
         `);
 
@@ -679,6 +796,34 @@ app.on("ready", () => {
         return { status: 'Manual scan triggered' };
     });
     // --- End Scanner Trigger Handler ---
+
+    // Gather hardware info on startup
+    gatherAndStoreHardwareInfo();
+
+    // Add new IPC handlers for hardware info
+    ipcMain.handle('get-hardware-info', async () => {
+        if (!db) throw new Error("Database not initialized");
+        const stmt = db.prepare('SELECT * FROM hardware_info ORDER BY device_type, priority DESC');
+        return stmt.all();
+    });
+
+    ipcMain.handle('update-hardware-priority', async (_event, deviceId: number, priority: number) => {
+        if (!db) throw new Error("Database not initialized");
+        const stmt = db.prepare('UPDATE hardware_info SET priority = ? WHERE id = ?');
+        return stmt.run(priority, deviceId);
+    });
+
+    ipcMain.handle('update-hardware-enabled', async (_event, deviceId: number, isEnabled: boolean) => {
+        if (!db) throw new Error("Database not initialized");
+        const stmt = db.prepare('UPDATE hardware_info SET is_enabled = ? WHERE id = ?');
+        return stmt.run(isEnabled, deviceId);
+    });
+
+    ipcMain.handle('refresh-hardware-info', async () => {
+        await gatherAndStoreHardwareInfo();
+        const stmt = db.prepare('SELECT * FROM hardware_info ORDER BY device_type, priority DESC');
+        return stmt.all();
+    });
 })
 
 // Quit when all windows are closed, except on macOS.
