@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
 import Libraries from './pages/Libraries';
 import Media from './pages/Media';
+import Workflows from './pages/Workflows';
 import './App.css';
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
                             <Route path="/settings" element={<Settings />} />
                             <Route path="/libraries" element={<Libraries />} />
                             <Route path="/media" element={<Media />} />
+                            <Route path="/workflows" element={<Workflows />} />
                         </Routes>
                     </main>
                 </div>

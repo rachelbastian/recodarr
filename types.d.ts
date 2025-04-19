@@ -1,3 +1,5 @@
+import { Node, Edge } from 'reactflow';
+
 type Statistics = {
     cpuUsage: number;
     ramUsage: number;
@@ -45,6 +47,18 @@ type HardwareInfo = {
     last_updated: string;
 }
 
+// Add Workflow Types (matching main.ts)
+interface Workflow {
+    id: number;
+    name: string;
+    description: string;
+}
+
+interface WorkflowDetails extends Workflow {
+    nodes: Node[];
+    edges: Edge[];
+}
+
 type EventPayloadMapping = {
     statistics: Statistics;
     getStaticData: StaticData;
@@ -73,6 +87,11 @@ type EventPayloadMapping = {
     "update-hardware-priority": void;
     "update-hardware-enabled": void;
     "refresh-hardware-info": HardwareInfo[];
+    // Workflow handlers
+    'get-workflows': Workflow[];
+    'get-workflow-details': WorkflowDetails | null; // Payload: number (workflowId)
+    'save-workflow': number; // Payload: { id?, name, description, nodes, edges }, Returns: number (saved workflow ID)
+    'delete-workflow': { changes: number }; // Payload: number (workflowId)
 }
 
 // --- Added Watched Folder Type --- Duplicated from main.ts for global scope
@@ -112,5 +131,10 @@ interface Window {
         updateHardwarePriority: (deviceId: number, priority: number) => Promise<void>;
         updateHardwareEnabled: (deviceId: number, isEnabled: boolean) => Promise<void>;
         refreshHardwareInfo: () => Promise<HardwareInfo[]>;
+        // Workflow Handlers
+        getWorkflows: () => Promise<Workflow[]>;
+        getWorkflowDetails: (id: number) => Promise<WorkflowDetails | null>;
+        saveWorkflow: (workflowData: { id?: number; name: string; description: string; nodes: Node[]; edges: Edge[] }) => Promise<number>;
+        deleteWorkflow: (id: number) => Promise<{ changes: number }>;
     }
 }

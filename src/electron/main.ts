@@ -11,6 +11,10 @@ import Database from 'better-sqlite3';
 import fs from 'fs/promises';
 import ffprobeStatic from 'ffprobe-static';
 import * as chokidar from 'chokidar';
+import { Node, Edge } from 'reactflow';
+// Import types from the global declaration file
+// Note: Adjust the path if your types.d.ts is located elsewhere relative to main.ts
+import type { SystemStats, GpuInfo } from '../../types.js';
 
 // Initialize electron-store
 const store = new Store();
@@ -26,6 +30,19 @@ interface WatchedFolder {
     libraryType: 'TV' | 'Movies' | 'Anime';
 }
 // --- End Define Watched Folder Type ---
+
+// --- Define Workflow Types ---
+interface Workflow {
+    id: number;
+    name: string;
+    description: string;
+}
+
+interface WorkflowDetails extends Workflow {
+    nodes: Node[];
+    edges: Edge[];
+}
+// --- End Workflow Types ---
 
 // --- Database Setup ---
 let db: Database.Database;
@@ -537,6 +554,73 @@ app.on("ready", () => {
             );
         `);
 
+        // Create workflow related tables
+        db.exec(`
+            -- Main workflow table
+            CREATE TABLE IF NOT EXISTS workflows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT 1,
+                last_triggered_at DATETIME,
+                UNIQUE(name)
+            );
+
+            -- Workflow nodes table
+            CREATE TABLE IF NOT EXISTS workflow_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id INTEGER NOT NULL,
+                node_id TEXT NOT NULL,          -- ReactFlow node ID
+                node_type TEXT NOT NULL,        -- 'trigger' or 'action'
+                label TEXT NOT NULL,
+                description TEXT,
+                position_x REAL NOT NULL,
+                position_y REAL NOT NULL,
+                data JSON,                      -- Store additional node data as JSON
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                UNIQUE(workflow_id, node_id)
+            );
+
+            -- Workflow edges table
+            CREATE TABLE IF NOT EXISTS workflow_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id INTEGER NOT NULL,
+                edge_id TEXT NOT NULL,          -- ReactFlow edge ID
+                source_node_id TEXT NOT NULL,   -- Source node ID
+                target_node_id TEXT NOT NULL,   -- Target node ID
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                UNIQUE(workflow_id, edge_id)
+            );
+
+            -- Workflow execution history
+            CREATE TABLE IF NOT EXISTS workflow_executions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id INTEGER NOT NULL,
+                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_at DATETIME,
+                status TEXT CHECK( status IN ('running', 'completed', 'failed', 'cancelled') ),
+                error_message TEXT,
+                trigger_node_id TEXT NOT NULL,
+                execution_data JSON,            -- Store execution context/variables
+                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+            );
+        `);
+
+        // Create triggers to update workflows.updated_at
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS update_workflow_timestamp 
+            AFTER UPDATE ON workflows
+            BEGIN
+                UPDATE workflows 
+                SET updated_at = CURRENT_TIMESTAMP 
+                WHERE id = NEW.id;
+            END;
+        `);
+
         // Create hardware_info table
         db.exec(`
             CREATE TABLE IF NOT EXISTS hardware_info (
@@ -824,6 +908,137 @@ app.on("ready", () => {
         const stmt = db.prepare('SELECT * FROM hardware_info ORDER BY device_type, priority DESC');
         return stmt.all();
     });
+
+    // --- Workflow Management Handlers ---
+
+    ipcMain.handle('get-workflows', async (): Promise<Workflow[]> => {
+        if (!db) throw new Error("Database not initialized");
+        try {
+            const stmt = db.prepare('SELECT id, name, description FROM workflows ORDER BY name');
+            return stmt.all() as Workflow[];
+        } catch (error) {
+            console.error("Error fetching workflows:", error);
+            throw error;
+        }
+    });
+
+    ipcMain.handle('get-workflow-details', async (_event, workflowId: number): Promise<WorkflowDetails | null> => {
+        if (!db) throw new Error("Database not initialized");
+        try {
+            const workflowStmt = db.prepare('SELECT id, name, description FROM workflows WHERE id = ?');
+            const workflow = workflowStmt.get(workflowId) as Workflow | undefined;
+            if (!workflow) return null;
+
+            const nodesStmt = db.prepare('SELECT node_id as id, node_type as type, position_x, position_y, data FROM workflow_nodes WHERE workflow_id = ?');
+            // Add explicit type for the result of nodesStmt.all()
+            const nodesData = nodesStmt.all(workflowId) as { id: string; type: string; position_x: number; position_y: number; data: string | null }[];
+            const nodes = nodesData.map(n => ({
+                id: n.id,
+                type: n.type,
+                position: { x: n.position_x, y: n.position_y },
+                data: n.data ? JSON.parse(n.data) : {} // Ensure data is parsed
+            }));
+
+            const edgesStmt = db.prepare('SELECT edge_id as id, source_node_id as source, target_node_id as target FROM workflow_edges WHERE workflow_id = ?');
+            // Add explicit type for the result of edgesStmt.all()
+            const edgesData = edgesStmt.all(workflowId) as { id: string; source: string; target: string }[];
+
+            return {
+                ...workflow,
+                nodes: nodes as Node[], // Assert type after mapping
+                edges: edgesData as Edge[], // Use the typed data
+            };
+        } catch (error) {
+            console.error(`Error fetching details for workflow ${workflowId}:`, error);
+            throw error;
+        }
+    });
+
+    ipcMain.handle('save-workflow', async (_event, workflowData: { id?: number; name: string; description: string; nodes: Node[]; edges: Edge[] }): Promise<number> => {
+        if (!db) throw new Error("Database not initialized");
+        const { id, name, description, nodes, edges } = workflowData;
+
+        // Use a transaction for atomicity
+        const transaction = db.transaction(() => {
+            let workflowId: number;
+
+            if (id) { // Update existing workflow
+                workflowId = id;
+                const updateWorkflowStmt = db.prepare(`
+                    UPDATE workflows 
+                    SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP 
+                    WHERE id = ?
+                `);
+                updateWorkflowStmt.run(name, description, workflowId);
+
+                // Clear existing nodes and edges for simplicity, then re-insert
+                db.prepare('DELETE FROM workflow_nodes WHERE workflow_id = ?').run(workflowId);
+                db.prepare('DELETE FROM workflow_edges WHERE workflow_id = ?').run(workflowId);
+            } else { // Insert new workflow
+                const insertWorkflowStmt = db.prepare('INSERT INTO workflows (name, description) VALUES (?, ?)');
+                const info = insertWorkflowStmt.run(name, description);
+                workflowId = Number(info.lastInsertRowid); // Get the new ID
+            }
+
+            // Insert nodes
+            const insertNodeStmt = db.prepare(`
+                INSERT INTO workflow_nodes (workflow_id, node_id, node_type, label, description, position_x, position_y, data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+            nodes.forEach(node => {
+                insertNodeStmt.run(
+                    workflowId,
+                    node.id,
+                    node.type || 'default', // Ensure type is provided
+                    node.data?.label || 'Unknown',
+                    node.data?.description || '',
+                    node.position.x,
+                    node.position.y,
+                    JSON.stringify(node.data || {}) // Store data as JSON string
+                );
+            });
+
+            // Insert edges
+            const insertEdgeStmt = db.prepare(`
+                INSERT INTO workflow_edges (workflow_id, edge_id, source_node_id, target_node_id)
+                VALUES (?, ?, ?, ?)
+            `);
+            edges.forEach(edge => {
+                insertEdgeStmt.run(
+                    workflowId,
+                    edge.id,
+                    edge.source,
+                    edge.target
+                );
+            });
+
+            return workflowId; // Return the ID of the saved/updated workflow
+        });
+
+        try {
+            const savedWorkflowId = transaction();
+            console.log(`Workflow ${id ? 'updated' : 'saved'} with ID: ${savedWorkflowId}`);
+            return savedWorkflowId;
+        } catch (error) {
+            console.error(`Error saving workflow (ID: ${id}):`, error);
+            throw error;
+        }
+    });
+
+    ipcMain.handle('delete-workflow', async (_event, workflowId: number): Promise<{ changes: number }> => {
+        if (!db) throw new Error("Database not initialized");
+        try {
+            // Due to CASCADE DELETE, deleting from workflows will also delete related nodes and edges
+            const stmt = db.prepare('DELETE FROM workflows WHERE id = ?');
+            const info = stmt.run(workflowId);
+            console.log(`Deleted workflow ID: ${workflowId}, changes: ${info.changes}`);
+            return { changes: info.changes };
+        } catch (error) {
+            console.error(`Error deleting workflow ${workflowId}:`, error);
+            throw error;
+        }
+    });
+    // --- End Workflow Management Handlers ---
 })
 
 // Quit when all windows are closed, except on macOS.

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Settings, BarChart2, Search, Library, PlusCircle, Film } from 'lucide-react';
+import { Home, Settings, BarChart2, Search, Library, PlusCircle, Film, Share2 } from 'lucide-react';
 import { cn } from "@/lib/utils"; // Assuming @ alias is setup
 import { Button } from "@/components/ui/button"; // Assuming @ alias is setup
 
@@ -45,6 +45,7 @@ const Navbar: React.FC = () => {
           <SidebarItem icon={<BarChart2 className="h-4 w-4" />} label="Statistics" href="/statistics" active={isActive('/statistics')} />
           <SidebarItem icon={<Film className="h-4 w-4" />} label="Media" href="/media" active={isActive('/media')} />
           <SidebarItem icon={<Library className="h-4 w-4" />} label="Libraries" href="/libraries" active={isActive('/libraries')} />
+          <SidebarItem icon={<Share2 className="h-4 w-4" />} label="Workflows" href="/workflows" active={isActive('/workflows')} />
         </div>
         
         <div className="mt-8">

@@ -1,6 +1,8 @@
 import { ipcMain, WebContents, WebFrameMain } from "electron";
 import { getUIPath } from "./pathResolver.js";
 import { pathToFileURL } from "url";
+// Import EventPayloadMapping type
+import type { EventPayloadMapping } from '../../types.js';
 
 // Checks if you are in development mode
 export function isDev(): boolean {
@@ -17,7 +19,8 @@ export function ipcMainHandle<Key extends keyof EventPayloadMapping>(key: Key, h
 }
 
 export function ipcWebContentsSend<Key extends keyof EventPayloadMapping>(key: Key, webContents: WebContents, payload: EventPayloadMapping[Key]) {
-    webContents.send(key, payload);
+    // Assert key is a string, as EventPayloadMapping keys are always strings
+    webContents.send(key as string, payload);
 }
 
 export function validateEventFrame(frame: WebFrameMain) {
