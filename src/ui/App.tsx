@@ -5,7 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
 import Libraries from './pages/Libraries';
 import Media from './pages/Media';
-import Workflows from './pages/Workflows';
+import Workflows from './pages/workflows';
 import './App.css';
 
 function App() {

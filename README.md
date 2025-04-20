@@ -1,13 +1,18 @@
 <h1 align="center">RE:CODARR</h1>
 
-A minimal effort Windows App to reclaim storage space in your home media library. 
+An easy to use Windows App to organize and reclaim precious space in your home media Library.  
 
 Features: 
+Automatic Library Monitoring and Indexing.
+    Track File Size, Encoding Parameters and More!
+    Fully Searchable and indexed in a localdb
+Workflow editor
+    Easily Create conditional workflows to automate your library encode without overloading your system. 
 System Monitor for CPU/GPU Stats (AMD/Nvidia)
 Powershell Integration for Intel IGPU's and ARC (WARNING: MAY TRIGGER AV USE AT OWN DISCRETION!)
 
 ## Project Setup
-#### It works on Windows but I haven't tested it on neither Linux nor Mac
+#### Designed for Windows
 1. Clone the repository
 1. Run **```npm install```** inside the cloned repository
 

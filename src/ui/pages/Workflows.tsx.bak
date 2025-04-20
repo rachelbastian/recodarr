@@ -150,39 +150,20 @@ const TriggerNode = ({ data, id, selected }: NodeProps<NodeData>) => {
   // Configuration panel reference
   const configRef = useRef<HTMLDivElement>(null);
   
-  // Close if clicked outside (except when clicking on the settings button or any dropdown)
+  // Close if clicked outside (except when clicking on the settings button)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      // Don't close if clicked on the config panel itself or any of its children
-      if (configRef.current?.contains(event.target as HTMLElement)) {
-        return;
-      }
-      
-      // Don't close if clicked on the settings button that opens the panel
-      if ((event.target as HTMLElement).closest('[data-trigger-settings-button]')) {
-        return;
-      }
-      
-      // Don't close if the click is on a radix UI dropdown or popover (portalled content)
-      const target = event.target as HTMLElement;
       if (
-        target.closest('[role="dialog"]') || 
-        target.closest('[role="listbox"]') || 
-        target.closest('[role="menu"]') ||
-        target.closest('[data-radix-popper-content-wrapper]')
+        configRef.current && 
+        !configRef.current.contains(event.target as HTMLElement) &&
+        !(event.target as HTMLElement).closest('[data-trigger-settings-button]')
       ) {
-        return;
+        setIsConfigOpen(false);
       }
-      
-      // If we reached here, it's a valid outside click - close the panel
-      setIsConfigOpen(false);
     };
 
     if (isConfigOpen) {
-      // Use a slight delay to avoid immediate closing when opening a dropdown
-      setTimeout(() => {
-        document.addEventListener('mousedown', handleClickOutside);
-      }, 100);
+      document.addEventListener('mousedown', handleClickOutside);
     }
     
     return () => {
@@ -270,18 +251,13 @@ const TriggerNode = ({ data, id, selected }: NodeProps<NodeData>) => {
             overflowY: 'auto',
             position: 'absolute'
           }}
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
         >
           <TriggerConfigPanel nodeId={id} triggerType={data.triggerConfig?.type || getTriggerTypeFromLabel(data.label)} />
           <div className="flex justify-end p-2 border-t">
             <Button 
               size="sm" 
               variant="ghost" 
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsConfigOpen(false);
-              }}
+              onClick={() => setIsConfigOpen(false)}
               className="text-xs"
             >
               Close
@@ -301,46 +277,6 @@ const TriggerNode = ({ data, id, selected }: NodeProps<NodeData>) => {
   );
 };
 
-// Enhanced wrapper for Select components to prevent propagation issues
-const SafeSelect = ({
-  value,
-  onValueChange,
-  children,
-  placeholder
-}: {
-  value: string;
-  onValueChange: (value: string) => void;
-  children: React.ReactNode;
-  placeholder: string;
-}) => {
-  // Stop all events from bubbling up to parent handlers
-  const handleMouseDown = (e: React.MouseEvent) => e.stopPropagation();
-  const handleMouseUp = (e: React.MouseEvent) => e.stopPropagation();
-  const handleClick = (e: React.MouseEvent) => e.stopPropagation();
-
-  return (
-    <Select value={value} onValueChange={onValueChange}>
-      <SelectTrigger 
-        className="w-full h-8 text-xs"
-        onClick={handleClick}
-        onMouseDown={handleMouseDown}
-        onMouseUp={handleMouseUp}
-      >
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent 
-        position="popper" 
-        sideOffset={5} 
-        side="bottom" 
-        align="start"
-        className="z-[9999]"
-      >
-        {children}
-      </SelectContent>
-    </Select>
-  );
-};
-
 // TriggerConfigPanel component
 interface TriggerConfigPanelProps {
   nodeId: string;
@@ -350,11 +286,6 @@ interface TriggerConfigPanelProps {
 const TriggerConfigPanel = ({ nodeId, triggerType }: TriggerConfigPanelProps) => {
   const { getNodes, setNodes } = useReactFlow();
   const [config, setConfig] = useState<TriggerConfig | null>(null);
-  
-  // Prevent triggering parent events
-  const stopPropagation = (e: React.MouseEvent) => {
-    e.stopPropagation();
-  };
   
   // Find the current node and load its configuration
   useEffect(() => {
@@ -427,11 +358,7 @@ const TriggerConfigPanel = ({ nodeId, triggerType }: TriggerConfigPanelProps) =>
   switch (config.type) {
     case 'system-usage':
       return (
-        <div 
-          className="p-4 space-y-4 max-w-full"
-          onClick={stopPropagation}
-          onMouseDown={stopPropagation}
-        >
+        <div className="p-4 space-y-4 max-w-full">
           <h3 className="font-semibold flex items-center gap-2 text-sm">
             <Cpu className="w-4 h-4" />
             System Usage Trigger
@@ -440,31 +367,39 @@ const TriggerConfigPanel = ({ nodeId, triggerType }: TriggerConfigPanelProps) =>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs">Resource</Label>
-              <SafeSelect 
+              <Select 
                 value={(config as SystemUsageTriggerConfig).resourceType}
                 onValueChange={(value) => 
                   updateSystemUsageConfig('resourceType', value as SystemUsageTriggerConfig['resourceType'])
                 }
-                placeholder="Select resource"
               >
-                <SelectItem value="cpu">CPU</SelectItem>
-                <SelectItem value="memory">Memory</SelectItem>
-                <SelectItem value="gpu">GPU</SelectItem>
-              </SafeSelect>
+                <SelectTrigger className="w-full h-8 text-xs">
+                  <SelectValue placeholder="Select resource" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cpu">CPU</SelectItem>
+                  <SelectItem value="memory">Memory</SelectItem>
+                  <SelectItem value="gpu">GPU</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             
             <div>
               <Label className="text-xs">Condition</Label>
-              <SafeSelect 
+              <Select 
                 value={(config as SystemUsageTriggerConfig).operator}
                 onValueChange={(value) => 
                   updateSystemUsageConfig('operator', value as SystemUsageTriggerConfig['operator'])
                 }
-                placeholder="Select condition"
               >
-                <SelectItem value="above">Above threshold</SelectItem>
-                <SelectItem value="below">Below threshold</SelectItem>
-              </SafeSelect>
+                <SelectTrigger className="w-full h-8 text-xs">
+                  <SelectValue placeholder="Select condition" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="above">Above threshold</SelectItem>
+                  <SelectItem value="below">Below threshold</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           
@@ -501,11 +436,7 @@ const TriggerConfigPanel = ({ nodeId, triggerType }: TriggerConfigPanelProps) =>
       
     case 'time':
       return (
-        <div 
-          className="p-4 space-y-4 max-w-full"
-          onClick={stopPropagation}
-          onMouseDown={stopPropagation}
-        >
+        <div className="p-4 space-y-4 max-w-full">
           <h3 className="font-semibold flex items-center gap-2 text-sm">
             <Clock className="w-4 h-4" />
             Time Schedule Trigger
@@ -513,17 +444,21 @@ const TriggerConfigPanel = ({ nodeId, triggerType }: TriggerConfigPanelProps) =>
           
           <div className="space-y-2">
             <Label className="text-xs">Schedule Type</Label>
-            <SafeSelect 
+            <Select 
               value={(config as TimeTriggerConfig).schedule}
               onValueChange={(value) => 
                 updateTimeConfig('schedule', value as TimeTriggerConfig['schedule'])
               }
-              placeholder="Select schedule type"
             >
-              <SelectItem value="once">Run once</SelectItem>
-              <SelectItem value="daily">Run daily</SelectItem>
-              <SelectItem value="weekly">Run weekly</SelectItem>
-            </SafeSelect>
+              <SelectTrigger className="w-full h-8 text-xs">
+                <SelectValue placeholder="Select schedule type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="once">Run once</SelectItem>
+                <SelectItem value="daily">Run daily</SelectItem>
+                <SelectItem value="weekly">Run weekly</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           
           <div className="space-y-2">
@@ -580,11 +515,7 @@ const TriggerConfigPanel = ({ nodeId, triggerType }: TriggerConfigPanelProps) =>
       
     case 'on-demand':
       return (
-        <div 
-          className="p-4 space-y-4 max-w-full"
-          onClick={stopPropagation}
-          onMouseDown={stopPropagation}
-        >
+        <div className="p-4 space-y-4 max-w-full">
           <h3 className="font-semibold flex items-center gap-2 text-sm">
             <Play className="w-4 h-4" />
             Manual Trigger
@@ -613,10 +544,7 @@ const TriggerConfigPanel = ({ nodeId, triggerType }: TriggerConfigPanelProps) =>
       
     default:
       return (
-        <div 
-          className="p-4 max-w-full"
-          onClick={stopPropagation}
-        >
+        <div className="p-4 max-w-full">
           <h3 className="font-semibold text-sm">Unknown trigger type</h3>
           <p className="text-xs text-zinc-400">
             Trigger type "{(config as BaseTriggerConfig).type}" is not recognized.
