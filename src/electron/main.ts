@@ -12,9 +12,24 @@ import fs from 'fs/promises';
 import ffprobeStatic from 'ffprobe-static';
 import * as chokidar from 'chokidar';
 import { Node, Edge } from 'reactflow';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegStatic from 'ffmpeg-static';
+import fsSync from 'fs';
 // Import types from the global declaration file
 // Note: Adjust the path if your types.d.ts is located elsewhere relative to main.ts
 import type { SystemStats, GpuInfo } from '../../types.js';
+
+// --- FFMPEG Configuration ---
+// Log the path provided by ffmpeg-static
+console.log(`[FFMPEG Config] Path from ffmpeg-static: ${ffmpegStatic}`);
+// Set the path to the ffmpeg binary from the static package
+try {
+    ffmpeg.setFfmpegPath(ffmpegStatic as unknown as string);
+    console.log(`[FFMPEG Config] Successfully set ffmpeg path.`);
+} catch (error) {
+    console.error(`[FFMPEG Config] Error setting ffmpeg path:`, error);
+}
+// --- End FFMPEG Configuration ---
 
 // Initialize electron-store
 const store = new Store();
@@ -136,7 +151,7 @@ function unwatchPath(folderPath: string) {
 
 async function probeFile(filePath: string): Promise<any | null> {
     console.log(`Probing file: ${filePath}`);
-    const ffprobePath = ffprobeStatic.path;
+    const ffprobePath = ffprobeStatic && typeof ffprobeStatic === 'object' && 'path' in ffprobeStatic ? ffprobeStatic.path : ffprobeStatic as string;
     const args = [
         '-v', 'error',          // Less verbose output
         '-show_format',       // Get format info (size, duration)
@@ -517,6 +532,166 @@ async function gatherAndStoreHardwareInfo(): Promise<void> {
     }
 }
 
+// --- FFMPEG Transcoding Test Function ---
+async function runFFMPEGTest() {
+    // Revert to hardcoded paths with double backslashes for Windows
+    const cacheDir = 'Z:\\transcode_cache';
+    const inputFilePath = 'Z:\\transcode_cache\\moonriseSample.mkv';
+    const outputFilePath = 'Z:\\transcode_cache\\output.mkv';
+
+    console.log(`[FFMPEG Test] Using hardcoded input path: "${inputFilePath}"`);
+    console.log(`[FFMPEG Test] Using hardcoded output path: "${outputFilePath}"`);
+
+    try {
+        // Create transcode cache directory if it doesn't exist
+        try {
+            // Use the original cacheDir variable for consistency
+            if (!fsSync.existsSync(cacheDir)) {
+                console.log(`[FFMPEG Test] Creating transcode cache directory: ${cacheDir}`);
+                await fs.mkdir(cacheDir, { recursive: true });
+            }
+        } catch (dirError) {
+            console.error(`[FFMPEG Test] Error creating transcode cache directory: ${dirError}`);
+            return;
+        }
+
+        // Check if input file exists using the hardcoded path
+        if (!fsSync.existsSync(inputFilePath)) {
+            console.error(`[FFMPEG Test] Input file not found: ${inputFilePath}`);
+            console.error(`[FFMPEG Test] Please place a sample video file at ${inputFilePath} to run the test`);
+            return;
+        }
+
+        // Get initial file size
+        const stats = await fs.stat(inputFilePath);
+        const initialSizeMB = stats.size / (1024 * 1024);
+        console.log(`[FFMPEG Test] Starting transcoding test...`);
+        console.log(`[FFMPEG Test] Input file: ${inputFilePath}`);
+        console.log(`[FFMPEG Test] Initial file size: ${initialSizeMB.toFixed(2)} MB`);
+
+        // Create a promise to handle the ffmpeg process
+        return new Promise((resolve, reject) => {
+            try {
+                /*
+                // --- TEMPORARY: Inspect Input File Streams ---
+                console.log(`[FFMPEG Inspect] Running: ffmpeg -i "${inputFilePath}"`);
+                
+                const commandString = `"${ffmpegStatic}" -i "${inputFilePath}"`;
+                
+                exec(commandString, (error, stdout, stderr) => {
+                    console.log('[FFMPEG Inspect] --- STDOUT ---');
+                    console.log(stdout);
+                    console.log('[FFMPEG Inspect] --- STDERR ---');
+                    console.error(stderr); // ffmpeg info often goes to stderr
+                    
+                    if (error) {
+                        console.error(`[FFMPEG Inspect] Error executing ffmpeg -i: ${error.message}`);
+                        reject(error);
+                        return;
+                    }
+                    
+                    console.log('[FFMPEG Inspect] Inspection complete. Please check logs for stream info.');
+                    console.log('[FFMPEG Inspect] Re-enable transcoding logic after inspection.');
+                    resolve(true); // Resolve promise after inspection
+                });
+                // --- END TEMPORARY INSPECTION ---
+                */
+
+                // --- ORIGINAL TRANSCODING LOGIC (Now Active) ---
+                // Create a new ffmpeg command
+                const command = ffmpeg();
+
+                // Add input file using the hardcoded string path (with double backslashes)
+                command.input(inputFilePath);
+
+                // Add input options
+                command.inputOption('-hwaccel auto');
+
+                // Add output options - including stream mapping
+                command.outputOptions([
+                    // --- Stream Mapping ---
+                    '-map 0:v:0',                   // Map video stream 0
+                    '-map 0:a:1',                   // Map audio stream index 1 (second audio track)
+                    '-map 0:s:m:language:eng?',     // Map English subtitle stream (optional)
+
+                    // --- Codecs for Mapped Streams ---
+                    // Video (Output Stream 0)
+                    '-c:v hevc_qsv',
+                    '-preset:v faster',
+                    '-global_quality:v 28',
+                    '-look_ahead 1',
+                    '-pix_fmt p010le',
+
+                    // Audio (Output Stream 1 - the mapped audio track 1)
+                    '-c:a libopus',              // Re-encode audio with Opus
+                    '-b:a 128k',              // Set Opus bitrate
+                    '-af pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE', // Custom pan/downmix filter
+
+                    // Subtitles (Output Stream 2 - the mapped English subs)
+                    '-c:s copy',
+
+                    // --- General Options ---
+                    '-hide_banner',
+                    '-v verbose',
+                    '-y'
+                ]);
+
+                // Set output file using the hardcoded string path (with double backslashes)
+                command.output(outputFilePath);
+
+                // Add event handlers
+                command.on('start', (commandLine: string) => {
+                    console.log(`[FFMPEG Test] Command: ${commandLine}`);
+                });
+
+                command.on('progress', (progress: { percent?: number }) => {
+                    console.log(`[FFMPEG Test] Processing: ${progress.percent ? progress.percent.toFixed(1) : '0'}% done`);
+                });
+
+                command.on('stderr', (stderrLine: string) => {
+                    console.log(`[FFMPEG Test] stderr: ${stderrLine}`);
+                });
+
+                command.on('error', (err: any) => {
+                    console.error(`[FFMPEG Test] Error: ${err.message}`);
+                    console.error(err);
+                    reject(err);
+                });
+
+                command.on('end', async () => {
+                    try {
+                        // Get final file size
+                        const finalStats = await fs.stat(outputFilePath);
+                        const finalSizeMB = finalStats.size / (1024 * 1024);
+                        const reductionPercent = ((1 - (finalStats.size / stats.size)) * 100).toFixed(2);
+
+                        console.log(`[FFMPEG Test] Transcoding complete!`);
+                        console.log(`[FFMPEG Test] Initial file size: ${initialSizeMB.toFixed(2)} MB`);
+                        console.log(`[FFMPEG Test] Final file size: ${finalSizeMB.toFixed(2)} MB`);
+                        console.log(`[FFMPEG Test] Size reduction: ${reductionPercent}%`);
+                        resolve(true);
+                    } catch (error) {
+                        console.error(`[FFMPEG Test] Error getting final file stats: ${error}`);
+                        reject(error);
+                    }
+                });
+
+                // Start the ffmpeg process
+                console.log(`[FFMPEG Test] Running ffmpeg...`);
+                command.run();
+                 // --- END ORIGINAL TRANSCODING LOGIC ---
+                 
+            } catch (err) {
+                console.error(`[FFMPEG Test] Error setting up ffmpeg command: ${err}`);
+                reject(err);
+            }
+        });
+    } catch (error) {
+        console.error(`[FFMPEG Test] Error in FFMPEG test: ${error}`);
+    }
+}
+// --- End FFMPEG Transcoding Test Function ---
+
 app.on("ready", () => {
     const mainWindow = new BrowserWindow({
         // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
@@ -524,6 +699,12 @@ app.on("ready", () => {
             preload: getPreloadPath(),
         }
     });
+
+    // Run the FFMPEG test when app starts
+    console.log('[App] Running FFMPEG transcoding test...');
+    runFFMPEGTest()
+        .then(() => console.log('[App] FFMPEG test completed'))
+        .catch(err => console.error('[App] FFMPEG test failed:', err));
 
     // --- Initialize Database ---
     let dbPath: string | undefined;
