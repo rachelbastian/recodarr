@@ -59,11 +59,13 @@ interface WorkflowDetails extends Workflow {
     edges: Edge[];
 }
 
-type EventPayloadMapping = {
-    statistics: Statistics;
+declare interface EventPayloadMapping {
+    'statistics': Statistics;
+    'system-stats-update': SystemStats;
+    'scan-status-update': { status: 'running' | 'finished'; message: string };
+    'startEncoding': { success: boolean; reduction?: number; error?: string };
+    'encodingProgress': { progress?: number; status?: string };
     getStaticData: StaticData;
-    "system-stats-update": SystemStats;
-    // Corrected IPC channels to represent resolved types
     getAvailableGpus: GpuInfo[];
     getSelectedGpu: string | null;
     setSelectedGpu: void; // Handler payload is model: string | null, return is void/Promise<void>
@@ -78,7 +80,6 @@ type EventPayloadMapping = {
     'remove-watched-folder': void; // Payload: string (folderPath)
     // Added types for scanner
     'trigger-scan': { status: string }; // Payload: none
-    'scan-status-update': { status: 'running' | 'finished' | 'error'; message: string }; // Event sent FROM main TO renderer
     // Added types for manual VRAM override
     'get-manual-gpu-vram': number | null;
     'set-manual-gpu-vram': void; // Payload: number | null
@@ -136,5 +137,8 @@ interface Window {
         getWorkflowDetails: (id: number) => Promise<WorkflowDetails | null>;
         saveWorkflow: (workflowData: { id?: number; name: string; description: string; nodes: Node[]; edges: Edge[] }) => Promise<number>;
         deleteWorkflow: (id: number) => Promise<{ changes: number }>;
+        // Encoding Handlers
+        startEncoding: () => Promise<{ success: boolean; reduction?: number; error?: string }>;
+        subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string }) => void) => UnsubscribeFunction;
     }
 }

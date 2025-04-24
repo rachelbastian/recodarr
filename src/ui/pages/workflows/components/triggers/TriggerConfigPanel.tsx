@@ -1,16 +1,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useReactFlow } from 'reactflow';
 import { Cpu, Clock, Play } from 'lucide-react';
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Slider } from "@/components/ui/slider";
+import { Label } from "src/components/ui/label";
+import { Input } from "src/components/ui/input";
+import { Slider } from "src/components/ui/slider";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "src/components/ui/select";
 import { 
   TriggerConfig, 
   SystemUsageTriggerConfig, 

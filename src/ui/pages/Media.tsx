@@ -13,15 +13,15 @@ import {
     getPaginationRowModel,
     PaginationState,
 } from '@tanstack/react-table';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../@/components/ui/table";
-import { Badge } from "../../../@/components/ui/badge"; // For displaying library type
-import { Button } from "../../../@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../src/components/ui/table";
+import { Badge } from "../../../src/components/ui/badge"; // For displaying library type
+import { Button } from "../../../src/components/ui/button";
 import {
     DropdownMenu,
     DropdownMenuCheckboxItem,
     DropdownMenuContent,
     DropdownMenuTrigger,
-} from "../../../@/components/ui/dropdown-menu";
+} from "../../../src/components/ui/dropdown-menu";
 import { Columns } from 'lucide-react';
 import { SlidersHorizontal } from 'lucide-react'; // Import icon for advanced search
 import {
@@ -33,12 +33,12 @@ import {
     SheetTrigger,
     SheetFooter,
     SheetClose,
-} from "../../../@/components/ui/sheet"; // Import Sheet components
-import { Input } from "../../../@/components/ui/input"; // Import Input
-import { Label } from "../../../@/components/ui/label"; // Import Label
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../@/components/ui/select"; // Import Select
+} from "../../../src/components/ui/sheet"; // Import Sheet components
+import { Input } from "../../../src/components/ui/input"; // Import Input
+import { Label } from "../../../src/components/ui/label"; // Import Label
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../src/components/ui/select"; // Import Select
 import { ChevronFirst, ChevronLeft, ChevronRight, ChevronLast } from 'lucide-react';
-import { ScrollArea, ScrollBar } from "../../../@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "../../../src/components/ui/scroll-area";
 
 // Define the type for a media item from the DB
 interface MediaItem {

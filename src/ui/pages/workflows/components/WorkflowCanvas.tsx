@@ -8,7 +8,7 @@ import ReactFlow, {
   NodeTypes,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Button } from "@/components/ui/button";
+import { Button } from "src/components/ui/button";
 import { Zap } from 'lucide-react';
 import { useWorkflows } from '../context/WorkflowsContext';
 import { TriggerNode } from './nodes/TriggerNode';

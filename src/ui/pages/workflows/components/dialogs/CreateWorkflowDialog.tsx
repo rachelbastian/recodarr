@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { Plus, Loader2 } from 'lucide-react';
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "src/components/ui/button";
+import { Input } from "src/components/ui/input";
+import { Label } from "src/components/ui/label";
+import { Textarea } from "src/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog";
+} from "src/components/ui/dialog";
 import { useWorkflows } from '../../context/WorkflowsContext';
 
 export const CreateWorkflowDialog: React.FC = () => {

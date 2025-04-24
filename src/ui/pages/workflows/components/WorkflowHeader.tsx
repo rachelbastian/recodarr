@@ -1,6 +1,6 @@
 import React from 'react';
 import { Plus, Edit, X, Save, Trash2, Loader2 } from 'lucide-react';
-import { Button } from "@/components/ui/button";
+import { Button } from "src/components/ui/button";
 import { useWorkflows } from '../context/WorkflowsContext';
 import { CreateWorkflowDialog } from './dialogs/CreateWorkflowDialog';
 import { DeleteWorkflowDialog } from './dialogs/DeleteWorkflowDialog';

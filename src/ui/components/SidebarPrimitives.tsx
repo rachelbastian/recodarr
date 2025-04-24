@@ -2,7 +2,7 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Home, Settings, BarChart2, Search, Library, PlusCircle } from 'lucide-react';
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { Button } from "src/components/ui/button";
 
 interface SidebarItemProps {
   icon: React.ReactNode;

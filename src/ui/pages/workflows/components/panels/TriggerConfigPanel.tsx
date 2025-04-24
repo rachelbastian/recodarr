@@ -1,10 +1,10 @@
 import React from 'react';
 import { Cpu, Clock, Play } from 'lucide-react';
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
+import { Button } from "src/components/ui/button";
+import { Input } from "src/components/ui/input";
+import { Label } from "src/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "src/components/ui/select";
+import { Slider } from "src/components/ui/slider";
 import { useWorkflows } from '../../context/WorkflowsContext';
 import { SystemUsageTriggerConfig, TimeTriggerConfig, OnDemandTriggerConfig } from '../../config/triggerTypes';
 

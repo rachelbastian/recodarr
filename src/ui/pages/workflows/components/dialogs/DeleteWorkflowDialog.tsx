@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Trash2, Loader2 } from 'lucide-react';
-import { Button } from "@/components/ui/button";
+import { Button } from "src/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,7 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog";
+} from "src/components/ui/dialog";
 import { useWorkflows } from '../../context/WorkflowsContext';
 
 export const DeleteWorkflowDialog: React.FC = () => {

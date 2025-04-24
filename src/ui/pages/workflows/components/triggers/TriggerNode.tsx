@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { Settings, Cpu, Zap, HardDrive, Clock, Play } from 'lucide-react';
-import { Button } from "@/components/ui/button";
+import { Button } from "src/components/ui/button";
 import { cn } from "@/lib/utils";
 import { NodeData } from '../../types';
 import { getTriggerTypeFromLabel } from './TriggerTypes';

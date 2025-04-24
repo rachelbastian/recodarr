@@ -5,12 +5,12 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "../../../@/components/ui/select";
-import { Label } from "../../../@/components/ui/label";
-import { Switch } from "../../../@/components/ui/switch";
-import { Input } from "../../../@/components/ui/input";
-import { Button } from "../../../@/components/ui/button";
-import { Alert, AlertDescription, AlertTitle } from "../../../@/components/ui/alert";
+} from "../../../src/components/ui/select";
+import { Label } from "../../../src/components/ui/label";
+import { Switch } from "../../../src/components/ui/switch";
+import { Input } from "../../../src/components/ui/input";
+import { Button } from "../../../src/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "../../../src/components/ui/alert";
 import { Terminal, GripVertical, ArrowUpDown } from 'lucide-react';
 import {
   Table,
@@ -19,7 +19,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "../../../@/components/ui/table";
+} from "../../../src/components/ui/table";
 import {
   DndContext, 
   closestCenter,

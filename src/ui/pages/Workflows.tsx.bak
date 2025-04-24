@@ -18,10 +18,10 @@ import ReactFlow, {
   useReactFlow,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Button } from "../../../@/components/ui/button";
-import { Input } from "../../../@/components/ui/input";
-import { Label } from "../../../@/components/ui/label";
-import { Textarea } from "../../../@/components/ui/textarea";
+import { Button } from "../../../src/components/ui/button";
+import { Input } from "../../../src/components/ui/input";
+import { Label } from "../../../src/components/ui/label";
+import { Textarea } from "../../../src/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -30,13 +30,13 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "../../../@/components/ui/dialog";
+} from "../../../src/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "../../../@/components/ui/dropdown-menu";
+} from "../../../src/components/ui/dropdown-menu";
 import {
   Table,
   TableBody,
@@ -44,12 +44,12 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "../../../@/components/ui/table";
+} from "../../../src/components/ui/table";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "../../../@/components/ui/popover";
+} from "../../../src/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -58,18 +58,18 @@ import {
   SelectLabel,
   SelectTrigger,
   SelectValue,
-} from "../../../@/components/ui/select";
+} from "../../../src/components/ui/select";
 import {
   Slider
-} from "../../../@/components/ui/slider";
+} from "../../../src/components/ui/slider";
 import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
-} from "../../../@/components/ui/tabs";
+} from "../../../src/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { Separator } from "../../../@/components/ui/separator";
+import { Separator } from "../../../src/components/ui/separator";
 import { 
   Plus, 
   Clock, 

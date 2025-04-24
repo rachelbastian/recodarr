@@ -9,15 +9,65 @@ import { Buffer } from 'buffer';
 import path from 'path';
 import Database from 'better-sqlite3';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import ffprobeStatic from 'ffprobe-static';
 import * as chokidar from 'chokidar';
 import { Node, Edge } from 'reactflow';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
-import fsSync from 'fs';
-// Import types from the global declaration file
-// Note: Adjust the path if your types.d.ts is located elsewhere relative to main.ts
-import type { SystemStats, GpuInfo } from '../../types.js';
+import { startEncodingProcess } from './ffmpegUtils.js';
+// Remove problematic type import
+// import type { ... } from '../../types.js';
+
+// --- Define Types Locally within main.ts ---
+// (Copied from src/types.d.ts)
+interface GpuInfo { vendor: string; model: string; memoryTotal: number | null }; // Keep needed simple types
+interface SystemStats { cpuLoad: number | null; memLoad: number | null; gpuLoad: number | null; gpuMemoryUsed: number | null; gpuMemoryTotal: number | null; gpuMemoryUsagePercent: number | null; error?: string };
+
+interface WatchedFolder {
+    path: string;
+    libraryName: string;
+    libraryType: 'TV' | 'Movies' | 'Anime';
+}
+
+interface Workflow {
+    id: number;
+    name: string;
+    description: string;
+}
+
+interface WorkflowDetails extends Workflow {
+    nodes: Node[]; // Use imported Node/Edge types
+    edges: Edge[];
+}
+
+interface HardwareInfo {
+    id?: number; // Assuming it might have an ID from DB
+    device_type: string;
+    vendor?: string;
+    model: string;
+    device_id?: string;
+    cores_threads?: number;
+    base_clock_mhz?: number | null;
+    memory_mb?: number | null;
+    is_enabled?: boolean;
+    priority?: number;
+}
+
+interface EncodingProgress {
+    percent?: number;
+}
+
+interface EncodingOptions {
+    inputPath: string;
+    outputPath: string;
+    hwAccel?: 'auto' | 'qsv' | 'nvenc' | 'cuda' | 'vaapi' | 'videotoolbox' | 'none';
+    duration?: number; 
+    outputOptions: string[]; 
+    // Optional progressCallback for internal use (if needed by main.ts logic)
+    progressCallback?: (progress: EncodingProgress) => void;
+}
+// --- End Local Type Definitions ---
 
 // --- FFMPEG Configuration ---
 // Log the path provided by ffmpeg-static
@@ -700,12 +750,6 @@ app.on("ready", () => {
         }
     });
 
-    // Run the FFMPEG test when app starts
-    console.log('[App] Running FFMPEG transcoding test...');
-    runFFMPEGTest()
-        .then(() => console.log('[App] FFMPEG test completed'))
-        .catch(err => console.error('[App] FFMPEG test failed:', err));
-
     // --- Initialize Database ---
     let dbPath: string | undefined;
     try {
@@ -921,7 +965,7 @@ app.on("ready", () => {
 
     // --- Start File Watcher ---
     const initialFolders = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
-    startWatching(initialFolders); 
+    startWatching(initialFolders);
     // --- End Start File Watcher ---
 
     if (isDev()) mainWindow.loadURL("http://localhost:3524")
@@ -1220,6 +1264,102 @@ app.on("ready", () => {
         }
     });
     // --- End Workflow Management Handlers ---
+
+    // --- FFprobe Handler ---
+    ipcMain.handle('probe-file', async (_event, filePath: string) => {
+        if (!filePath) {
+            console.warn("Probe request received without a file path.");
+            return null;
+        }
+        console.log(`[Main Process] Received probe request for: ${filePath}`);
+        try {
+            // Ensure the file exists before probing
+            await fs.access(filePath, fs.constants.R_OK);
+            const probeData = await probeFile(filePath); // Use existing probeFile function
+            console.log(`[Main Process] Probing successful for: ${filePath}`);
+            return probeData;
+        } catch (error) {
+            console.error(`[Main Process] Error probing file ${filePath}:`, error);
+            // Return null or throw an error that the renderer can catch
+            // Returning null might be safer for the UI
+            return null; 
+        }
+    });
+
+    // --- Encoding Handlers ---
+    // Add handlers for file dialogs
+    ipcMain.handle('dialog:showOpen', async (_event, options) => {
+        if (!mainWindow) {
+            throw new Error('Main window not available');
+        }
+        // Ensure options are passed correctly
+        return dialog.showOpenDialog(mainWindow, options);
+    });
+
+    ipcMain.handle('dialog:showSave', async (_event, options) => {
+        if (!mainWindow) {
+            throw new Error('Main window not available');
+        }
+        // Ensure options are passed correctly
+        return dialog.showSaveDialog(mainWindow, options);
+    });
+
+    // Add the new handler that accepts options
+    ipcMain.handle('start-encoding-process', async (_event, options: EncodingOptions) => {
+        if (!mainWindow) {
+            console.error('Cannot start encoding, mainWindow is not available.');
+            return { success: false, error: 'Main window not available' };
+        }
+
+        // Define the progress callback within the handler
+        const progressCallback = (progress: EncodingProgress) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('encodingProgress', { progress: progress.percent });
+            }
+        };
+
+        // Merge received options with the progress callback
+        const optionsWithCallback: EncodingOptions = {
+            ...options,
+            progressCallback: progressCallback
+        };
+
+        console.log('[Main Process] Calling startEncodingProcess with options:', JSON.stringify(optionsWithCallback, null, 2));
+
+        // Call the actual encoding function from ffmpegUtils
+        const result = await startEncodingProcess(optionsWithCallback);
+
+        console.log('[Main Process] Encoding process finished with result:', result);
+
+        // Send final status update based on the result
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            if (result.success) {
+                mainWindow.webContents.send('encodingProgress', {
+                    status: `Encoding complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. Output: ${result.outputPath}`
+                });
+            } else {
+                mainWindow.webContents.send('encodingProgress', {
+                    status: `Encoding failed: ${result.error}`
+                });
+            }
+        }
+
+        // Return the full result object
+        return result;
+    });
+
+    // Keep the old subscription handlers (can be removed if subscribeEncodingProgress in preload is robust)
+    let encodingProgressEventSender: Electron.IpcMainEvent['sender'] | null = null;
+    ipcMain.on('subscribeEncodingProgress', (event) => {
+        console.log('[Main Process] Renderer subscribed via ipcMain.on.');
+        encodingProgressEventSender = event.sender; // Store sender
+    });
+
+    ipcMain.on('unsubscribeEncodingProgress', () => {
+        console.log('[Main Process] Renderer unsubscribed via ipcMain.on.');
+        encodingProgressEventSender = null;
+    });
+    // --- End Encoding Handlers ---
 })
 
 // Quit when all windows are closed, except on macOS.

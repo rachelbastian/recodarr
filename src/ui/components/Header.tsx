@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search } from 'lucide-react';
-import { Input } from "@/components/ui/input"; // Assuming @ alias for Shadcn UI
+import { Input } from "src/components/ui/input"; // Assuming @ alias for Shadcn UI
 
 const Header: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');

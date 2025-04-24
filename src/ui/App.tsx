@@ -6,6 +6,7 @@ import Settings from './pages/Settings';
 import Libraries from './pages/Libraries';
 import Media from './pages/Media';
 import Workflows from './pages/workflows';
+import EncodingQueue from './pages/EncodingQueue';
 import './App.css';
 
 function App() {
@@ -22,6 +23,7 @@ function App() {
                             <Route path="/libraries" element={<Libraries />} />
                             <Route path="/media" element={<Media />} />
                             <Route path="/workflows" element={<Workflows />} />
+                            <Route path="/encoding" element={<EncodingQueue />} />
                         </Routes>
                     </main>
                 </div>

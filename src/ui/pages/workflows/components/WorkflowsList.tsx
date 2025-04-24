@@ -1,5 +1,5 @@
 import React from 'react';
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea } from "src/components/ui/scroll-area";
 import { useWorkflows } from '../context/WorkflowsContext';
 import { cn } from '@/lib/utils';
 
