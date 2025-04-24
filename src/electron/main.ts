@@ -16,6 +16,7 @@ import { Node, Edge } from 'reactflow';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import { startEncodingProcess } from './ffmpegUtils.js';
+import crypto from 'crypto';
 // Remove problematic type import
 // import type { ... } from '../../types.js';
 
@@ -63,11 +64,18 @@ interface EncodingProgress {
     status?: string;
 }
 
+interface EncodingResult {
+    outputPath: string;
+    reductionPercent?: number;
+    jobId?: string; // Added jobId
+}
+
 interface EncodingOptions {
     inputPath: string;
     outputPath: string;
+    overwriteInput?: boolean; // Added flag for overwriting
     hwAccel?: 'auto' | 'qsv' | 'nvenc' | 'cuda' | 'vaapi' | 'videotoolbox' | 'none';
-    duration?: number; 
+    duration?: number;
     outputOptions: string[]; 
     // Optional progressCallback for internal use (if needed by main.ts logic)
     progressCallback?: (progress: EncodingProgress) => void;
@@ -1317,23 +1325,29 @@ app.on("ready", () => {
             return { success: false, error: 'Main window not available' };
         }
 
+        const jobId = crypto.randomUUID(); // Generate Job ID
+        console.log(`[Main Process] Generated Job ID: ${jobId}`);
+
+        // Determine if overwriting based on input/output path match
+        // UI could also send an explicit options.overwriteInput flag
+        const isOverwrite = options.overwriteInput ?? (options.inputPath === options.outputPath);
+        console.log(`[Main Process] Overwrite mode determined: ${isOverwrite}`);
+
         // Find the part where encoding progress is forwarded to the renderer
-        // Update accordingly to include all progress fields
         const progressCallback = (progress: EncodingProgress) => {
             try {
                 if (mainWindow && !mainWindow.isDestroyed()) {
-                    console.log('[Main Process] Sending progress to UI:', progress);
-                    // Send the *entire* progress object
-                    mainWindow.webContents.send('encodingProgress', progress); 
+                    mainWindow.webContents.send('encodingProgress', progress);
                 }
             } catch (error) {
                 console.error(`[Encoding Progress] Error sending progress update:`, error);
             }
         };
 
-        // Merge received options with the progress callback
+        // Merge received options with the progress callback and overwrite flag
         const optionsWithCallback: EncodingOptions = {
             ...options,
+            overwriteInput: isOverwrite, // Pass the determined flag
             progressCallback: progressCallback
         };
 
@@ -1344,22 +1358,109 @@ app.on("ready", () => {
 
         console.log('[Main Process] Encoding process finished with result:', result);
 
-        // Send final status update based on the result
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            if (result.success) {
-                mainWindow.webContents.send('encodingProgress', {
-                    status: `Encoding complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. Output: ${result.outputPath}`
-                });
-            } else {
-                mainWindow.webContents.send('encodingProgress', {
-                    status: `Encoding failed: ${result.error}`
+        // Prepare the result object to send back to UI
+        let finalResult: any = { ...result, jobId: result.success ? jobId : undefined };
+
+        // --- Post-Encoding Update (Conditional) --- 
+        if (result.success && result.outputPath) {
+            try {
+                console.log(`[Main Process] Encoding/Rename successful for Job ID ${jobId}. Final path: ${result.outputPath}`);
+                const probeData = await probeFile(result.outputPath); // Probe the final file
+                
+                if (probeData) {
+                    if (isOverwrite) {
+                        console.log(`[Main Process] Overwrite mode: Updating database record for original input path: ${options.inputPath}`);
+                        // Pass original input path for DB update when overwriting
+                        await updateMediaAfterEncoding(probeData, jobId, options.inputPath);
+                        console.log(`[Main Process] Database updated successfully for Job ID ${jobId}.`);
+                         mainWindow?.webContents.send('encodingProgress', {
+                            status: `Overwrite complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. DB Updated. File: ${result.outputPath}`
+                        });
+                    } else {
+                        // Saved as new file, don't update original DB record
+                        console.log(`[Main Process] Save As New mode: Database record for original file not updated. New file at: ${result.outputPath}`);
+                         mainWindow?.webContents.send('encodingProgress', {
+                            status: `Save As New complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. File: ${result.outputPath}`
+                        });
+                    }
+                } else {
+                    console.warn(`[Main Process] Probe failed for final file ${result.outputPath}. Database not updated.`);
+                    mainWindow?.webContents.send('encodingProgress', {
+                        status: `Encoding complete but probe failed. Output: ${result.outputPath}`
+                    });
+                }
+            } catch (updateError) {
+                console.error(`[Main Process] Error during post-encoding probe/update for Job ID ${jobId}:`, updateError);
+                 mainWindow?.webContents.send('encodingProgress', {
+                    status: isOverwrite 
+                        ? `Overwrite complete but DB update failed. File: ${result.outputPath}`
+                        : `Save As New complete but post-encode step failed. File: ${result.outputPath}`
                 });
             }
+        } else if (!result.success) {
+            // Send failure status update
+            mainWindow?.webContents.send('encodingProgress', {
+                status: `Encoding failed: ${result.error}`
+            });
+        }
+        // --- End Post-Encoding Update --- 
+
+        return finalResult;
+    });
+
+    // Helper function to update media DB after encoding
+    async function updateMediaAfterEncoding(probeData: any, jobId: string, targetDbFilePath: string): Promise<void> {
+        if (!db) {
+            console.error("Database not initialized, cannot update media after encoding.");
+            return;
+        }
+        // We use targetDbFilePath (original input path in overwrite mode) for WHERE clause,
+        // but probeData still contains info about the *newly created* file (size, codecs).
+        if (!probeData?.format) { // Check format object exists
+            console.warn("Skipping DB update after encoding due to missing format info in probe data.");
+            return;
         }
 
-        // Return the full result object
-        return result;
-    });
+        const fileSize = probeData.format.size ? parseInt(probeData.format.size, 10) : null;
+
+        let videoCodec: string | null = null;
+        let audioCodec: string | null = null;
+
+        if (probeData.streams && Array.isArray(probeData.streams)) {
+            const videoStream = probeData.streams.find((s: any) => s.codec_type === 'video');
+            const audioStream = probeData.streams.find((s: any) => s.codec_type === 'audio');
+            videoCodec = videoStream?.codec_name ?? null;
+            audioCodec = audioStream?.codec_name ?? null;
+        }
+
+        console.log(`[DB Update] Attempting to update media for file path in DB: ${targetDbFilePath} with Job ID: ${jobId}`);
+        console.log(`[DB Update] New Data: Size=${fileSize}, VideoCodec=${videoCodec}, AudioCodec=${audioCodec}`);
+
+        // Use a specific UPDATE statement targeting the targetDbFilePath
+        const updateSql = `
+            UPDATE media 
+            SET currentSize = ?, 
+                videoCodec = ?, 
+                audioCodec = ?, 
+                encodingJobId = ?, 
+                lastSizeCheckAt = CURRENT_TIMESTAMP 
+            WHERE filePath = ?
+        `;
+        try {
+            const updateStmt = db.prepare(updateSql);
+            // Use new data from probeData, but use targetDbFilePath for the WHERE condition
+            const info = updateStmt.run(fileSize, videoCodec, audioCodec, jobId, targetDbFilePath);
+
+            if (info.changes > 0) {
+                console.log(`[DB Update] Successfully updated media record for ${targetDbFilePath} (Job ID: ${jobId}). Changes: ${info.changes}`);
+            } else {
+                console.warn(`[DB Update] No media record found or updated for filePath: ${targetDbFilePath}. Original file might not be in library.`);
+            }
+        } catch (error) {
+            console.error(`[DB Update] Error updating media record for ${targetDbFilePath} (Job ID: ${jobId}):`, error);
+            throw error; // Re-throw to be caught by the caller
+        }
+    }
 
     // Keep the old subscription handlers (can be removed if subscribeEncodingProgress in preload is robust)
     let encodingProgressEventSender: Electron.IpcMainEvent['sender'] | null = null;

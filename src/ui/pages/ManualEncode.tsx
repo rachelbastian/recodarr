@@ -26,6 +26,7 @@ import type {
 // Extend the EncodingOptions interface to add audioOptions
 interface ExtendedEncodingOptions extends EncodingOptions {
     audioOptions?: string[]; // Add support for additional audio codec options
+    overwriteInput?: boolean; // Add support for overwrite flag
 }
 
 // Add TrackOption interface
@@ -84,6 +85,7 @@ const ManualEncode: React.FC = () => { // Renamed component
     // Input/Output State
     const [inputPath, setInputPath] = useState<string>('');
     const [outputPath, setOutputPath] = useState<string>('');
+    const [saveAsNew, setSaveAsNew] = useState(false); // Add state for "Save as New" option
 
     // Probing State
     const [isProbing, setIsProbing] = useState(false);
@@ -261,6 +263,7 @@ const ManualEncode: React.FC = () => { // Renamed component
     const handleSelectInputFile = useCallback(async () => {
         setInputPath('');
         setOutputPath('');
+        setSaveAsNew(false); // Reset save as new option
         setProbeData(null);
         setProbeError(null);
         setSelectedAudioLayout('keep');
@@ -285,12 +288,7 @@ const ManualEncode: React.FC = () => { // Renamed component
             if (result && !result.canceled && result.filePaths?.[0]) {
                 const selectedPath = result.filePaths[0];
                 setInputPath(selectedPath);
-
-                // Auto-generate output path
-                const lastDotIndex = selectedPath.lastIndexOf('.');
-                const name = lastDotIndex > -1 ? selectedPath.substring(0, lastDotIndex) : selectedPath;
-                const extension = lastDotIndex > -1 ? selectedPath.substring(lastDotIndex) : '';
-                setOutputPath(`${name}_encoded${extension}`);
+                setOutputPath(selectedPath); // Set output path same as input by default
 
                 // Probe the file
                 setStatus('Probing file...');
@@ -357,26 +355,27 @@ const ManualEncode: React.FC = () => { // Renamed component
 
     // --- Encoding --- 
     const handleStartEncoding = async () => {
-        if (!inputPath || !outputPath || !probeData) {
+        if (!inputPath || (!saveAsNew && !inputPath) || (saveAsNew && !outputPath) || !probeData) {
             setStatus('Please select input file and wait for probe to complete.');
             return;
         }
 
         setIsEncoding(true);
-        setEncodingStartTime(Date.now()); // Record start time
-        setElapsedTimeString("00:00:00"); // Reset elapsed time display
+        setEncodingStartTime(Date.now());
+        setElapsedTimeString("00:00:00");
         setStatus('Building encoding options...');
-        setPercent(0); 
+        setPercent(0);
         setFps(undefined);
         setFrame(undefined);
-        setTotalFrames(undefined); // Will be updated by first progress message
+        setTotalFrames(undefined);
         setLastResult(null);
 
         try {
-            // --- Build Structured Encoding Options --- 
+            // --- Build Structured Encoding Options ---
             const options: ExtendedEncodingOptions = {
                 inputPath,
-                outputPath,
+                outputPath: saveAsNew ? outputPath : inputPath, // Use input path if not saving as new
+                overwriteInput: !saveAsNew, // Set overwriteInput flag based on saveAsNew
                 hwAccel: hwAccel !== 'none' ? hwAccel : undefined,
                 // --- Video --- 
                 mapVideo: undefined,
@@ -559,6 +558,53 @@ const ManualEncode: React.FC = () => { // Renamed component
                                     </Button>
                                 </div>
                             </div>
+
+                            {/* Save As New Option */}
+                            <div className="flex items-center space-x-2">
+                                <Checkbox
+                                    id="save-as-new"
+                                    checked={saveAsNew}
+                                    onCheckedChange={(checked) => {
+                                        setSaveAsNew(checked as boolean);
+                                        if (!checked) {
+                                            setOutputPath(inputPath); // Reset output path to input path when unchecking
+                                        }
+                                    }}
+                                    disabled={isEncoding}
+                                />
+                                <Label
+                                    htmlFor="save-as-new"
+                                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                                >
+                                    Save as New File
+                                </Label>
+                            </div>
+
+                            {/* Output File Section - Only shown when saveAsNew is true */}
+                            {saveAsNew && (
+                                <div className="space-y-2">
+                                    <Label htmlFor="output-file" className="text-sm font-medium">Output File</Label>
+                                    <div className="flex gap-3">
+                                        <Input 
+                                            id="output-file" 
+                                            value={outputPath} 
+                                            onChange={e => setOutputPath(e.target.value)} 
+                                            placeholder="Select or type output file..." 
+                                            disabled={isEncoding}
+                                            className="bg-background/50"
+                                        />
+                                        <Button 
+                                            onClick={handleSelectOutputFile} 
+                                            disabled={isEncoding || isProbing}
+                                            variant="outline"
+                                            className="min-w-[100px]"
+                                        >
+                                            Browse
+                                        </Button>
+                                    </div>
+                                </div>
+                            )}
+
                             {isProbing && (
                                 <p className="text-sm text-muted-foreground flex items-center">
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 
@@ -570,28 +616,6 @@ const ManualEncode: React.FC = () => { // Renamed component
                                     <AlertDescription>{probeError}</AlertDescription>
                                 </Alert>
                             )}
-
-                            <div className="space-y-2">
-                                <Label htmlFor="output-file" className="text-sm font-medium">Output File</Label>
-                                <div className="flex gap-3">
-                                    <Input 
-                                        id="output-file" 
-                                        value={outputPath} 
-                                        onChange={e => setOutputPath(e.target.value)} 
-                                        placeholder="Select or type output file..." 
-                                        disabled={isEncoding}
-                                        className="bg-background/50"
-                                    />
-                                    <Button 
-                                        onClick={handleSelectOutputFile} 
-                                        disabled={isEncoding || isProbing}
-                                        variant="outline"
-                                        className="min-w-[100px]"
-                                    >
-                                        Browse
-                                    </Button>
-                                </div>
-                            </div>
                         </div>
                     </CardContent>
                 </Card>

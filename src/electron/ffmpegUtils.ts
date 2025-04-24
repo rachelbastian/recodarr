@@ -2,6 +2,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static'; // Import ffprobe static
 import fs from 'fs/promises';
+import path from 'path'; // Import path module
 import fsSync from 'fs'; // For existsSync
 // Remove direct type import - rely on global types
 // import type { EncodingProgress, EncodingOptions, EncodingResult } from '../../types.js';
@@ -19,6 +20,7 @@ interface EncodingProgress {
 interface EncodingOptions {
     inputPath: string;
     outputPath: string;
+    overwriteInput?: boolean; // Added flag for overwriting
     // Video options
     videoCodec?: string; 
     videoPreset?: string; 
@@ -49,6 +51,7 @@ interface EncodingResult {
     initialSizeMB?: number;
     finalSizeMB?: number;
     reductionPercent?: number;
+    jobId?: string;
 }
 // --- End Local Type Definitions --- 
 
@@ -84,16 +87,28 @@ let videoDuration: number | undefined = undefined;
 
 export async function startEncodingProcess(options: EncodingOptions): Promise<EncodingResult> {
     console.log(`[Encoding Process] Starting for: ${options.inputPath}`);
-    console.log(`[Encoding Process] Options received:`, JSON.stringify(options, null, 2)); 
+    console.log(`[Encoding Process] Options received:`, JSON.stringify(options, null, 2));
 
-    // Reset global estimates when starting a new encoding job
+    // Reset global estimates
     estimatedTotalFrames = undefined;
     videoDuration = undefined;
 
-    // --- Input Validation ---
+    // --- Input Validation & Path Setup ---
     if (!options.inputPath || !options.outputPath) {
         return { success: false, error: "Input or output path is missing." };
     }
+
+    const overwriteInput = options.overwriteInput ?? false;
+    const finalTargetPath = overwriteInput ? options.inputPath : options.outputPath;
+    // Insert '_tmp' before the extension
+    const extension = path.extname(finalTargetPath);
+    const basename = path.basename(finalTargetPath, extension);
+    const tempOutputPath = path.join(path.dirname(finalTargetPath), `${basename}_tmp${extension}`);
+
+    console.log(`[Encoding Process] Mode: ${overwriteInput ? 'Overwrite' : 'Save As New'}`);
+    console.log(`[Encoding Process] Final Target Path: ${finalTargetPath}`);
+    console.log(`[Encoding Process] Temporary Output Path: ${tempOutputPath}`);
+
     try {
         await fs.access(options.inputPath, fs.constants.R_OK);
     } catch (err) {
@@ -101,16 +116,27 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
         return { success: false, error: `Input file not found or not readable: ${options.inputPath}` };
     }
 
-    // --- File Size Tracking --- 
+    // Ensure temp file from previous failed attempt is removed
+    try {
+        await fs.unlink(tempOutputPath);
+        console.log(`[Encoding Process] Removed existing temp file: ${tempOutputPath}`);
+    } catch (e: any) {
+        if (e.code !== 'ENOENT') { // Ignore error if file doesn't exist
+            console.warn(`[Encoding Process] Could not remove existing temp file: ${e.message}`);
+        }
+    }
+
+    // --- File Size Tracking ---
     let initialSize = 0;
     try {
+        // Get size of the *original* input file for comparison
         const stats = await fs.stat(options.inputPath);
         initialSize = stats.size;
     } catch (err) {
         console.warn(`[Encoding Process] Could not get initial file size for ${options.inputPath}`, err);
     }
 
-    const progressCallbackWrapper = options.progressCallback; 
+    const progressCallbackWrapper = options.progressCallback;
 
     // Try to get video duration from ffmpeg first
     try {
@@ -237,14 +263,14 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             outputOpts.push('-map_metadata', '0');
             outputOpts.push('-map_chapters', '0');
             outputOpts.push('-hide_banner');
-            outputOpts.push('-y'); // Overwrite output
+            outputOpts.push('-y'); // Overwrite output (this applies to the *temp* file initially)
 
             // --- Apply ALL output options via outputOptions() ---
             console.log("[Encoding Process] Applying output options:", outputOpts);
             command.outputOptions(outputOpts); 
             
             // --- Output File --- 
-            command.output(options.outputPath);
+            command.output(tempOutputPath);
 
             // --- Event Handlers --- 
             command.on('start', (commandLine: string) => {
@@ -323,36 +349,69 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
                  // console.log(`[Encoding Process] stderr: ${stderrLine}`);
             });
 
-            command.on('error', (err: Error, stdout: string | null, stderr: string | null) => {
-                console.error(`[Encoding Process] Error: ${err.message}`);
-                if (stdout) console.error('[Encoding Process] FFMPEG stdout:', stdout);
-                if (stderr) console.error('[Encoding Process] FFMPEG stderr:', stderr);
+            command.on('error', async (err: Error, stdout: string | null, stderr: string | null) => {
+                console.error(`[Encoding Process] Encoding failed: ${err.message}`);
+                if (stdout) console.error('[Encoding Process] FFMPEG stdout on error:', stdout);
+                if (stderr) console.error('[Encoding Process] FFMPEG stderr on error:', stderr);
+                // Attempt to clean up temp file on error
+                try {
+                    await fs.unlink(tempOutputPath);
+                    console.log(`[Encoding Process] Cleaned up temp file on error: ${tempOutputPath}`);
+                } catch (cleanupError: any) {
+                    if (cleanupError.code !== 'ENOENT') {
+                        console.error(`[Encoding Process] Error cleaning up temp file after encoding error: ${cleanupError.message}`);
+                    }
+                }
                 resolve({ success: false, error: err.message });
             });
 
             command.on('end', async (stdout: string | null, stderr: string | null) => {
                 if (stdout) console.log('[Encoding Process] FFMPEG stdout on end:', stdout); // Might contain final stats
                 if (stderr) console.log('[Encoding Process] FFMPEG stderr on end:', stderr); // Might contain warnings/info
-                console.log(`[Encoding Process] Finished successfully: ${options.outputPath}`);
-                let finalSize = 0;
-                let reductionPercent: number | undefined = undefined;
-                try {
-                    const finalStats = await fs.stat(options.outputPath);
-                    finalSize = finalStats.size;
-                    if (initialSize > 0 && finalSize > 0) {
-                         reductionPercent = Number(((1 - (finalSize / initialSize)) * 100).toFixed(2));
-                    }
-                } catch (err) {
-                     console.warn(`[Encoding Process] Could not get final file size for ${options.outputPath}`, err);
-                }
 
-                resolve({
-                    success: true,
-                    outputPath: options.outputPath,
-                    initialSizeMB: initialSize > 0 ? Number((initialSize / (1024 * 1024)).toFixed(2)) : undefined,
-                    finalSizeMB: finalSize > 0 ? Number((finalSize / (1024 * 1024)).toFixed(2)) : undefined,
-                    reductionPercent: reductionPercent
-                });
+                console.log(`[Encoding Process] FFmpeg completed successfully for temp file: ${tempOutputPath}`);
+                console.log(`[Encoding Process] Attempting to rename ${tempOutputPath} to ${finalTargetPath}`);
+
+                try {
+                    // Rename the temporary file to the final path, overwriting if it exists
+                    await fs.rename(tempOutputPath, finalTargetPath);
+                    console.log(`[Encoding Process] Successfully renamed temp file to: ${finalTargetPath}`);
+
+                    // Get final file size and calculate reduction
+                    let finalSize = 0;
+                    let reductionPercent: number | undefined = undefined;
+                    try {
+                        const finalStats = await fs.stat(finalTargetPath);
+                        finalSize = finalStats.size;
+                        if (initialSize > 0 && finalSize > 0) {
+                            reductionPercent = Number(((1 - (finalSize / initialSize)) * 100).toFixed(2));
+                        }
+                    } catch (statError) {
+                        console.warn(`[Encoding Process] Could not get final file size for ${finalTargetPath}`, statError);
+                    }
+
+                    // Resolve with success and the final path
+                    resolve({
+                        success: true,
+                        outputPath: finalTargetPath, // Return the final path
+                        initialSizeMB: initialSize > 0 ? Number((initialSize / (1024 * 1024)).toFixed(2)) : undefined,
+                        finalSizeMB: finalSize > 0 ? Number((finalSize / (1024 * 1024)).toFixed(2)) : undefined,
+                        reductionPercent: reductionPercent
+                    });
+
+                } catch (renameError: any) {
+                    console.error(`[Encoding Process] Failed to rename temp file ${tempOutputPath} to ${finalTargetPath}:`, renameError);
+                    // Attempt to clean up the temp file if rename failed
+                    try {
+                        await fs.unlink(tempOutputPath);
+                        console.log(`[Encoding Process] Cleaned up temp file after rename failure: ${tempOutputPath}`);
+                    } catch (cleanupError: any) {
+                         if (cleanupError.code !== 'ENOENT') {
+                            console.error(`[Encoding Process] Error cleaning up temp file after rename failure: ${cleanupError.message}`);
+                        }
+                    }
+                    resolve({ success: false, error: `Failed to move encoded file: ${renameError.message}` });
+                }
             });
 
             // --- Run --- 
