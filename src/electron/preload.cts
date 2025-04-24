@@ -63,6 +63,11 @@ interface ProbeData {
 
 interface EncodingProgress {
     percent?: number;
+    fps?: number;
+    elapsed?: number; // in seconds
+    frame?: number;
+    totalFrames?: number;
+    status?: string;
 }
 
 interface EncodingOptions {
@@ -145,7 +150,7 @@ type LocalElectronApi = {
     // Add the new methods with locally defined types
     probeFile: (filePath: string) => Promise<ProbeData | null>;
     startEncodingProcess: (options: EncodingOptions) => Promise<EncodingResult>;
-    subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string }) => void) => UnsubscribeFunction;
+    subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number }) => void) => UnsubscribeFunction;
     unsubscribeEncodingProgress: () => void; 
     showOpenDialog: (options: DialogOptions) => Promise<DialogResult>; 
     showSaveDialog: (options: SaveDialogOptions) => Promise<SaveDialogResult>; 
@@ -182,8 +187,11 @@ electron.contextBridge.exposeInMainWorld("electron", {
     // --- Implementations for New Methods ---
     probeFile: (filePath: string) => ipcInvoke('probe-file', filePath),
     startEncodingProcess: (options: EncodingOptions) => ipcInvoke('start-encoding-process', options), 
-    subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string }) => void) => {
-        const listener = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number }) => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, data: any) => {
+            console.log('[Preload] Received encoding progress:', data);
+            callback(data);
+        };
         electron.ipcRenderer.on('encodingProgress', listener);
         return () => {
             electron.ipcRenderer.removeListener('encodingProgress', listener);

@@ -1,5 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static'; // Import ffprobe static
 import fs from 'fs/promises';
 import fsSync from 'fs'; // For existsSync
 // Remove direct type import - rely on global types
@@ -9,6 +10,10 @@ import fsSync from 'fs'; // For existsSync
 // (Copied from src/types.d.ts as imports/globals aren't working reliably)
 interface EncodingProgress {
     percent?: number;
+    fps?: number;
+    frame?: number;
+    totalFrames?: number;
+    status?: string;
 }
 
 interface EncodingOptions {
@@ -47,12 +52,19 @@ interface EncodingResult {
 }
 // --- End Local Type Definitions --- 
 
-// Set FFMPEG path
+// Set FFMPEG and FFPROBE paths
 try {
-    ffmpeg.setFfmpegPath(ffmpegStatic as unknown as string);
-    console.log(`[FFMPEG Utils] Successfully set ffmpeg path.`);
+    const ffmpegPath = ffmpegStatic as unknown as string;
+    const ffprobePath = ffprobeStatic && typeof ffprobeStatic === 'object' && 'path' in ffprobeStatic 
+                        ? ffprobeStatic.path 
+                        : ffprobeStatic as string;
+
+    ffmpeg.setFfmpegPath(ffmpegPath);
+    ffmpeg.setFfprobePath(ffprobePath); // Explicitly set ffprobe path
+    console.log(`[FFMPEG Utils] Successfully set ffmpeg path: ${ffmpegPath}`);
+    console.log(`[FFMPEG Utils] Successfully set ffprobe path: ${ffprobePath}`);
 } catch (error) {
-    console.error(`[FFMPEG Utils] Error setting ffmpeg path:`, error);
+    console.error(`[FFMPEG Utils] Error setting ffmpeg/ffprobe paths:`, error);
     // Consider how to handle this error - maybe throw or return a specific error state
 }
 
@@ -66,9 +78,17 @@ try {
 // Keep EncodingResult definition if needed elsewhere, but it's defined globally
 // export interface EncodingResult { ... }
 
+// Add a property to store estimated total frames for progress calculation
+let estimatedTotalFrames: number | undefined = undefined;
+let videoDuration: number | undefined = undefined;
+
 export async function startEncodingProcess(options: EncodingOptions): Promise<EncodingResult> {
     console.log(`[Encoding Process] Starting for: ${options.inputPath}`);
     console.log(`[Encoding Process] Options received:`, JSON.stringify(options, null, 2)); 
+
+    // Reset global estimates when starting a new encoding job
+    estimatedTotalFrames = undefined;
+    videoDuration = undefined;
 
     // --- Input Validation ---
     if (!options.inputPath || !options.outputPath) {
@@ -91,6 +111,60 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
     }
 
     const progressCallbackWrapper = options.progressCallback; 
+
+    // Try to get video duration from ffmpeg first
+    try {
+        console.log(`[Encoding Process] Probing for duration/frames: ${options.inputPath}`);
+        const ffprobeResult = await new Promise<any>((resolve, reject) => {
+            ffmpeg.ffprobe(options.inputPath, (err, metadata) => {
+                if (err) reject(err);
+                else resolve(metadata);
+            });
+        });
+        
+        console.log("[Encoding Process] ffprobe raw result:", JSON.stringify(ffprobeResult, null, 2));
+
+        if (ffprobeResult && ffprobeResult.format && ffprobeResult.format.duration) {
+            videoDuration = parseFloat(ffprobeResult.format.duration);
+            console.log(`[Encoding Process] Video duration found: ${videoDuration}s`);
+            
+            // Try to estimate fps from video stream
+            let fps = 30; // default fallback
+            if (ffprobeResult.streams && ffprobeResult.streams.length > 0) {
+                const videoStream = ffprobeResult.streams.find((s: any) => s.codec_type === 'video');
+                if (videoStream && videoStream.avg_frame_rate) {
+                    // Parse frame rate (format is usually "num/den")
+                    const parts = videoStream.avg_frame_rate.split('/');
+                    if (parts.length === 2) {
+                        const num = parseInt(parts[0], 10);
+                        const den = parseInt(parts[1], 10);
+                        if (den !== 0) {
+                            fps = num / den;
+                            console.log(`[Encoding Process] Video FPS found: ${fps} (from ${videoStream.avg_frame_rate})`);
+                        } else {
+                             console.warn(`[Encoding Process] Invalid avg_frame_rate denominator: ${videoStream.avg_frame_rate}`);
+                        }
+                    } else {
+                        console.warn(`[Encoding Process] Could not parse avg_frame_rate: ${videoStream.avg_frame_rate}`);
+                    }
+                } else {
+                     console.warn('[Encoding Process] No video stream with avg_frame_rate found in probe data.');
+                }
+            }
+            
+            // Estimate total frames
+            if (videoDuration > 0 && fps > 0) {
+                estimatedTotalFrames = Math.round(videoDuration * fps);
+                console.log(`[Encoding Process] Initial estimated total frames: ${estimatedTotalFrames}`);
+            } else {
+                 console.warn('[Encoding Process] Could not estimate total frames (duration or fps invalid).');
+            }
+        } else {
+            console.warn('[Encoding Process] Could not find format.duration in ffprobe result.');
+        }
+    } catch (err) {
+        console.error(`[Encoding Process] Error during ffprobe for duration/frames:`, err);
+    }
 
     return new Promise((resolve) => {
         try {
@@ -178,13 +252,70 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             });
 
             command.on('progress', (progress: any) => {
+                // Debug raw progress data
+                console.log('[ffmpeg] Raw progress data:', JSON.stringify(progress, null, 2)); // Log the raw object
+                
                 // Use the progressCallbackWrapper if it exists
                 if (progressCallbackWrapper) {
-                    const percent = progress.percent && progress.percent >= 0 ? Number(progress.percent.toFixed(1)) : undefined;
-                    progressCallbackWrapper({ percent });
-                } else {
-                     // Fallback logging if no callback provided from main
-                     // console.log(`[Encoding Process] Progress: ${progress.percent ? progress.percent.toFixed(1) : 'N/A'}%`);
+                    try {
+                        // Extract and convert all potential progress fields
+                        let percent = progress.percent && progress.percent >= 0 
+                            ? Number(parseFloat(String(progress.percent)).toFixed(1)) // Ensure it's a number
+                            : undefined;
+                        
+                        const frame = progress.frames 
+                            ? parseInt(String(progress.frames), 10) 
+                            : undefined;
+                        
+                        // elapsed calculation removed
+                        
+                        // Extract or calculate fps
+                        let fps = progress.fps !== undefined && progress.fps > 0
+                            ? Number(parseFloat(String(progress.fps)).toFixed(1))
+                            : (progress.currentFps !== undefined && progress.currentFps > 0 
+                                ? Number(parseFloat(String(progress.currentFps)).toFixed(1)) 
+                                : undefined); // Use currentFps as fallback
+                        
+                        // Determine total frames, prioritize ffmpeg's report if available
+                        let currentTotalFrames = estimatedTotalFrames; // Start with the initial estimate
+                        if (progress.frames_total && parseInt(String(progress.frames_total), 10) > 0) {
+                            currentTotalFrames = parseInt(String(progress.frames_total), 10);
+                            // Optional: Update the initial estimate if ffmpeg provides a value later
+                            // estimatedTotalFrames = currentTotalFrames; 
+                            console.log(`[ffmpeg] Using total frames from ffmpeg progress: ${currentTotalFrames}`);
+                        } else {
+                            // Keep using the initial estimate if ffmpeg doesn't provide one
+                            console.log(`[ffmpeg] Using initial estimated total frames: ${currentTotalFrames}`);
+                        }
+                        
+                        // If we have frame and totalFrames but no percent, calculate it
+                        if (percent === undefined && frame !== undefined && currentTotalFrames && currentTotalFrames > 0) {
+                            percent = Number(((frame / currentTotalFrames) * 100).toFixed(1));
+                        }
+
+                        // Ensure percent is capped between 0 and 100
+                        if (percent !== undefined) {
+                            percent = Math.max(0, Math.min(100, percent));
+                        }
+                        
+                        // Create progress object to send to UI
+                        const progressUpdate: EncodingProgress = {
+                            percent, // Keep sending percent if available, UI might use it as fallback
+                            fps,
+                            // elapsed, // Removed
+                            frame,
+                            totalFrames: currentTotalFrames, // Send the best available total frames count
+                            status: 'Encoding...'
+                        };
+                        
+                        // Log what we're sending
+                        console.log('[ffmpeg] Sending progress update:', JSON.stringify(progressUpdate, null, 2)); // Log the final object
+                        
+                        // Send the progress update to the callback
+                        progressCallbackWrapper(progressUpdate);
+                    } catch (error) {
+                        console.error('[ffmpeg] Error processing progress data:', error);
+                    }
                 }
             });
 
@@ -232,4 +363,25 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             resolve({ success: false, error: err instanceof Error ? err.message : String(err) });
         }
     });
+} 
+
+// Improved function to convert ffmpeg timemark (HH:MM:SS.MS) to seconds
+function convertTimemarkToSeconds(timemark: string): number | undefined {
+    try {
+        if (!timemark) return undefined;
+        
+        // ffmpeg typically returns timemark in format HH:MM:SS.MS
+        const match = timemark.match(/(\d+):(\d+):(\d+)(?:\.(\d+))?/);
+        if (!match) return undefined;
+        
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const seconds = parseInt(match[3], 10);
+        const ms = match[4] ? parseInt(match[4], 10) / Math.pow(10, match[4].length) : 0;
+        
+        return hours * 3600 + minutes * 60 + seconds + ms;
+    } catch (err) {
+        console.error('[Encoding Process] Error parsing timemark:', err);
+        return undefined;
+    }
 } 

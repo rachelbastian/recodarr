@@ -46,7 +46,7 @@ const Navbar: React.FC = () => {
           <SidebarItem icon={<Film className="h-4 w-4" />} label="Media" href="/media" active={isActive('/media')} />
           <SidebarItem icon={<Library className="h-4 w-4" />} label="Libraries" href="/libraries" active={isActive('/libraries')} />
           <SidebarItem icon={<Share2 className="h-4 w-4" />} label="Workflows" href="/workflows" active={isActive('/workflows')} />
-          <SidebarItem icon={<ListOrdered className="h-4 w-4" />} label="Encoding Queue" href="/encoding" active={isActive('/encoding')} />
+          <SidebarItem icon={<ListOrdered className="h-4 w-4" />} label="Manual Encode" href="/encoding" active={isActive('/encoding')} />
         </div>
         
         <div className="mt-8">

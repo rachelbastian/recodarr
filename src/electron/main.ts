@@ -56,6 +56,11 @@ interface HardwareInfo {
 
 interface EncodingProgress {
     percent?: number;
+    fps?: number;
+    elapsed?: number;
+    frame?: number;
+    totalFrames?: number;
+    status?: string;
 }
 
 interface EncodingOptions {
@@ -1276,7 +1281,8 @@ app.on("ready", () => {
             // Ensure the file exists before probing
             await fs.access(filePath, fs.constants.R_OK);
             const probeData = await probeFile(filePath); // Use existing probeFile function
-            console.log(`[Main Process] Probing successful for: ${filePath}`);
+            console.log(`[Main Process] Probe successful for: ${filePath}`);
+            console.log("[Main Process] Full ffprobe result:", JSON.stringify(probeData, null, 2));
             return probeData;
         } catch (error) {
             console.error(`[Main Process] Error probing file ${filePath}:`, error);
@@ -1311,10 +1317,17 @@ app.on("ready", () => {
             return { success: false, error: 'Main window not available' };
         }
 
-        // Define the progress callback within the handler
+        // Find the part where encoding progress is forwarded to the renderer
+        // Update accordingly to include all progress fields
         const progressCallback = (progress: EncodingProgress) => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('encodingProgress', { progress: progress.percent });
+            try {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    console.log('[Main Process] Sending progress to UI:', progress);
+                    // Send the *entire* progress object
+                    mainWindow.webContents.send('encodingProgress', progress); 
+                }
+            } catch (error) {
+                console.error(`[Encoding Progress] Error sending progress update:`, error);
             }
         };
 
