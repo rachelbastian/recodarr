@@ -22,6 +22,8 @@ import type {
     EncodingOptions, 
     EncodingResult 
 } from '../../types'; // Adjust path if needed
+// Add Dialog components
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from "@/components/ui/dialog";
 
 // Extend the EncodingOptions interface to add audioOptions
 interface ExtendedEncodingOptions extends EncodingOptions {
@@ -111,6 +113,9 @@ const ManualEncode: React.FC = () => { // Renamed component
     const [percent, setPercent] = useState<number | undefined>(undefined);
     const [isEncoding, setIsEncoding] = useState(false);
     const [lastResult, setLastResult] = useState<EncodingResult | null>(null);
+    const [lastJobId, setLastJobId] = useState<string | null>(null); // State for last Job ID
+    const [logContent, setLogContent] = useState<string | null>(null); // State for log content
+    const [isFetchingLog, setIsFetchingLog] = useState(false); // State for log fetching status
 
     // Add state for the new progress metrics
     const [fps, setFps] = useState<number | undefined>(undefined);
@@ -281,6 +286,8 @@ const ManualEncode: React.FC = () => { // Renamed component
         setFrame(undefined);
         setTotalFrames(undefined);
         setLastResult(null);
+        setLastJobId(null); // Reset last job id
+        setLogContent(null);
 
         try {
             // Use the casted electronAPI object
@@ -375,6 +382,8 @@ const ManualEncode: React.FC = () => { // Renamed component
         setFrame(undefined);
         setTotalFrames(undefined);
         setLastResult(null);
+        setLastJobId(null); // Reset job id before starting
+        setLogContent(null);
 
         try {
             // --- Build Structured Encoding Options ---
@@ -510,6 +519,7 @@ const ManualEncode: React.FC = () => { // Renamed component
             }
             const result = await electronAPI.startEncodingProcess(options);
             setLastResult(result);
+            setLastJobId(result.jobId || null); // Store the jobId from the result
             if (!result.success) {
                 setStatus(`Encoding failed: ${result.error || 'Unknown error'}`);
             }
@@ -522,6 +532,25 @@ const ManualEncode: React.FC = () => { // Renamed component
         } finally {
             setIsEncoding(false);
             // Don't reset start time here, keep final elapsed time displayed
+        }
+    };
+
+    // --- New function to handle viewing the log ---
+    const handleViewLog = async () => {
+        if (!lastJobId) return;
+        setIsFetchingLog(true);
+        setLogContent(null);
+        try {
+            if (!electronAPI?.getEncodingLog) {
+                throw new Error("getEncodingLog function is not available on electronAPI");
+            }
+            const fetchedLog = await electronAPI.getEncodingLog(lastJobId);
+            setLogContent(fetchedLog ?? "Log content not found or empty.");
+        } catch (error) {
+            console.error("Error fetching log:", error);
+            setLogContent(`Error fetching log: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            setIsFetchingLog(false);
         }
     };
 
@@ -980,7 +1009,47 @@ const ManualEncode: React.FC = () => { // Renamed component
 
                             {lastResult && (
                                 <div className="space-y-3">
-                                    <Label className="text-xs text-muted-foreground">Last Result</Label>
+                                    {/* --- Last Result Header with View Log Button --- */} 
+                                    <div className="flex justify-between items-center">
+                                        <Label className="text-xs text-muted-foreground">Last Result</Label>
+                                        {lastJobId && (
+                                            <Dialog>
+                                                <DialogTrigger asChild>
+                                                    <Button 
+                                                        variant="outline" 
+                                                        size="sm" 
+                                                        onClick={handleViewLog} 
+                                                        disabled={isFetchingLog}
+                                                    >
+                                                        {isFetchingLog ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
+                                                        View Log
+                                                    </Button>
+                                                </DialogTrigger>
+                                                <DialogContent className="max-w-3xl max-h-[80vh] w-full flex flex-col fixed top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] p-6">
+                                                    <DialogHeader className="mb-4">
+                                                        <DialogTitle>Encoding Log (Job ID: {lastJobId})</DialogTitle>
+                                                    </DialogHeader>
+                                                    <div className="flex-1 min-h-0">
+                                                        <ScrollArea className="h-[calc(80vh-10rem)]">
+                                                            <pre className="text-xs p-4 bg-muted/50 rounded whitespace-pre-wrap break-words">
+                                                                {logContent ?? 'Loading log...'}
+                                                            </pre>
+                                                        </ScrollArea>
+                                                    </div>
+                                                    <DialogFooter className="sm:justify-end mt-6">
+                                                        <DialogClose asChild>
+                                                            <Button type="button" variant="secondary">
+                                                                Close
+                                                            </Button>
+                                                        </DialogClose>
+                                                    </DialogFooter>
+                                                </DialogContent>
+                                            </Dialog>
+                                        )}
+                                    </div>
+                                    {/* --- End Header --- */}
+
+                                    {/* ... Rest of Last Result Display ... */}
                                     <div className="text-sm space-y-2 bg-background/50 p-4 rounded-lg">
                                         <p>Status: <span className={lastResult.success ? 'text-green-500' : 'text-red-500'}>
                                             {lastResult.success ? 'Completed' : 'Failed'}

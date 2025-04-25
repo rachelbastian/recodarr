@@ -68,6 +68,8 @@ export interface EncodingOptions {
     // Removed outputOptions
     // outputOptions: string[]; 
     // Removed progressCallback - main process only
+    // Add getEncodingLog method
+    getEncodingLog: (jobId: string) => Promise<string | null>; 
 }
 
 export interface EncodingResult {
@@ -77,6 +79,7 @@ export interface EncodingResult {
     initialSizeMB?: number;
     finalSizeMB?: number;
     reductionPercent?: number;
+    jobId?: string; // Add jobId for tracking
 }
 
 // --- Dialog Types --- (Keep existing)

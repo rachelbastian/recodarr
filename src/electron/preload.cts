@@ -98,6 +98,7 @@ interface EncodingResult {
     initialSizeMB?: number;
     finalSizeMB?: number;
     reductionPercent?: number;
+    jobId?: string;
 }
 
 interface DialogOptions {
@@ -150,6 +151,7 @@ type LocalElectronApi = {
     // Add the new methods with locally defined types
     probeFile: (filePath: string) => Promise<ProbeData | null>;
     startEncodingProcess: (options: EncodingOptions) => Promise<EncodingResult>;
+    getEncodingLog: (jobId: string) => Promise<string | null>;
     subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number }) => void) => UnsubscribeFunction;
     unsubscribeEncodingProgress: () => void; 
     showOpenDialog: (options: DialogOptions) => Promise<DialogResult>; 
@@ -187,6 +189,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
     // --- Implementations for New Methods ---
     probeFile: (filePath: string) => ipcInvoke('probe-file', filePath),
     startEncodingProcess: (options: EncodingOptions) => ipcInvoke('start-encoding-process', options), 
+    getEncodingLog: (jobId: string) => ipcInvoke('get-encoding-log', jobId),
     subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number }) => void) => {
         const listener = (_event: Electron.IpcRendererEvent, data: any) => {
             console.log('[Preload] Received encoding progress:', data);

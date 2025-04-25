@@ -3,7 +3,7 @@ import ffmpegStatic from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static'; // Import ffprobe static
 import fs from 'fs/promises';
 import path from 'path'; // Import path module
-import fsSync from 'fs'; // For existsSync
+import fsSync, { WriteStream } from 'fs'; // For existsSync and WriteStream
 // Remove direct type import - rely on global types
 // import type { EncodingProgress, EncodingOptions, EncodingResult } from '../../types.js';
 
@@ -40,6 +40,9 @@ interface EncodingOptions {
     // General options
     hwAccel?: 'auto' | 'qsv' | 'nvenc' | 'cuda' | 'vaapi' | 'videotoolbox' | 'none';
     duration?: number; 
+    // --- Added for logging ---
+    jobId?: string; // Add jobId
+    logDirectoryPath?: string; // Add log directory path
     // Internal callback
     progressCallback?: (progress: EncodingProgress) => void;
 }
@@ -86,8 +89,47 @@ let estimatedTotalFrames: number | undefined = undefined;
 let videoDuration: number | undefined = undefined;
 
 export async function startEncodingProcess(options: EncodingOptions): Promise<EncodingResult> {
+    // --- Logging Setup ---
+    let logStream: WriteStream | null = null;
+    const jobId = options.jobId; // Get jobId for easier access
+
+    // Helper defined early to be available everywhere, checks logStream internally
+    const writeLog = (message: string) => {
+        if (logStream) {
+            logStream.write(`[${new Date().toISOString()}] ${message}\n`, (err) => {
+                if (err) console.error(`[Log Write Error] Job ${jobId}:`, err);
+            });
+        }
+    };
+
+    if (jobId && options.logDirectoryPath) {
+        const logFilePath = path.join(options.logDirectoryPath, `${jobId}.log`);
+        try {
+            logStream = fsSync.createWriteStream(logFilePath, { flags: 'a' });
+            console.log(`[Encoding Process] Logging enabled for Job ${jobId} to: ${logFilePath}`);
+            
+            // Write initial info using the helper
+            writeLog(`--- Starting Encoding Job ${jobId} ---`);
+            writeLog(`Input Path: ${options.inputPath}`);
+            writeLog(`Output Path: ${options.outputPath}`);
+            writeLog(`Overwrite Input: ${options.overwriteInput}`);
+            // Avoid logging the whole options object directly if it contains sensitive/large data or functions
+            // Log specific important options instead:
+            const optionsToLog = { ...options }; 
+            delete optionsToLog.progressCallback; // Don't log the callback function
+            writeLog(`Options Summary: ${JSON.stringify(optionsToLog, null, 2)}`); 
+            
+        } catch (logErr) {
+            console.error(`[Encoding Process] Failed to create log file for Job ${jobId}:`, logErr);
+            logStream = null; // Ensure logStream is null if creation failed
+        }
+    } else {
+        console.warn(`[Encoding Process] Job ID (${jobId}) or Log Directory Path (${options.logDirectoryPath}) missing, logging disabled.`);
+    }
+    // --- End Logging Setup ---
+
     console.log(`[Encoding Process] Starting for: ${options.inputPath}`);
-    console.log(`[Encoding Process] Options received:`, JSON.stringify(options, null, 2));
+    writeLog(`[Info] Starting process for: ${options.inputPath}`); // Log start
 
     // Reset global estimates
     estimatedTotalFrames = undefined;
@@ -95,34 +137,38 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
 
     // --- Input Validation & Path Setup ---
     if (!options.inputPath || !options.outputPath) {
+        writeLog('[Error] Input or output path is missing.')
+        logStream?.end(); // Close log stream if open
         return { success: false, error: "Input or output path is missing." };
     }
 
     const overwriteInput = options.overwriteInput ?? false;
     const finalTargetPath = overwriteInput ? options.inputPath : options.outputPath;
-    // Insert '_tmp' before the extension
     const extension = path.extname(finalTargetPath);
     const basename = path.basename(finalTargetPath, extension);
     const tempOutputPath = path.join(path.dirname(finalTargetPath), `${basename}_tmp${extension}`);
 
-    console.log(`[Encoding Process] Mode: ${overwriteInput ? 'Overwrite' : 'Save As New'}`);
-    console.log(`[Encoding Process] Final Target Path: ${finalTargetPath}`);
-    console.log(`[Encoding Process] Temporary Output Path: ${tempOutputPath}`);
+    writeLog(`[Info] Mode: ${overwriteInput ? 'Overwrite' : 'Save As New'}`);
+    writeLog(`[Info] Final Target Path: ${finalTargetPath}`);
+    writeLog(`[Info] Temporary Output Path: ${tempOutputPath}`);
 
     try {
         await fs.access(options.inputPath, fs.constants.R_OK);
     } catch (err) {
         console.error(`[Encoding Process] Input file not found or not readable: ${options.inputPath}`, err);
-        return { success: false, error: `Input file not found or not readable: ${options.inputPath}` };
+        const errorMsg = `Input file not found or not readable: ${options.inputPath}`;
+        writeLog(`[Error] ${errorMsg}: ${err instanceof Error ? err.message : String(err)}`);
+        logStream?.end();
+        return { success: false, error: errorMsg };
     }
 
     // Ensure temp file from previous failed attempt is removed
     try {
         await fs.unlink(tempOutputPath);
-        console.log(`[Encoding Process] Removed existing temp file: ${tempOutputPath}`);
+        writeLog(`[Info] Removed existing temp file: ${tempOutputPath}`);
     } catch (e: any) {
         if (e.code !== 'ENOENT') { // Ignore error if file doesn't exist
-            console.warn(`[Encoding Process] Could not remove existing temp file: ${e.message}`);
+            writeLog(`[Warning] Could not remove existing temp file: ${e.message}`);
         }
     }
 
@@ -132,15 +178,17 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
         // Get size of the *original* input file for comparison
         const stats = await fs.stat(options.inputPath);
         initialSize = stats.size;
+        writeLog(`[Info] Initial file size: ${initialSize} bytes (${(initialSize / (1024*1024)).toFixed(2)} MB)`);
     } catch (err) {
         console.warn(`[Encoding Process] Could not get initial file size for ${options.inputPath}`, err);
+        writeLog(`[Warning] Could not get initial file size: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     const progressCallbackWrapper = options.progressCallback;
 
     // Try to get video duration from ffmpeg first
     try {
-        console.log(`[Encoding Process] Probing for duration/frames: ${options.inputPath}`);
+        writeLog(`[Info] Probing for duration/frames: ${options.inputPath}`);
         const ffprobeResult = await new Promise<any>((resolve, reject) => {
             ffmpeg.ffprobe(options.inputPath, (err, metadata) => {
                 if (err) reject(err);
@@ -148,48 +196,48 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             });
         });
         
-        console.log("[Encoding Process] ffprobe raw result:", JSON.stringify(ffprobeResult, null, 2));
+        writeLog("[Info] ffprobe raw result: " + JSON.stringify(ffprobeResult, null, 2));
 
         if (ffprobeResult && ffprobeResult.format && ffprobeResult.format.duration) {
             videoDuration = parseFloat(ffprobeResult.format.duration);
-            console.log(`[Encoding Process] Video duration found: ${videoDuration}s`);
+            writeLog(`[Info] Video duration found: ${videoDuration}s`);
             
             // Try to estimate fps from video stream
             let fps = 30; // default fallback
             if (ffprobeResult.streams && ffprobeResult.streams.length > 0) {
                 const videoStream = ffprobeResult.streams.find((s: any) => s.codec_type === 'video');
                 if (videoStream && videoStream.avg_frame_rate) {
-                    // Parse frame rate (format is usually "num/den")
                     const parts = videoStream.avg_frame_rate.split('/');
                     if (parts.length === 2) {
                         const num = parseInt(parts[0], 10);
                         const den = parseInt(parts[1], 10);
                         if (den !== 0) {
                             fps = num / den;
-                            console.log(`[Encoding Process] Video FPS found: ${fps} (from ${videoStream.avg_frame_rate})`);
+                            writeLog(`[Info] Video FPS found: ${fps} (from ${videoStream.avg_frame_rate})`);
                         } else {
-                             console.warn(`[Encoding Process] Invalid avg_frame_rate denominator: ${videoStream.avg_frame_rate}`);
+                             writeLog(`[Warning] Invalid avg_frame_rate denominator: ${videoStream.avg_frame_rate}`);
                         }
                     } else {
-                        console.warn(`[Encoding Process] Could not parse avg_frame_rate: ${videoStream.avg_frame_rate}`);
+                        writeLog(`[Warning] Could not parse avg_frame_rate: ${videoStream.avg_frame_rate}`);
                     }
                 } else {
-                     console.warn('[Encoding Process] No video stream with avg_frame_rate found in probe data.');
+                     writeLog('[Warning] No video stream with avg_frame_rate found in probe data.');
                 }
             }
             
             // Estimate total frames
             if (videoDuration > 0 && fps > 0) {
                 estimatedTotalFrames = Math.round(videoDuration * fps);
-                console.log(`[Encoding Process] Initial estimated total frames: ${estimatedTotalFrames}`);
+                writeLog(`[Info] Initial estimated total frames: ${estimatedTotalFrames}`);
             } else {
-                 console.warn('[Encoding Process] Could not estimate total frames (duration or fps invalid).');
+                 writeLog('[Warning] Could not estimate total frames (duration or fps invalid).');
             }
         } else {
-            console.warn('[Encoding Process] Could not find format.duration in ffprobe result.');
+            writeLog('[Warning] Could not find format.duration in ffprobe result.');
         }
     } catch (err) {
         console.error(`[Encoding Process] Error during ffprobe for duration/frames:`, err);
+        writeLog(`[Error] ffprobe failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     return new Promise((resolve) => {
@@ -266,7 +314,7 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             outputOpts.push('-y'); // Overwrite output (this applies to the *temp* file initially)
 
             // --- Apply ALL output options via outputOptions() ---
-            console.log("[Encoding Process] Applying output options:", outputOpts);
+            writeLog("[Info] Applying output options: " + JSON.stringify(outputOpts));
             command.outputOptions(outputOpts); 
             
             // --- Output File --- 
@@ -275,6 +323,7 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             // --- Event Handlers --- 
             command.on('start', (commandLine: string) => {
                 console.log(`[Encoding Process] Spawned Ffmpeg command: ${commandLine}`);
+                writeLog(`[FFMPEG Command] ${commandLine}`);
             });
 
             command.on('progress', (progress: any) => {
@@ -345,37 +394,61 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
                 }
             });
 
+            // --- Log stdout/stderr ---
             command.on('stderr', (stderrLine: string) => {
                  // console.log(`[Encoding Process] stderr: ${stderrLine}`);
+                 writeLog(`[stderr] ${stderrLine.trim()}`); // Log stderr
             });
+            // --- End Log stdout/stderr ---
 
             command.on('error', async (err: Error, stdout: string | null, stderr: string | null) => {
                 console.error(`[Encoding Process] Encoding failed: ${err.message}`);
-                if (stdout) console.error('[Encoding Process] FFMPEG stdout on error:', stdout);
-                if (stderr) console.error('[Encoding Process] FFMPEG stderr on error:', stderr);
+                writeLog(`[Error] Encoding failed: ${err.message}`);
+                if (stdout) {
+                    console.error('[Encoding Process] FFMPEG stdout on error:', stdout);
+                    writeLog(`[stdout on error] ${stdout.trim()}`);
+                }
+                if (stderr) {
+                    console.error('[Encoding Process] FFMPEG stderr on error:', stderr);
+                    writeLog(`[stderr on error] ${stderr.trim()}`);
+                }
                 // Attempt to clean up temp file on error
                 try {
                     await fs.unlink(tempOutputPath);
-                    console.log(`[Encoding Process] Cleaned up temp file on error: ${tempOutputPath}`);
+                    writeLog(`[Info] Cleaned up temp file on error: ${tempOutputPath}`);
                 } catch (cleanupError: any) {
                     if (cleanupError.code !== 'ENOENT') {
-                        console.error(`[Encoding Process] Error cleaning up temp file after encoding error: ${cleanupError.message}`);
+                        writeLog(`[Error] Error cleaning up temp file after encoding error: ${cleanupError.message}`);
                     }
                 }
+                
+                // --- Close Log Stream on Error ---
+                writeLog(`--- Encoding Job ${jobId} Failed ---`);
+                logStream?.end(() => console.log(`[Log] Closed log stream for failed Job ${jobId}.`));
+                // --- End Close Log Stream ---
+
                 resolve({ success: false, error: err.message });
             });
 
             command.on('end', async (stdout: string | null, stderr: string | null) => {
-                if (stdout) console.log('[Encoding Process] FFMPEG stdout on end:', stdout); // Might contain final stats
-                if (stderr) console.log('[Encoding Process] FFMPEG stderr on end:', stderr); // Might contain warnings/info
+                writeLog(`[Info] FFmpeg process ended.`);
+                if (stdout) {
+                    // console.log('[Encoding Process] FFMPEG stdout on end:', stdout); // Might contain final stats
+                    writeLog(`[stdout on end] ${stdout.trim()}`);
+                }
+                if (stderr) {
+                    // console.log('[Encoding Process] FFMPEG stderr on end:', stderr); // Might contain warnings/info
+                    writeLog(`[stderr on end] ${stderr.trim()}`);
+                }
 
                 console.log(`[Encoding Process] FFmpeg completed successfully for temp file: ${tempOutputPath}`);
-                console.log(`[Encoding Process] Attempting to rename ${tempOutputPath} to ${finalTargetPath}`);
+                writeLog(`[Info] Attempting to rename ${tempOutputPath} to ${finalTargetPath}`);
 
                 try {
                     // Rename the temporary file to the final path, overwriting if it exists
                     await fs.rename(tempOutputPath, finalTargetPath);
                     console.log(`[Encoding Process] Successfully renamed temp file to: ${finalTargetPath}`);
+                    writeLog(`[Success] Renamed temp file to: ${finalTargetPath}`);
 
                     // Get final file size and calculate reduction
                     let finalSize = 0;
@@ -386,9 +459,17 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
                         if (initialSize > 0 && finalSize > 0) {
                             reductionPercent = Number(((1 - (finalSize / initialSize)) * 100).toFixed(2));
                         }
-                    } catch (statError) {
+                        writeLog(`[Success] Final file size: ${finalSize} bytes (${(finalSize / (1024*1024)).toFixed(2)} MB)`);
+                        writeLog(`[Success] Size reduction: ${reductionPercent?.toFixed(2) ?? 'N/A'}%`);
+                    } catch (statError: any) {
                         console.warn(`[Encoding Process] Could not get final file size for ${finalTargetPath}`, statError);
+                        writeLog(`[Warning] Could not get final file size: ${statError.message}`);
                     }
+
+                    // --- Close Log Stream on Success --- 
+                    writeLog(`--- Encoding Job ${jobId} Succeeded ---`);
+                    logStream?.end(() => console.log(`[Log] Closed log stream for successful Job ${jobId}.`));
+                    // --- End Close Log Stream ---
 
                     // Resolve with success and the final path
                     resolve({
@@ -401,15 +482,22 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
 
                 } catch (renameError: any) {
                     console.error(`[Encoding Process] Failed to rename temp file ${tempOutputPath} to ${finalTargetPath}:`, renameError);
+                    writeLog(`[Error] Failed to rename temp file: ${renameError.message}`);
                     // Attempt to clean up the temp file if rename failed
                     try {
                         await fs.unlink(tempOutputPath);
-                        console.log(`[Encoding Process] Cleaned up temp file after rename failure: ${tempOutputPath}`);
+                        writeLog(`[Info] Cleaned up temp file after rename failure: ${tempOutputPath}`);
                     } catch (cleanupError: any) {
                          if (cleanupError.code !== 'ENOENT') {
-                            console.error(`[Encoding Process] Error cleaning up temp file after rename failure: ${cleanupError.message}`);
+                            writeLog(`[Error] Error cleaning up temp file after rename failure: ${cleanupError.message}`);
                         }
                     }
+                    
+                    // --- Close Log Stream on Rename Error ---
+                    writeLog(`--- Encoding Job ${jobId} Failed (Rename Error) ---`);
+                    logStream?.end(() => console.log(`[Log] Closed log stream for failed (rename) Job ${jobId}.`));
+                    // --- End Close Log Stream ---
+
                     resolve({ success: false, error: `Failed to move encoded file: ${renameError.message}` });
                 }
             });
@@ -419,7 +507,15 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
 
         } catch (err) {
             console.error(`[Encoding Process] Error setting up ffmpeg command:`, err);
-            resolve({ success: false, error: err instanceof Error ? err.message : String(err) });
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            writeLog(`[Error] Failed to setup ffmpeg command: ${errorMsg}`);
+            
+            // --- Close Log Stream on Setup Error ---
+            writeLog(`--- Encoding Job ${jobId} Failed (Setup Error) ---`);
+            logStream?.end(() => console.log(`[Log] Closed log stream for failed (setup) Job ${jobId}.`));
+            // --- End Close Log Stream ---
+
+            resolve({ success: false, error: errorMsg });
         }
     });
 } 

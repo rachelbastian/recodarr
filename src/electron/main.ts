@@ -65,7 +65,11 @@ interface EncodingProgress {
 }
 
 interface EncodingResult {
-    outputPath: string;
+    success: boolean;
+    outputPath?: string;
+    error?: string;
+    initialSizeMB?: number;
+    finalSizeMB?: number;
     reductionPercent?: number;
     jobId?: string; // Added jobId
 }
@@ -77,6 +81,23 @@ interface EncodingOptions {
     hwAccel?: 'auto' | 'qsv' | 'nvenc' | 'cuda' | 'vaapi' | 'videotoolbox' | 'none';
     duration?: number;
     outputOptions: string[]; 
+    // --- Add potentially missing options from ffmpegUtils --- 
+    videoCodec?: string;
+    videoPreset?: string;
+    videoQuality?: number | string;
+    lookAhead?: number;
+    pixelFormat?: string;
+    mapVideo?: string;
+    audioCodec?: string;
+    audioBitrate?: string;
+    audioFilter?: string;
+    mapAudio?: string;
+    audioOptions?: string[];
+    subtitleCodec?: string;
+    mapSubtitle?: string[];
+    // --- Added for logging ---
+    jobId?: string;
+    logDirectoryPath?: string;
     // Optional progressCallback for internal use (if needed by main.ts logic)
     progressCallback?: (progress: EncodingProgress) => void;
 }
@@ -768,13 +789,23 @@ async function runFFMPEGTest() {
 }
 // --- End FFMPEG Transcoding Test Function ---
 
-app.on("ready", () => {
+app.on("ready", async () => {
     const mainWindow = new BrowserWindow({
         // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
         webPreferences: {
             preload: getPreloadPath(),
         }
     });
+
+    // --- Create Encoding Log Directory ---
+    const logDir = path.join(app.getPath('userData'), 'encoding_logs');
+    try {
+        await fs.mkdir(logDir, { recursive: true });
+        console.log(`[Main Process] Encoding logs directory ensured: ${logDir}`);
+    } catch (dirError) {
+        console.error(`[Main Process] Failed to create encoding log directory ${logDir}:`, dirError);
+    }
+    // --- End Create Log Directory ---
 
     // --- Initialize Database ---
     let dbPath: string | undefined;
@@ -1350,7 +1381,7 @@ app.on("ready", () => {
     ipcMain.handle('start-encoding-process', async (_event, options: EncodingOptions) => {
         if (!mainWindow) {
             console.error('Cannot start encoding, mainWindow is not available.');
-            return { success: false, error: 'Main window not available' };
+            return { success: false, error: 'Main window not available', jobId: undefined }; // Return jobId as undefined
         }
 
         const jobId = crypto.randomUUID(); // Generate Job ID
@@ -1365,18 +1396,20 @@ app.on("ready", () => {
         const progressCallback = (progress: EncodingProgress) => {
             try {
                 if (mainWindow && !mainWindow.isDestroyed()) {
-                    mainWindow.webContents.send('encodingProgress', progress);
+                    mainWindow.webContents.send('encodingProgress', { ...progress, jobId }); // Include jobId in progress updates
                 }
             } catch (error) {
                 console.error(`[Encoding Progress] Error sending progress update:`, error);
             }
         };
 
-        // Merge received options with the progress callback and overwrite flag
+        // Merge received options with the progress callback, overwrite flag, jobId, and log path
         const optionsWithCallback: EncodingOptions = {
             ...options,
             overwriteInput: isOverwrite, // Pass the determined flag
-            progressCallback: progressCallback
+            progressCallback: progressCallback,
+            jobId: jobId, // Pass jobId
+            logDirectoryPath: logDir // Pass log directory path
         };
 
         console.log('[Main Process] Calling startEncodingProcess with options:', JSON.stringify(optionsWithCallback, null, 2));
@@ -1386,8 +1419,8 @@ app.on("ready", () => {
 
         console.log('[Main Process] Encoding process finished with result:', result);
 
-        // Prepare the result object to send back to UI
-        let finalResult: any = { ...result, jobId: result.success ? jobId : undefined };
+        // Prepare the result object to send back to UI, always include jobId
+        let finalResult: any = { ...result, jobId: jobId }; // Ensure jobId is always returned
 
         // --- Post-Encoding Update (Conditional) --- 
         if (result.success && result.outputPath) {
@@ -1402,24 +1435,28 @@ app.on("ready", () => {
                         await updateMediaAfterEncoding(probeData, jobId, options.inputPath);
                         console.log(`[Main Process] Database updated successfully for Job ID ${jobId}.`);
                          mainWindow?.webContents.send('encodingProgress', {
+                            jobId,
                             status: `Overwrite complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. DB Updated. File: ${result.outputPath}`
                         });
                     } else {
                         // Saved as new file, don't update original DB record
                         console.log(`[Main Process] Save As New mode: Database record for original file not updated. New file at: ${result.outputPath}`);
                          mainWindow?.webContents.send('encodingProgress', {
+                            jobId,
                             status: `Save As New complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. File: ${result.outputPath}`
                         });
                     }
                 } else {
                     console.warn(`[Main Process] Probe failed for final file ${result.outputPath}. Database not updated.`);
                     mainWindow?.webContents.send('encodingProgress', {
+                        jobId,
                         status: `Encoding complete but probe failed. Output: ${result.outputPath}`
                     });
                 }
             } catch (updateError) {
                 console.error(`[Main Process] Error during post-encoding probe/update for Job ID ${jobId}:`, updateError);
                  mainWindow?.webContents.send('encodingProgress', {
+                    jobId,
                     status: isOverwrite 
                         ? `Overwrite complete but DB update failed. File: ${result.outputPath}`
                         : `Save As New complete but post-encode step failed. File: ${result.outputPath}`
@@ -1428,13 +1465,39 @@ app.on("ready", () => {
         } else if (!result.success) {
             // Send failure status update
             mainWindow?.webContents.send('encodingProgress', {
+                jobId,
                 status: `Encoding failed: ${result.error}`
             });
         }
         // --- End Post-Encoding Update --- 
 
-        return finalResult;
+        return finalResult; // Return the result including the jobId
     });
+
+    // --- Add New Handler for Reading Logs ---
+    ipcMain.handle('get-encoding-log', async (_event, jobId: string): Promise<string | null> => {
+        if (!jobId) {
+            console.warn("[get-encoding-log] Received request without a Job ID.");
+            return null;
+        }
+        const logFilePath = path.join(logDir, `${jobId}.log`);
+        console.log(`[get-encoding-log] Attempting to read log file: ${logFilePath}`);
+        try {
+            // Ensure file exists before reading
+            await fs.access(logFilePath, fs.constants.R_OK);
+            const logContent = await fs.readFile(logFilePath, 'utf-8');
+            console.log(`[get-encoding-log] Successfully read log file for Job ID: ${jobId}`);
+            return logContent;
+        } catch (error: any) {
+            if (error.code === 'ENOENT') {
+                console.error(`[get-encoding-log] Log file not found for Job ID ${jobId} at path: ${logFilePath}`);
+                return `Log file not found for Job ID: ${jobId}`;
+            }
+            console.error(`[get-encoding-log] Error reading log file ${logFilePath}:`, error);
+            return `Error reading log file for Job ID ${jobId}: ${error.message}`;
+        }
+    });
+    // --- End New Handler ---
 
     // Helper function to update media DB after encoding
     async function updateMediaAfterEncoding(probeData: any, jobId: string, targetDbFilePath: string): Promise<void> {
