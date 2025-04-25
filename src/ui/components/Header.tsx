@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { Input } from "src/components/ui/input"; // Assuming @ alias for Shadcn UI
+import { ThemeToggle } from './ThemeToggle'; // Import the new toggle
 
 const Header: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -36,8 +37,11 @@ const Header: React.FC = () => {
         {/* Hidden submit button to allow Enter key submission */}
         <button type="submit" style={{ display: 'none' }} aria-hidden="true"></button>
       </form>
-      {/* Optional: Add other elements here if needed, like user menu */}
-      {/* <div className="ml-auto">...</div> */}
+      
+      {/* Add Theme Toggle to the right */}
+      <div className="ml-auto">
+        <ThemeToggle />
+      </div>
     </header>
   );
 };

@@ -9,119 +9,102 @@ interface GaugeWidgetProps {
 const GaugeWidget: React.FC<GaugeWidgetProps> = ({ 
     value, 
     label,
-    colorScheme = 'blue'
+    colorScheme = 'purple'
 }) => {
-    // Define color schemes for different gauges
+    // Define color schemes with light/dark mode variables
     const colorSchemes = {
         blue: {
-            primary: '#3b82f6',
-            glow: '#60a5fa30',
-            background: '#1e3a8a20',
-            text: '#93c5fd'
+            primary: 'var(--chart-1)',
+            secondary: 'hsl(220, 70%, 50%, 0.2)',
+            glow: 'hsl(220, 70%, 50%, 0.15)',
+            text: 'hsl(220, 70%, 60%)'
         },
         green: {
-            primary: '#22c55e',
-            glow: '#4ade8030',
-            background: '#14532d20',
-            text: '#86efac'
+            primary: 'var(--chart-2)',
+            secondary: 'hsl(160, 60%, 45%, 0.2)', 
+            glow: 'hsl(160, 60%, 45%, 0.15)',
+            text: 'hsl(160, 60%, 55%)'
         },
         purple: {
-            primary: '#a855f7',
-            glow: '#c084fc30',
-            background: '#581c8720',
-            text: '#d8b4fe'
+            primary: 'var(--primary)',
+            secondary: 'hsl(244, 86%, 56%, 0.2)',
+            glow: 'hsl(244, 86%, 56%, 0.15)',
+            text: 'var(--primary)'
         },
         orange: {
-            primary: '#f97316',
-            glow: '#fb923c30',
-            background: '#7c2d1220',
-            text: '#fdba74'
+            primary: 'var(--chart-4)',
+            secondary: 'hsl(340, 75%, 55%, 0.2)',
+            glow: 'hsl(340, 75%, 55%, 0.15)',
+            text: 'hsl(340, 75%, 65%)'
         }
     };
 
     const colors = colorSchemes[colorScheme];
     const percentage = value ?? 0;
-    const radius = 85; // Slightly larger radius
-    const strokeWidth = 10; // Slightly thinner stroke
+    const radius = 80;
+    const strokeWidth = 12;
     const normalizedRadius = radius - strokeWidth / 2;
-    const circumference = normalizedRadius * Math.PI; // Only half circle
+    const circumference = normalizedRadius * 2 * Math.PI;
     const strokeDashoffset = circumference - (percentage / 100) * circumference;
-
-    // Calculate viewBox to position half circle correctly
-    const viewBoxSize = radius * 2;
+    const gradientId = `gradient-${colorScheme}`;
 
     return (
-        <div className="relative flex flex-col items-center justify-center p-4 rounded-xl bg-black/40 border border-gray-800">
-            {/* Gauge Title */}
-            <h3 className="mb-6 text-sm font-medium text-gray-400">{label}</h3>
-
-            {/* SVG Gauge */}
-            <div className="relative">
-                <svg
-                    height={radius * 1.2} // Adjust height for half circle
-                    width={viewBoxSize}
-                    viewBox={`0 0 ${viewBoxSize} ${viewBoxSize}`}
-                    className="transform rotate-180" // Rotate to make it curve upward
-                >
-                    {/* Background arc */}
-                    <path
-                        d={`M ${strokeWidth/2},${radius} A ${normalizedRadius},${normalizedRadius} 0 0 0 ${viewBoxSize - strokeWidth/2},${radius}`}
-                        stroke={colors.background}
-                        fill="none"
-                        strokeWidth={strokeWidth}
-                    />
-                    
-                    {/* Gauge progress with focused glow */}
-                    <path
-                        d={`M ${strokeWidth/2},${radius} A ${normalizedRadius},${normalizedRadius} 0 0 0 ${viewBoxSize - strokeWidth/2},${radius}`}
-                        stroke={colors.primary}
-                        fill="none"
-                        strokeWidth={strokeWidth}
-                        strokeDasharray={circumference + ' ' + circumference}
-                        style={{ 
-                            strokeDashoffset: -strokeDashoffset,
-                            filter: `
-                                drop-shadow(0 0 1px ${colors.glow})
-                                drop-shadow(0 0 2px ${colors.glow})
-                                drop-shadow(0 0 4px ${colors.glow})
-                            `,
-                            transition: 'stroke-dashoffset 0.3s ease'
-                        }}
-                        strokeLinecap="round"
-                    />
-
-                    {/* Add minimal tick marks */}
-                    {[...Array(11)].map((_, i) => {
-                        const rotation = i * (180 / 10); // Spread across 180 degrees
-                        const isLongTick = i % 2 === 0;
-                        const tickAngle = (rotation + 180) * (Math.PI / 180); // Offset by 180 degrees
-                        const x1 = radius + (normalizedRadius - (isLongTick ? 15 : 10)) * Math.cos(tickAngle);
-                        const y1 = radius + (normalizedRadius - (isLongTick ? 15 : 10)) * Math.sin(tickAngle);
-                        const x2 = radius + (normalizedRadius - strokeWidth) * Math.cos(tickAngle);
-                        const y2 = radius + (normalizedRadius - strokeWidth) * Math.sin(tickAngle);
-                        
-                        return (
-                            <line
-                                key={i}
-                                x1={x1}
-                                y1={y1}
-                                x2={x2}
-                                y2={y2}
-                                stroke={colors.background}
-                                strokeWidth={2}
-                                opacity={isLongTick ? 0.6 : 0.3}
-                            />
-                        );
-                    })}
+        <div className="flex flex-col items-center justify-center w-full h-full">
+            <div className="relative flex items-center justify-center">
+                {/* Define gradient */}
+                <svg width="0" height="0">
+                    <defs>
+                        <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style={{ stopColor: colors.primary, stopOpacity: 1 }} />
+                            <stop offset="100%" style={{ stopColor: colors.text, stopOpacity: 0.8 }} />
+                        </linearGradient>
+                    </defs>
                 </svg>
 
-                {/* Center display */}
-                <div 
-                    className="absolute inset-x-0 -bottom-2 flex flex-col items-center justify-center"
-                    style={{ color: colors.text }}
+                {/* Main gauge circle */}
+                <svg
+                    height={radius * 2}
+                    width={radius * 2}
+                    className="transform -rotate-90"
                 >
-                    <span className="text-3xl font-bold tracking-tighter">
+                    {/* Background circle */}
+                    <circle
+                        stroke={colors.secondary}
+                        fill="none"
+                        strokeWidth={strokeWidth}
+                        r={normalizedRadius}
+                        cx={radius}
+                        cy={radius}
+                        style={{
+                            filter: `drop-shadow(0 0 6px ${colors.glow})`
+                        }}
+                    />
+                    
+                    {/* Progress circle */}
+                    <circle
+                        stroke={`url(#${gradientId})`}
+                        fill="none"
+                        strokeWidth={strokeWidth}
+                        strokeLinecap="round"
+                        r={normalizedRadius}
+                        cx={radius}
+                        cy={radius}
+                        style={{
+                            strokeDasharray: circumference + ' ' + circumference,
+                            strokeDashoffset: strokeDashoffset,
+                            transition: 'stroke-dashoffset 1s ease-in-out',
+                            filter: `drop-shadow(0 0 6px ${colors.glow})`
+                        }}
+                    />
+                </svg>
+
+                {/* Center text */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="text-3xl font-bold" style={{ color: colors.primary }}>
                         {value === null ? 'N/A' : `${value.toFixed(1)}%`}
+                    </span>
+                    <span className="text-sm font-medium text-muted-foreground mt-1">
+                        {label}
                     </span>
                 </div>
             </div>

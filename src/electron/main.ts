@@ -261,12 +261,18 @@ async function addMediaToDb(probeData: any, libraryName: string, libraryType: Wa
 
     let videoCodec: string | null = null;
     let audioCodec: string | null = null;
+    let resolutionWidth: number | null = null;
+    let resolutionHeight: number | null = null;
+    let audioChannels: number | null = null;
 
     if (probeData.streams && Array.isArray(probeData.streams)) {
         const videoStream = probeData.streams.find((s: any) => s.codec_type === 'video');
         const audioStream = probeData.streams.find((s: any) => s.codec_type === 'audio');
         videoCodec = videoStream?.codec_name ?? null;
         audioCodec = audioStream?.codec_name ?? null;
+        resolutionWidth = videoStream?.width ?? null;
+        resolutionHeight = videoStream?.height ?? null;
+        audioChannels = audioStream?.channels ?? null;
     }
 
     try {
@@ -280,19 +286,23 @@ async function addMediaToDb(probeData: any, libraryName: string, libraryType: Wa
                 SET currentSize = ?, 
                     lastSizeCheckAt = CURRENT_TIMESTAMP,
                     videoCodec = ?,
-                    audioCodec = ?
+                    audioCodec = ?,
+                    resolutionWidth = ?,
+                    resolutionHeight = ?,
+                    audioChannels = ?
                 WHERE id = ?
             `;
             const updateStmt = db.prepare(updateSql);
-            updateStmt.run(fileSize, videoCodec, audioCodec, existingFile.id);
+            updateStmt.run(fileSize, videoCodec, audioCodec, resolutionWidth, resolutionHeight, audioChannels, existingFile.id);
             console.log(`Updated size for existing file: ${title}`);
         } else {
             // Insert new file with both originalSize and currentSize set to the current size
             const insertSql = `
                 INSERT INTO media (
                     title, filePath, originalSize, currentSize,
-                    videoCodec, audioCodec, libraryName, libraryType
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    videoCodec, audioCodec, libraryName, libraryType,
+                    resolutionWidth, resolutionHeight, audioChannels
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
             const insertStmt = db.prepare(insertSql);
             const info = insertStmt.run(
@@ -303,7 +313,10 @@ async function addMediaToDb(probeData: any, libraryName: string, libraryType: Wa
                 videoCodec,
                 audioCodec,
                 libraryName,
-                libraryType
+                libraryType,
+                resolutionWidth,
+                resolutionHeight,
+                audioChannels
             );
             if (info.changes > 0) {
                 console.log(`Added to DB: ${title} (${libraryName})`);
@@ -784,6 +797,9 @@ app.on("ready", () => {
                 audioCodec TEXT,
                 libraryName TEXT,
                 libraryType TEXT CHECK( libraryType IN ('TV','Movies','Anime') ),
+                resolutionWidth INTEGER,   -- Add resolution width
+                resolutionHeight INTEGER,  -- Add resolution height
+                audioChannels INTEGER,     -- Add audio channel count
                 -- Placeholders for future encoding features
                 encodingJobId TEXT,
                 encodingNodeId TEXT,
@@ -910,6 +926,18 @@ app.on("ready", () => {
                 ADD COLUMN lastSizeCheckAt DATETIME NOT NULL 
                 DEFAULT CURRENT_TIMESTAMP
             `);
+        }
+
+        if (!columns.includes('resolutionWidth')) {
+            migrations.push(`ALTER TABLE media ADD COLUMN resolutionWidth INTEGER`);
+        }
+
+        if (!columns.includes('resolutionHeight')) {
+            migrations.push(`ALTER TABLE media ADD COLUMN resolutionHeight INTEGER`);
+        }
+
+        if (!columns.includes('audioChannels')) {
+            migrations.push(`ALTER TABLE media ADD COLUMN audioChannels INTEGER`);
         }
 
         // Execute migrations in a transaction
@@ -1425,16 +1453,22 @@ app.on("ready", () => {
 
         let videoCodec: string | null = null;
         let audioCodec: string | null = null;
+        let resolutionWidth: number | null = null;
+        let resolutionHeight: number | null = null;
+        let audioChannels: number | null = null;
 
         if (probeData.streams && Array.isArray(probeData.streams)) {
             const videoStream = probeData.streams.find((s: any) => s.codec_type === 'video');
             const audioStream = probeData.streams.find((s: any) => s.codec_type === 'audio');
             videoCodec = videoStream?.codec_name ?? null;
             audioCodec = audioStream?.codec_name ?? null;
+            resolutionWidth = videoStream?.width ?? null;
+            resolutionHeight = videoStream?.height ?? null;
+            audioChannels = audioStream?.channels ?? null;
         }
 
         console.log(`[DB Update] Attempting to update media for file path in DB: ${targetDbFilePath} with Job ID: ${jobId}`);
-        console.log(`[DB Update] New Data: Size=${fileSize}, VideoCodec=${videoCodec}, AudioCodec=${audioCodec}`);
+        console.log(`[DB Update] New Data: Size=${fileSize}, VideoCodec=${videoCodec}, AudioCodec=${audioCodec}, Resolution=${resolutionWidth}x${resolutionHeight}, Channels=${audioChannels}`);
 
         // Use a specific UPDATE statement targeting the targetDbFilePath
         const updateSql = `
@@ -1442,6 +1476,9 @@ app.on("ready", () => {
             SET currentSize = ?, 
                 videoCodec = ?, 
                 audioCodec = ?, 
+                resolutionWidth = ?, 
+                resolutionHeight = ?, 
+                audioChannels = ?, 
                 encodingJobId = ?, 
                 lastSizeCheckAt = CURRENT_TIMESTAMP 
             WHERE filePath = ?
@@ -1449,7 +1486,7 @@ app.on("ready", () => {
         try {
             const updateStmt = db.prepare(updateSql);
             // Use new data from probeData, but use targetDbFilePath for the WHERE condition
-            const info = updateStmt.run(fileSize, videoCodec, audioCodec, jobId, targetDbFilePath);
+            const info = updateStmt.run(fileSize, videoCodec, audioCodec, resolutionWidth, resolutionHeight, audioChannels, jobId, targetDbFilePath);
 
             if (info.changes > 0) {
                 console.log(`[DB Update] Successfully updated media record for ${targetDbFilePath} (Job ID: ${jobId}). Changes: ${info.changes}`);

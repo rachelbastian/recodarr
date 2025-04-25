@@ -107,7 +107,17 @@ export interface Workflow {}; // Placeholder
 export interface WorkflowDetails {}; // Placeholder
 export interface HardwareInfo {}; // Placeholder
 export interface Statistics {}; // Placeholder
-export interface SystemStats {}; // Placeholder
+// --- Define SystemStats ---
+export interface SystemStats {
+    cpuLoad: number | null;
+    memLoad: number | null;
+    gpuLoad: number | null;
+    gpuMemoryUsed: number | null;
+    gpuMemoryTotal: number | null;
+    gpuMemoryUsagePercent: number | null;
+    error?: string;
+};
+// export interface SystemStats {}; // Placeholder // Remove old placeholder
 export interface StaticData {}; // Placeholder
 export interface WatchedFolder {}; // Placeholder
 export interface EventPayloadMapping { 'scan-status-update': any }; // Placeholder

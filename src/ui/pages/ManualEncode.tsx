@@ -168,6 +168,12 @@ const ManualEncode: React.FC = () => { // Renamed component
             if (data.status) {
                 console.log(`[UI] Status update: ${data.status}`);
                 setStatus(data.status);
+                // Set progress to 100% if we get a completion message
+                if (data.status.toLowerCase().includes('complete')) {
+                    console.log('[UI] Encoding complete, setting progress to 100%');
+                    setPercent(100);
+                    return;
+                }
             }
 
             // Update frame and totalFrames
@@ -180,7 +186,7 @@ const ManualEncode: React.FC = () => { // Renamed component
                 setTotalFrames(data.totalFrames);
             }
 
-            // Calculate percentage if possible
+            // Calculate percentage if possible and not complete
             if (data.frame !== undefined && data.totalFrames !== undefined && data.totalFrames > 0) {
                 const calculatedPercent = Math.min(100, Math.max(0, (data.frame / data.totalFrames) * 100));
                 console.log(`[UI] Calculated percent: ${calculatedPercent.toFixed(1)}% (from ${data.frame}/${data.totalFrames})`);

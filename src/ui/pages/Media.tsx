@@ -53,6 +53,10 @@ interface MediaItem {
     videoCodec: string | null;
     audioCodec: string | null;
     addedAt: string;
+    encodingJobId: string | null;
+    resolutionWidth: number | null;
+    resolutionHeight: number | null;
+    audioChannels: number | null;
 }
 
 // Helper to format bytes
@@ -70,43 +74,32 @@ const columns: ColumnDef<MediaItem>[] = [
     {
         accessorKey: 'title',
         header: 'Title',
-        cell: info => info.getValue(),
-        size: 250,
+        cell: info => (
+            <span className="truncate block" title={info.getValue<string>()}>
+                {info.getValue<string>()}
+            </span>
+        ),
+        size: 200,
         enableResizing: true,
     },
     {
         accessorKey: 'libraryName',
         header: 'Library',
         cell: info => info.getValue(),
-        size: 150,
+        size: 120,
         enableResizing: true,
     },
     {
         accessorKey: 'libraryType',
         header: 'Type',
         cell: info => <Badge variant="secondary">{info.getValue<string>()}</Badge>,
-        size: 100,
+        size: 80,
         enableResizing: true,
     },
     {
-        accessorKey: 'videoCodec',
-        header: 'Video Codec',
-        cell: info => (
-            <span className="text-xs">
-                {info.getValue<string>() ?? '-'}
-            </span>
-        ),
-        size: 100,
-        enableResizing: true,
-    },
-    {
-        accessorKey: 'audioCodec',
-        header: 'Audio Codec',
-        cell: info => (
-            <span className="text-xs">
-                {info.getValue<string>() ?? '-'}
-            </span>
-        ),
+        accessorKey: 'currentSize',
+        header: 'Current Size',
+        cell: info => formatBytes(info.getValue<number>()),
         size: 100,
         enableResizing: true,
     },
@@ -118,34 +111,138 @@ const columns: ColumnDef<MediaItem>[] = [
         enableResizing: true,
     },
     {
-        accessorKey: 'currentSize',
-        header: 'Current Size',
-        cell: info => formatBytes(info.getValue<number>()),
+        accessorKey: 'encodingJobId',
+        header: 'Status',
+        cell: info => {
+            const jobId = info.getValue<string | null>();
+            if (jobId) {
+                return <Badge variant="outline" title={jobId}>Processed</Badge>;
+            }
+            return <Badge variant="secondary">Not Processed</Badge>;
+        },
         size: 100,
+        enableResizing: true,
+        enableSorting: false,
+    },
+    {
+        accessorKey: 'videoCodec',
+        header: 'Video',
+        cell: info => (
+            <span className="text-xs font-mono">
+                {info.getValue<string>() ?? '-'}
+            </span>
+        ),
+        size: 80,
+        enableResizing: true,
+    },
+    {
+        accessorKey: 'audioCodec',
+        header: 'Audio',
+        cell: info => (
+            <span className="text-xs font-mono">
+                {info.getValue<string>() ?? '-'}
+            </span>
+        ),
+        size: 80,
+        enableResizing: true,
+    },
+    {
+        accessorKey: 'addedAt',
+        header: 'Added',
+        cell: info => {
+            const date = new Date(info.getValue<string>());
+            return <span className="text-xs">{date.toLocaleDateString()}</span>;
+        },
+        size: 90,
+        enableResizing: true,
+    },
+    {
+        accessorKey: 'lastSizeCheckAt',
+        header: 'Last Check',
+        cell: info => {
+            const date = new Date(info.getValue<string>());
+            return <span className="text-xs">{date.toLocaleDateString()}</span>;
+        },
+        size: 90,
         enableResizing: true,
     },
     {
         accessorKey: 'filePath',
         header: 'Path',
-        cell: info => (
-            <span className="text-xs text-muted-foreground truncate" title={info.getValue<string>()}>
-                {info.getValue<string>()}
-            </span>
-        ),
-        size: 300,
+        cell: info => {
+            const fullPath = info.getValue<string>();
+            // Show just the last two parts of the path for cleaner display
+            const pathParts = fullPath.split(/[\\/]/); // Split on both forward and back slashes
+            const displayPath = pathParts.length > 2 
+                ? '...' + pathParts.slice(-2).join('/')
+                : fullPath;
+            return (
+                <span className="text-xs text-muted-foreground truncate block" title={fullPath}>
+                    {displayPath}
+                </span>
+            );
+        },
+        size: 150,
         enableResizing: true,
     },
 ];
 
-// Define initial column order
+// Define new column definitions for Resolution and Audio Channels
+const resolutionColumn: ColumnDef<MediaItem> = {
+    id: 'resolution', // Custom ID needed as accessorKey isn't a single field
+    header: 'Res',
+    accessorFn: row => row.resolutionWidth && row.resolutionHeight ? `${row.resolutionWidth}x${row.resolutionHeight}` : '-',
+    cell: info => <span className="text-xs font-mono">{info.getValue<string>()}</span>,
+    size: 80,
+    enableResizing: true,
+    sortingFn: 'alphanumeric', // Sort based on the formatted string (e.g., 1920x1080)
+    // Alternative: If sorting numerically by width is preferred:
+    // sortingFn: (rowA, rowB) => (rowA.original.resolutionWidth || 0) - (rowB.original.resolutionWidth || 0),
+};
+
+const audioChannelsColumn: ColumnDef<MediaItem> = {
+    accessorKey: 'audioChannels',
+    header: 'Audio Ch',
+    cell: info => {
+        const channels = info.getValue<number | null>();
+        let channelText = '-';
+        if (channels === 1) channelText = 'Mono';
+        else if (channels === 2) channelText = 'Stereo';
+        else if (channels === 6) channelText = '5.1'; // Common representation for 5.1
+        else if (channels === 8) channelText = '7.1'; // Common representation for 7.1
+        else if (channels) channelText = `${channels}ch`;
+        return <span className="text-xs">{channelText}</span>;
+    },
+    size: 70,
+    enableResizing: true,
+};
+
+// Insert new columns into the array (e.g., after codec info)
+// Find index based on header, as resolution doesn't have accessorKey
+const videoCodecIndex = columns.findIndex(col => col.header === 'Video'); 
+if (videoCodecIndex !== -1) {
+    columns.splice(videoCodecIndex + 1, 0, resolutionColumn); // Add Resolution after Video Codec
+}
+
+const audioCodecIndex = columns.findIndex(col => col.header === 'Audio');
+if (audioCodecIndex !== -1) {
+    columns.splice(audioCodecIndex + 1, 0, audioChannelsColumn); // Add Audio Channels after Audio Codec
+}
+
+// Define initial column order to match the visual hierarchy
 const initialColumnOrder: string[] = [
-    'currentSize',
-    'videoCodec',
     'title',
     'libraryName',
     'libraryType',
-    'audioCodec',
+    'currentSize',
     'originalSize',
+    'encodingJobId',
+    'videoCodec',
+    'resolution',
+    'audioCodec',
+    'audioChannels',
+    'addedAt',
+    'lastSizeCheckAt',
     'filePath',
 ];
 
@@ -210,7 +307,8 @@ const Media: React.FC = () => {
             SELECT 
                 id, title, filePath, libraryName, libraryType,
                 originalSize, currentSize, lastSizeCheckAt,
-                videoCodec, audioCodec, addedAt 
+                videoCodec, audioCodec, addedAt, encodingJobId,
+                resolutionWidth, resolutionHeight, audioChannels
             FROM media 
             WHERE 1=1
         `;
@@ -230,7 +328,8 @@ const Media: React.FC = () => {
                 SELECT 
                     m.id, m.title, m.filePath, m.libraryName, m.libraryType,
                     m.originalSize, m.currentSize, m.lastSizeCheckAt,
-                    m.videoCodec, m.audioCodec, m.addedAt
+                    m.videoCodec, m.audioCodec, m.addedAt, m.encodingJobId,
+                    m.resolutionWidth, m.resolutionHeight, m.audioChannels
                 FROM media AS m
                 JOIN media_fts AS fts ON m.id = fts.rowid
                 WHERE 1=1
@@ -264,8 +363,25 @@ const Media: React.FC = () => {
             mainSql += whereClause;
         }
 
-        // Add ordering
-        mainSql += query ? ' ORDER BY rank, m.addedAt DESC' : ' ORDER BY addedAt DESC';
+        // Add ordering based on sorting state
+        if (sorting.length > 0) {
+            const sort = sorting[0]; // Assuming single column sorting for now
+            const { id: columnId, desc } = sort;
+            // Validate columnId against known columns to prevent SQL injection
+            const validColumns = ['title', 'libraryName', 'libraryType', 'videoCodec', 'audioCodec', 'originalSize', 'currentSize', 'filePath', 'addedAt', 'lastSizeCheckAt', 'resolutionWidth', 'audioChannels']; // Add new sortable columns
+            if (validColumns.includes(columnId)) {
+                // For resolution, we sort by width
+                const sqlColumn = columnId === 'resolution' ? 'resolutionWidth' : columnId;
+                mainSql += ` ORDER BY ${sqlColumn} ${desc ? 'DESC' : 'ASC'}`;
+            } else {
+                console.warn(`Invalid sort column ignored: ${columnId}`);
+                // Default sort if invalid column or FTS query is used
+                mainSql += query ? ' ORDER BY rank, addedAt DESC' : ' ORDER BY addedAt DESC';
+            }
+        } else {
+            // Default sort order if no specific sorting is applied
+            mainSql += query ? ' ORDER BY rank, addedAt DESC' : ' ORDER BY addedAt DESC';
+        }
 
         // Add pagination
         mainSql += ' LIMIT ? OFFSET ?';
@@ -287,13 +403,13 @@ const Media: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [searchParams, pagination.pageIndex, pagination.pageSize, libraryNameFilter, libraryTypeFilter, videoCodecFilter, audioCodecFilter]);
+    }, [searchParams, pagination.pageIndex, pagination.pageSize, libraryNameFilter, libraryTypeFilter, videoCodecFilter, audioCodecFilter, sorting]); // Add sorting to dependency array
 
     useEffect(() => {
         fetchMedia();
     }, [fetchMedia]);
 
-    // Initialize TanStack Table with server-side pagination
+    // Initialize TanStack Table with server-side pagination and sorting
     const table = useReactTable({
         data: mediaItems,
         columns,
@@ -315,6 +431,7 @@ const Media: React.FC = () => {
         onSortingChange: setSorting,
         onPaginationChange: setPagination,
         manualPagination: true, // Enable manual pagination
+        manualSorting: true, // Enable manual sorting
         pageCount: Math.ceil(totalRows / pagination.pageSize), // Calculate total pages
     });
 

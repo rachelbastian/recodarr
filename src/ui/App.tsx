@@ -12,7 +12,7 @@ import './App.css';
 function App() {
     return (
         <Router>
-            <div className="dark flex h-screen bg-background text-foreground">
+            <div className="flex h-screen bg-background text-foreground">
                 <Navbar />
                 <div className="flex flex-1 flex-col overflow-hidden">
                     <Header />

@@ -1,8 +1,8 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Home, Settings, BarChart2, Search, Library, PlusCircle, Film, Share2, ListOrdered } from 'lucide-react';
-import { cn } from "@/lib/utils"; // Assuming @ alias is setup
-import { Button } from "src/components/ui/button"; // Assuming @ alias is setup
+import { cn } from "@/lib/utils";
+import { Button } from "src/components/ui/button";
 
 interface SidebarItemProps {
   icon: React.ReactNode;
@@ -17,8 +17,8 @@ const SidebarItem: React.FC<SidebarItemProps> = ({ icon, label, href, active }) 
       <Button
         variant="ghost"
         className={cn(
-          "w-full justify-start gap-2 text-muted-foreground hover:text-foreground hover:bg-accent/10",
-          active && "bg-accent text-white font-medium" // Simplified active state style
+          "w-full justify-start gap-2 text-sidebar-foreground hover:text-accent hover:bg-sidebar-accent transition-colors",
+          active && "bg-sidebar-accent text-accent font-medium"
         )}
       >
         {icon}
@@ -34,12 +34,12 @@ const Navbar: React.FC = () => {
   const isActive = (path: string) => location.pathname === path;
 
   return (
-    <div className="w-64 h-screen bg-background border-r flex flex-col">
-      <div className="p-4 border-b h-14 flex items-center">
-        <h2 className="text-xl font-semibold text-foreground">RE : COD | ARR</h2>
+    <div className="w-64 h-screen bg-sidebar border-r border-sidebar-border flex flex-col">
+      <div className="p-4 border-b border-sidebar-border h-14 flex items-center bg-sidebar">
+        <h2 className="text-xl font-semibold text-accent">RE : COD | ARR</h2>
       </div>
       
-      <div className="flex-1 overflow-y-auto p-3">
+      <div className="flex-1 overflow-y-auto p-3 bg-sidebar">
         <div className="space-y-1">
           <SidebarItem icon={<Home className="h-4 w-4" />} label="Dashboard" href="/" active={isActive('/')} />
           <SidebarItem icon={<BarChart2 className="h-4 w-4" />} label="Statistics" href="/statistics" active={isActive('/statistics')} />
@@ -50,12 +50,12 @@ const Navbar: React.FC = () => {
         </div>
         
         <div className="mt-8">
-          <h3 className="text-sm font-medium text-muted-foreground mb-2 px-2">Quick Actions</h3>
+          <h3 className="text-sm font-medium text-sidebar-foreground/70 mb-2 px-2">Quick Actions</h3>
           <SidebarItem icon={<PlusCircle className="h-4 w-4" />} label="Add New Media" href="/add" active={isActive('/add')} />
         </div>
       </div>
 
-      <div className="p-3 border-t mt-auto">
+      <div className="p-3 border-t border-sidebar-border mt-auto bg-sidebar">
         <SidebarItem icon={<Settings className="h-4 w-4" />} label="Settings" href="/settings" active={isActive('/settings')} />
       </div>
     </div>
