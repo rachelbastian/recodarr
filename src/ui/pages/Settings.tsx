@@ -10,8 +10,7 @@ import { Label } from "../../../src/components/ui/label";
 import { Switch } from "../../../src/components/ui/switch";
 import { Input } from "../../../src/components/ui/input";
 import { Button } from "../../../src/components/ui/button";
-import { Alert, AlertDescription, AlertTitle } from "../../../src/components/ui/alert";
-import { Terminal, GripVertical, ArrowUpDown } from 'lucide-react';
+import { GripVertical } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -37,6 +36,8 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { GpuInfo, HardwareInfo } from '../../types';
+import LogViewer from '../components/settings/LogViewer';
 
 interface SortableTableRowProps {
   id: string;
@@ -132,7 +133,7 @@ const Settings: React.FC = () => {
         // Update priorities in the database
         Promise.all(
           updatedItems.map((device: HardwareInfo) =>
-            window.electron.updateHardwarePriority(device.id, device.priority)
+            window.electron.updateHardwarePriority(device.id, device.priority || 0)
           )
         ).catch(error => {
           console.error("Error updating priorities:", error);
@@ -391,6 +392,9 @@ const Settings: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Log Viewer Section */}
+          <LogViewer />
         </div>
       </div>
     </div>

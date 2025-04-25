@@ -17,6 +17,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import { startEncodingProcess } from './ffmpegUtils.js';
 import crypto from 'crypto';
+import { setMainWindow, captureConsoleLogs, getLogBuffer } from './logger.js'; // Import logger functions
 // Remove problematic type import
 // import type { ... } from '../../types.js';
 
@@ -790,12 +791,18 @@ async function runFFMPEGTest() {
 // --- End FFMPEG Transcoding Test Function ---
 
 app.on("ready", async () => {
+    // Capture console logs as early as possible
+    captureConsoleLogs();
+
     const mainWindow = new BrowserWindow({
         // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
         webPreferences: {
             preload: getPreloadPath(),
         }
     });
+
+    // Set the main window instance in the logger
+    setMainWindow(mainWindow);
 
     // --- Create Encoding Log Directory ---
     const logDir = path.join(app.getPath('userData'), 'encoding_logs');
@@ -1574,6 +1581,11 @@ app.on("ready", async () => {
         encodingProgressEventSender = null;
     });
     // --- End Encoding Handlers ---
+
+    // Add new handler for getting initial logs
+    ipcMain.handle('get-initial-logs', async () => {
+        return getLogBuffer();
+    });
 })
 
 // Quit when all windows are closed, except on macOS.

@@ -1,3 +1,5 @@
+import { Node, Edge } from 'reactflow';
+
 // --- FFprobe Types --- 
 export interface StreamInfo {
     index: number;
@@ -105,25 +107,94 @@ interface SaveDialogResult {
 
 // --- Electron API Interface --- 
 // Add other existing/required types if not already present
-export interface GpuInfo { vendor: string; model: string; memoryTotal: number | null };
-export interface Workflow {}; // Placeholder
-export interface WorkflowDetails {}; // Placeholder
-export interface HardwareInfo {}; // Placeholder
-export interface Statistics {}; // Placeholder
-// --- Define SystemStats ---
+// --- Copied from root types.d.ts ---
+export interface GpuInfo { 
+    vendor: string; 
+    model: string; 
+    memoryTotal: number | null; // Added total memory detected by SI
+};
+export interface Workflow {
+    id: number;
+    name: string;
+    description: string;
+};
+export interface WorkflowDetails extends Workflow {
+    nodes: Node[]; // Make sure Node/Edge are imported if needed here
+    edges: Edge[];
+};
+export interface HardwareInfo {
+    id: number;
+    device_type: 'CPU' | 'GPU';
+    vendor: string;
+    model: string;
+    cores_threads: number | null;
+    base_clock_mhz: number | null;
+    memory_mb: number | null;
+    is_enabled: boolean;
+    priority: number;
+    added_at: string;
+    last_updated: string;
+};
+export interface Statistics {
+    cpuUsage: number;
+    ramUsage: number;
+    storageData: number;
+};
 export interface SystemStats {
     cpuLoad: number | null;
     memLoad: number | null;
     gpuLoad: number | null;
     gpuMemoryUsed: number | null;
     gpuMemoryTotal: number | null;
-    gpuMemoryUsagePercent: number | null;
+    gpuMemoryUsagePercent?: number | null; // Added optional GPU memory usage percentage
     error?: string;
 };
-// export interface SystemStats {}; // Placeholder // Remove old placeholder
-export interface StaticData {}; // Placeholder
-export interface WatchedFolder {}; // Placeholder
-export interface EventPayloadMapping { 'scan-status-update': any }; // Placeholder
+export interface StaticData {
+    totalStorage: number;
+    cpuModel: string;
+    totalMemoryGB: number;
+};
+export interface WatchedFolder {
+    path: string;
+    libraryName: string;
+    libraryType: 'TV' | 'Movies' | 'Anime';
+};
+// --- End Copied Types ---
+
+// --- Copied EventPayloadMapping from root types.d.ts ---
+declare interface EventPayloadMapping {
+    'statistics': Statistics;
+    'system-stats-update': SystemStats;
+    'scan-status-update': { status: 'running' | 'finished'; message: string };
+    // Note: 'startEncoding' seems different from startEncodingProcess. Review needed.
+    'startEncoding': { success: boolean; reduction?: number; error?: string }; 
+    // Note: 'encodingProgress' payload might need more detail (status, fps, etc.) based on preload.
+    'encodingProgress': { progress?: number; status?: string }; 
+    getStaticData: StaticData;
+    getAvailableGpus: GpuInfo[];
+    getSelectedGpu: string | null;
+    setSelectedGpu: void; 
+    getPsGpuMonitoringEnabled: boolean;
+    setPsGpuMonitoringEnabled: void; 
+    'db-query': any; 
+    'get-watched-folders': WatchedFolder[];
+    'add-watched-folder': WatchedFolder | null; 
+    'remove-watched-folder': void; 
+    'trigger-scan': { status: string }; 
+    'get-manual-gpu-vram': number | null;
+    'set-manual-gpu-vram': void; 
+    "get-hardware-info": HardwareInfo[];
+    "update-hardware-priority": void;
+    "update-hardware-enabled": void;
+    "refresh-hardware-info": HardwareInfo[];
+    'get-workflows': Workflow[];
+    'get-workflow-details': WorkflowDetails | null; 
+    'save-workflow': number; 
+    'delete-workflow': { changes: number }; 
+    // Add mappings for newer methods if needed (probe-file, start-encoding-process, etc.)
+}
+// --- End EventPayloadMapping ---
+
 export type UnsubscribeFunction = () => void;
 // End other existing types
 
@@ -136,11 +207,13 @@ export interface IElectronAPI {
     probeFile: (filePath: string) => Promise<ProbeData | null>;
 
     // Encoding Process Methods
-    startEncodingProcess: (options: EncodingOptions) => Promise<EncodingResult>; // Options type is updated
-    subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string }) => void) => UnsubscribeFunction;
+    startEncodingProcess: (options: EncodingOptions) => Promise<EncodingResult>; // Keep this one
+    // Update callback signature to match preload.cts (includes status, fps, etc.)
+    subscribeEncodingProgress: (callback: (data: { jobId?: string; progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number }) => void) => UnsubscribeFunction;
     unsubscribeEncodingProgress: () => void;
+    getEncodingLog: (jobId: string) => Promise<string | null>; // Added from preload
 
-    // --- Include other existing API methods --- 
+    // --- Include other existing API methods (Copied/Verified from root & preload) --- 
     subscribeStatistics: (callback: (statistics: Statistics) => void) => UnsubscribeFunction;
     getStaticData: () => Promise<StaticData>;
     subscribeSystemStats: (callback: (stats: SystemStats) => void) => UnsubscribeFunction;
@@ -158,14 +231,27 @@ export interface IElectronAPI {
     getManualGpuVram: () => Promise<number | null>;
     setManualGpuVram: (vramMb: number | null) => Promise<void>;
     getHardwareInfo: () => Promise<HardwareInfo[]>;
-    updateHardwarePriority: (deviceId: number, priority: number) => Promise<void>;
-    updateHardwareEnabled: (deviceId: number, isEnabled: boolean) => Promise<void>;
+    updateHardwarePriority: (deviceId: number, priority: number) => Promise<void>; // Return should be Promise<void> based on main.ts returning run() info
+    updateHardwareEnabled: (deviceId: number, isEnabled: boolean) => Promise<void>; // Return should be Promise<void>
     refreshHardwareInfo: () => Promise<HardwareInfo[]>;
     getWorkflows: () => Promise<Workflow[]>;
     getWorkflowDetails: (id: number) => Promise<WorkflowDetails | null>;
+    // Ensure Node/Edge types are imported correctly at the top of the file if needed
     saveWorkflow: (workflowData: { id?: number; name: string; description: string; nodes: any[]; edges: any[] }) => Promise<number>; // Use any for Node/Edge if reactflow types aren't imported
-    deleteWorkflow: (id: number) => Promise<{ changes: number }>;
+    deleteWorkflow: (id: number) => Promise<{ changes: number }>; // Return matches main.ts
     // --- End other existing API methods --- 
+
+    // --- Logger API --- 
+    subscribeToLogs: (callback: (logEntry: LogEntry) => void) => UnsubscribeFunction;
+    getInitialLogs: () => Promise<LogEntry[]>;
+}
+
+// --- Add LogEntry type definition --- 
+export interface LogEntry {
+    timestamp: string;
+    level: 'log' | 'warn' | 'error' | 'debug' | 'verbose';
+    message: string;
+    source?: string; // Added optional source
 }
 
 // Extend the Window interface
@@ -173,4 +259,11 @@ declare global {
     interface Window {
         electron: IElectronAPI;
     }
+} 
+
+// --- Add LocalLogEntry type definition --- 
+export interface LocalLogEntry {
+    timestamp: string;
+    level: 'log' | 'warn' | 'error' | 'debug' | 'verbose';
+    message: string;
 } 

@@ -2,7 +2,7 @@ import { ipcMain, WebContents, WebFrameMain } from "electron";
 import { getUIPath } from "./pathResolver.js";
 import { pathToFileURL } from "url";
 // Import EventPayloadMapping type
-import type { EventPayloadMapping } from '../../types.js';
+import type { EventPayloadMapping } from '../types.js';
 
 // Checks if you are in development mode
 export function isDev(): boolean {
@@ -11,7 +11,7 @@ export function isDev(): boolean {
 
 // Making IPC Typesafe
 export function ipcMainHandle<Key extends keyof EventPayloadMapping>(key: Key, handler: () => EventPayloadMapping[Key]) {
-    ipcMain.handle(key, (event) => {
+    ipcMain.handle(key as string, (event) => {
         if (event.senderFrame) validateEventFrame(event.senderFrame);
 
         return handler()

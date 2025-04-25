@@ -1,4 +1,4 @@
-/// <reference types="../../types" />
+/// <reference types="../types" />
 import electron from "electron";
 // Explicitly import types that ARE working and needed
 import type { 
@@ -11,7 +11,8 @@ import type {
     Workflow, 
     WorkflowDetails, 
     StaticData,
-} from "../../types.js" assert { "resolution-mode": "import" }; 
+    // LogEntry // Add LogEntry if defined in types.d.ts - Removed
+} from "../types.js" assert { "resolution-mode": "import" }; 
 import { Node, Edge } from 'reactflow'; // Keep reactflow types if needed
 
 // Define the type for the electron API exposed on the window object
@@ -24,6 +25,14 @@ type ElectronApi = LocalElectronApi;
 
 // Local definition for UnsubscribeFunction
 type UnsubscribeFunction = () => void;
+
+// --- Add LogEntry type if not imported from types.d.ts ---
+interface LocalLogEntry {
+    timestamp: string;
+    level: 'log' | 'warn' | 'error' | 'debug' | 'verbose'; 
+    message: string;
+}
+// --- End LogEntry --- 
 
 // --- Add back missing ProbeData structure --- 
 interface StreamInfo {
@@ -156,6 +165,10 @@ type LocalElectronApi = {
     unsubscribeEncodingProgress: () => void; 
     showOpenDialog: (options: DialogOptions) => Promise<DialogResult>; 
     showSaveDialog: (options: SaveDialogOptions) => Promise<SaveDialogResult>; 
+
+    // Logger methods
+    subscribeToLogs: (callback: (logEntry: LocalLogEntry) => void) => UnsubscribeFunction;
+    getInitialLogs: () => Promise<LocalLogEntry[]>;
 };
 
 // Expose methods using the locally defined types
@@ -205,6 +218,13 @@ electron.contextBridge.exposeInMainWorld("electron", {
     },
     showOpenDialog: (options: DialogOptions) => ipcInvoke('dialog:showOpen', options), 
     showSaveDialog: (options: SaveDialogOptions) => ipcInvoke('dialog:showSave', options), 
+
+    // --- Logger Methods --- 
+    subscribeToLogs: (callback: (logEntry: LocalLogEntry) => void) => {
+        // Use the ipcOn helper which returns an unsubscribe function
+        return ipcOn<LocalLogEntry>('log-message', callback);
+    },
+    getInitialLogs: () => ipcInvoke<LocalLogEntry[]>('get-initial-logs'),
 
 } satisfies LocalElectronApi); // Satisfy against the local type
 

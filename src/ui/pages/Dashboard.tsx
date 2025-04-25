@@ -147,7 +147,7 @@ const Dashboard: React.FC = () => {
 
         // Subscribe to system stats updates
         // Note: The 'stats' parameter type is now inferred correctly from SystemStats
-        const unsubscribeSystemStats = window.electron.subscribeSystemStats((stats) => {
+        const unsubscribeSystemStats = window.electron.subscribeSystemStats((stats: SystemStats) => {
             setSystemStats(stats);
         });
 
