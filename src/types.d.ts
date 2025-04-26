@@ -38,6 +38,12 @@ export interface FormatInfo {
 export interface ProbeData {
     streams: StreamInfo[];
     format: FormatInfo;
+    processedByRecodarr?: {
+        processed: boolean;
+        date: string;
+        videoCodec: string;
+        audioCodec: string;
+    };
 }
 
 
@@ -165,7 +171,7 @@ export interface WatchedFolder {
 declare interface EventPayloadMapping {
     'statistics': Statistics;
     'system-stats-update': SystemStats;
-    'scan-status-update': { status: 'running' | 'finished'; message: string };
+    'scan-status-update': { status: 'running' | 'finished' | 'error'; message: string };
     // Note: 'startEncoding' seems different from startEncodingProcess. Review needed.
     'startEncoding': { success: boolean; reduction?: number; error?: string }; 
     // Note: 'encodingProgress' payload might need more detail (status, fps, etc.) based on preload.
@@ -191,6 +197,7 @@ declare interface EventPayloadMapping {
     'get-workflow-details': WorkflowDetails | null; 
     'save-workflow': number; 
     'delete-workflow': { changes: number }; 
+    'trigger-folder-scan': { status: string }; 
     // Add mappings for newer methods if needed (probe-file, start-encoding-process, etc.)
 }
 // --- End EventPayloadMapping ---
@@ -214,36 +221,39 @@ export interface IElectronAPI {
     getEncodingLog: (jobId: string) => Promise<string | null>; // Added from preload
 
     // --- Include other existing API methods (Copied/Verified from root & preload) --- 
-    subscribeStatistics: (callback: (statistics: Statistics) => void) => UnsubscribeFunction;
+    subscribeStatistics: (callback: (data: StatisticsData) => void) => UnsubscribeFunction;
     getStaticData: () => Promise<StaticData>;
-    subscribeSystemStats: (callback: (stats: SystemStats) => void) => UnsubscribeFunction;
+    subscribeSystemStats: (callback: (data: SystemStatsData) => void) => UnsubscribeFunction;
     getAvailableGpus: () => Promise<GpuInfo[]>;
     getSelectedGpu: () => Promise<string | null>;
-    setSelectedGpu: (model: string | null) => Promise<void>;
+    setSelectedGpu: (model: string) => Promise<void>;
     getPsGpuMonitoringEnabled: () => Promise<boolean>;
     setPsGpuMonitoringEnabled: (isEnabled: boolean) => Promise<void>;
-    dbQuery: (sql: string, params?: any[]) => Promise<any>;
+    dbQuery: <T = any>(sql: string, params?: any[]) => Promise<T[]>;
     getWatchedFolders: () => Promise<WatchedFolder[]>;
     addWatchedFolder: (folderInfo: Omit<WatchedFolder, 'path'>) => Promise<WatchedFolder | null>;
     removeWatchedFolder: (folderPath: string) => Promise<void>;
-    triggerScan: () => Promise<{ status: string }>;
-    subscribeScanStatus: (callback: (payload: EventPayloadMapping['scan-status-update']) => void) => UnsubscribeFunction;
+    triggerScan: () => Promise<void>;
+    triggerFolderScan: (folderPath: string) => Promise<void>;
+    subscribeScanStatus: (callback: (data: ScanStatus) => void) => UnsubscribeFunction;
     getManualGpuVram: () => Promise<number | null>;
-    setManualGpuVram: (vramMb: number | null) => Promise<void>;
+    setManualGpuVram: (vramMb: number) => Promise<void>;
     getHardwareInfo: () => Promise<HardwareInfo[]>;
-    updateHardwarePriority: (deviceId: number, priority: number) => Promise<void>; // Return should be Promise<void> based on main.ts returning run() info
-    updateHardwareEnabled: (deviceId: number, isEnabled: boolean) => Promise<void>; // Return should be Promise<void>
-    refreshHardwareInfo: () => Promise<HardwareInfo[]>;
+    updateHardwarePriority: (deviceId: string, priority: number) => Promise<void>;
+    updateHardwareEnabled: (deviceId: string, isEnabled: boolean) => Promise<void>;
+    refreshHardwareInfo: () => Promise<void>;
     getWorkflows: () => Promise<Workflow[]>;
-    getWorkflowDetails: (id: number) => Promise<WorkflowDetails | null>;
-    // Ensure Node/Edge types are imported correctly at the top of the file if needed
-    saveWorkflow: (workflowData: { id?: number; name: string; description: string; nodes: any[]; edges: any[] }) => Promise<number>; // Use any for Node/Edge if reactflow types aren't imported
-    deleteWorkflow: (id: number) => Promise<{ changes: number }>; // Return matches main.ts
+    getWorkflowDetails: (id: number) => Promise<WorkflowDetails>;
+    saveWorkflow: (workflowData: WorkflowDetails) => Promise<void>;
+    deleteWorkflow: (id: number) => Promise<void>;
     // --- End other existing API methods --- 
 
     // --- Logger API --- 
-    subscribeToLogs: (callback: (logEntry: LogEntry) => void) => UnsubscribeFunction;
-    getInitialLogs: () => Promise<LogEntry[]>;
+    subscribeToLogs: (callback: (logEntry: LocalLogEntry) => void) => UnsubscribeFunction;
+    getInitialLogs: () => Promise<LocalLogEntry[]>;
+
+    // --- Add New Methods ---
+    showConfirmationDialog: (options: DialogOptions) => Promise<DialogResult>;
 }
 
 // --- Add LogEntry type definition --- 
@@ -266,4 +276,21 @@ export interface LocalLogEntry {
     timestamp: string;
     level: 'log' | 'warn' | 'error' | 'debug' | 'verbose';
     message: string;
+} 
+
+// --- Dialog Options & Result ---
+export interface DialogOptions {
+    type: 'none' | 'info' | 'error' | 'question' | 'warning';
+    buttons: string[];
+    title?: string;
+    message: string;
+    detail?: string;
+    defaultId?: number;
+    cancelId?: number;
+}
+
+export interface DialogResult {
+    response: number;
+    confirmed: boolean;
+    error?: string;
 } 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron"
+import { app, BrowserWindow, ipcMain, dialog, IpcMainInvokeEvent, clipboard, systemPreferences, nativeTheme } from 'electron';
 import { isDev } from "./util.js";
 import { getPreloadPath, getUIPath } from "./pathResolver.js";
 import { getStaticData, pollResources } from "./test.js";
@@ -170,7 +170,10 @@ function startWatching(folders: WatchedFolder[]) {
 
     console.log(`Initializing watcher for paths: ${pathsToWatch.join(", ")}`);
     watcher = chokidar.watch(pathsToWatch, {
-        ignored: /(^|[\\\/])\../, // ignore dotfiles
+        ignored: [
+            /(^|[\\\/])\../,  // ignore dotfiles
+            /.*_tmp.*\.(?:mkv|mp4|avi|mov|wmv|flv|webm)$/i  // More specific pattern for temp encoding files
+        ],
         persistent: true,
         ignoreInitial: true, // Don't fire 'add' events for existing files on startup
         awaitWriteFinish: {   // Try to wait for files to finish writing
@@ -183,6 +186,13 @@ function startWatching(folders: WatchedFolder[]) {
         .on('add', async (filePath: string) => {
             console.log(`Watcher detected new file: ${filePath}`);
             const ext = path.extname(filePath).toLowerCase();
+            
+            // Skip temporary files created during encoding
+            if (filePath.includes('_tmp')) {
+                console.log(`Skipping temporary encoding file: ${filePath}`);
+                return;
+            }
+            
             if (SUPPORTED_EXTENSIONS.includes(ext)) {
                 // Find which library this file belongs to
                 const parentFolder = folders.find(f => filePath.startsWith(f.path + path.sep));
@@ -258,6 +268,93 @@ async function probeFile(filePath: string): Promise<any | null> {
             }
             try {
                 const probeData = JSON.parse(stdout);
+                
+                // Check if this file has already been processed by Recodarr
+                if (probeData.format && probeData.format.tags) {
+                    const tags = probeData.format.tags;
+                    console.log(`[probeFile] Checking metadata tags in format:`, JSON.stringify(tags, null, 2));
+                    
+                    // Convert all keys to lowercase for case-insensitive comparison
+                    const lowercaseTags: Record<string, string> = {};
+                    for (const key in tags) {
+                        lowercaseTags[key.toLowerCase()] = tags[key];
+                    }
+                    
+                    // Check multiple possible tags since different containers handle metadata differently
+                    // Use lowercase keys to handle case sensitivity issues
+                    const isProcessedByRecodarr = 
+                        lowercaseTags['processed_by'] === "Recodarr" || 
+                        lowercaseTags['encoded_by'] === "Recodarr" ||
+                        (lowercaseTags['comment'] && lowercaseTags['comment'].includes("Processed by Recodarr"));
+                    
+                    console.log(`[probeFile] Processed by Recodarr check results:`);
+                    console.log(`- processed_by tag: "${lowercaseTags['processed_by']}"`);
+                    console.log(`- encoded_by tag: "${lowercaseTags['encoded_by']}"`);
+                    console.log(`- comment tag: "${lowercaseTags['comment']}"`);
+                    console.log(`- isProcessedByRecodarr result: ${isProcessedByRecodarr}`);
+                        
+                    if (isProcessedByRecodarr) {
+                        console.log(`File already processed by Recodarr: ${filePath}`);
+                        // Log all available metadata for debugging
+                        console.log(`All metadata tags:`, JSON.stringify(tags, null, 2));
+                        
+                        // Get values from tags, falling back as needed
+                        const processDate = lowercaseTags['processed_date'] || 
+                            (lowercaseTags['comment'] && lowercaseTags['comment'].match(/Recodarr on (.*?)($|\s)/)?.[1]) || 
+                            "Unknown date";
+                            
+                        // Add a flag to indicate this was processed by Recodarr
+                        probeData.processedByRecodarr = {
+                            processed: true,
+                            date: processDate,
+                            videoCodec: lowercaseTags['recodarr_video_codec'] || "Unknown",
+                            audioCodec: lowercaseTags['recodarr_audio_codec'] || "Unknown"
+                        };
+                        
+                        console.log(`[probeFile] Added processedByRecodarr flag:`, JSON.stringify(probeData.processedByRecodarr, null, 2));
+                    }
+                } else {
+                    console.log(`[probeFile] No format tags found in file: ${filePath}`);
+                }
+                
+                // Also check stream metadata in case container metadata isn't reliable
+                if (probeData.streams && !probeData.processedByRecodarr) {
+                    console.log(`[probeFile] Checking ${probeData.streams.length} streams for metadata`);
+                    
+                    for (let i = 0; i < probeData.streams.length; i++) {
+                        const stream = probeData.streams[i];
+                        if (stream.tags) {
+                            console.log(`[probeFile] Stream ${i} (${stream.codec_type}) tags:`, JSON.stringify(stream.tags, null, 2));
+                            
+                            // Convert stream tags to lowercase for case-insensitive comparison
+                            const streamLowercaseTags: Record<string, string> = {};
+                            for (const key in stream.tags) {
+                                streamLowercaseTags[key.toLowerCase()] = stream.tags[key];
+                            }
+                            
+                            const streamProcessed = 
+                                streamLowercaseTags['processed_by'] === "Recodarr" || 
+                                streamLowercaseTags['encoded_by'] === "Recodarr" ||
+                                (streamLowercaseTags['comment'] && streamLowercaseTags['comment'].includes("Processed by Recodarr"));
+                                
+                            if (streamProcessed) {
+                                console.log(`File already processed by Recodarr (detected in stream ${i} metadata): ${filePath}`);
+                                
+                                probeData.processedByRecodarr = {
+                                    processed: true,
+                                    date: streamLowercaseTags['processed_date'] || "Unknown date",
+                                    videoCodec: streamLowercaseTags['recodarr_video_codec'] || "Unknown",
+                                    audioCodec: streamLowercaseTags['recodarr_audio_codec'] || "Unknown"
+                                };
+                                
+                                console.log(`[probeFile] Added processedByRecodarr flag from stream:`, 
+                                    JSON.stringify(probeData.processedByRecodarr, null, 2));
+                                break;
+                            }
+                        }
+                    }
+                }
+                
                 resolve(probeData);
             } catch (parseError) {
                 console.error(`Error parsing ffprobe output for ${filePath}:`, parseError);
@@ -363,7 +460,8 @@ async function processDirectory(directoryPath: string, libraryName: string, libr
                 await processDirectory(fullPath, libraryName, libraryType, window);
             } else if (entry.isFile()) {
                 const ext = path.extname(entry.name).toLowerCase();
-                if (SUPPORTED_EXTENSIONS.includes(ext)) {
+                // Skip temp files and process only supported video extensions
+                if (SUPPORTED_EXTENSIONS.includes(ext) && !entry.name.includes('_tmp')) {
                     const probeData = await probeFile(fullPath);
                     if (probeData) {
                         await addMediaToDb(probeData, libraryName, libraryType);
@@ -406,7 +504,61 @@ async function scanMediaFolders(window: BrowserWindow | null): Promise<void> {
     }
 }
 
-// --- End Media Scanner Functions ---
+// Function to scan a single folder
+async function scanSingleFolder(folderPath: string, window: BrowserWindow | null): Promise<void> {
+    if (isScanning) {
+        console.warn("Scan already in progress. Ignoring trigger.");
+        return;
+    }
+    
+    isScanning = true;
+    console.log(`Starting scan for specific folder: ${folderPath}`);
+    
+    if (window && !window.isDestroyed()) {
+        window.webContents.send("scan-status-update", { 
+            status: 'running', 
+            message: `Starting scan for folder: ${path.basename(folderPath)}...` 
+        });
+    }
+
+    const foldersToScan = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
+    const folderToScan = foldersToScan.find(folder => folder.path === folderPath);
+    
+    if (!folderToScan) {
+        console.warn(`Folder ${folderPath} not found in watched folders`);
+        isScanning = false;
+        if (window && !window.isDestroyed()) {
+            window.webContents.send("scan-status-update", { 
+                status: 'error', 
+                message: `Folder not found in watched libraries.` 
+            });
+        }
+        return;
+    }
+
+    try {
+        console.log(`Processing library: ${folderToScan.libraryName} (${folderToScan.libraryType}) at ${folderToScan.path}`);
+        await processDirectory(folderToScan.path, folderToScan.libraryName, folderToScan.libraryType, window);
+        
+        console.log(`Scan complete for folder: ${folderPath}`);
+        isScanning = false;
+        if (window && !window.isDestroyed()) {
+            window.webContents.send("scan-status-update", { 
+                status: 'finished', 
+                message: `Scan complete for ${folderToScan.libraryName}.` 
+            });
+        }
+    } catch (error) {
+        console.error(`Error scanning folder ${folderPath}:`, error);
+        isScanning = false;
+        if (window && !window.isDestroyed()) {
+            window.webContents.send("scan-status-update", { 
+                status: 'error', 
+                message: `Error scanning folder: ${error instanceof Error ? error.message : String(error)}` 
+            });
+        }
+    }
+}
 
 // Updated function to use PowerShell's -EncodedCommand
 function runPsCommand(command: string): Promise<string> {
@@ -793,6 +945,13 @@ async function runFFMPEGTest() {
 app.on("ready", async () => {
     // Capture console logs as early as possible
     captureConsoleLogs();
+
+    // Validate dialog API is available
+    if (!dialog || typeof dialog.showMessageBox !== 'function') {
+        console.error("dialog API is not properly initialized!");
+    } else {
+        console.log("dialog API is available and properly initialized");
+    }
 
     const mainWindow = new BrowserWindow({
         // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
@@ -1183,6 +1342,12 @@ app.on("ready", async () => {
         await scanMediaFolders(mainWindow);
         return { status: 'Manual scan triggered' };
     });
+
+    // Add handler for scanning a single folder
+    ipcMain.handle('trigger-folder-scan', async (_event, folderPath: string) => {
+        await scanSingleFolder(folderPath, mainWindow);
+        return { status: 'Single folder scan triggered' };
+    });
     // --- End Scanner Trigger Handler ---
 
     // Gather hardware info on startup
@@ -1385,100 +1550,121 @@ app.on("ready", async () => {
     });
 
     // Add the new handler that accepts options
-    ipcMain.handle('start-encoding-process', async (_event, options: EncodingOptions) => {
-        if (!mainWindow) {
-            console.error('Cannot start encoding, mainWindow is not available.');
-            return { success: false, error: 'Main window not available', jobId: undefined }; // Return jobId as undefined
-        }
-
-        const jobId = crypto.randomUUID(); // Generate Job ID
-        console.log(`[Main Process] Generated Job ID: ${jobId}`);
-
-        // Determine if overwriting based on input/output path match
-        // UI could also send an explicit options.overwriteInput flag
-        const isOverwrite = options.overwriteInput ?? (options.inputPath === options.outputPath);
-        console.log(`[Main Process] Overwrite mode determined: ${isOverwrite}`);
-
-        // Find the part where encoding progress is forwarded to the renderer
-        const progressCallback = (progress: EncodingProgress) => {
-            try {
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                    mainWindow.webContents.send('encodingProgress', { ...progress, jobId }); // Include jobId in progress updates
-                }
-            } catch (error) {
-                console.error(`[Encoding Progress] Error sending progress update:`, error);
+    ipcMain.handle('start-encoding-process', async (event, options: EncodingOptions) => {
+        console.log(`[Main Process] Encoding request received for: ${options.inputPath} → ${options.outputPath}`);
+        console.log(`[Main Process] Options:`, options);
+        
+        try {
+            // Probe the file to get info and check if it was already processed
+            const probeData = await probeFile(options.inputPath);
+            
+            // Note: We don't need to show a dialog here because the UI component in ManualEncode.tsx
+            // already shows a dialog for already processed files before initiating this IPC call.
+            // Just log the status for tracking
+            if (probeData?.processedByRecodarr?.processed) {
+                console.log(`[Main Process] File has already been processed by Recodarr: ${options.inputPath}`);
+                console.log(`[Main Process] Previously encoded: ${probeData.processedByRecodarr.date || 'Unknown'}`);
+                console.log(`[Main Process] Video codec: ${probeData.processedByRecodarr.videoCodec || 'Unknown'}`);
+                console.log(`[Main Process] Audio codec: ${probeData.processedByRecodarr.audioCodec || 'Unknown'}`);
+                // Since the UI is handling the dialog, we just continue with encoding here
+            } else {
+                console.log(`[Main Process] File has not been processed before or no processing metadata found`);
             }
-        };
 
-        // Merge received options with the progress callback, overwrite flag, jobId, and log path
-        const optionsWithCallback: EncodingOptions = {
-            ...options,
-            overwriteInput: isOverwrite, // Pass the determined flag
-            progressCallback: progressCallback,
-            jobId: jobId, // Pass jobId
-            logDirectoryPath: logDir // Pass log directory path
-        };
+            const jobId = crypto.randomUUID(); // Generate Job ID
+            console.log(`[Main Process] Generated Job ID: ${jobId}`);
 
-        console.log('[Main Process] Calling startEncodingProcess with options:', JSON.stringify(optionsWithCallback, null, 2));
+            // Rest of the encoding process...
+            const isOverwrite = options.overwriteInput ?? (options.inputPath === options.outputPath);
+            console.log(`[Main Process] Overwrite mode determined: ${isOverwrite}`);
 
-        // Call the actual encoding function from ffmpegUtils
-        const result = await startEncodingProcess(optionsWithCallback);
+            // Find the part where encoding progress is forwarded to the renderer
+            const progressCallback = (progress: EncodingProgress) => {
+                try {
+                    if (mainWindow && !mainWindow.isDestroyed()) {
+                        mainWindow.webContents.send('encodingProgress', { ...progress, jobId }); // Include jobId in progress updates
+                    }
+                } catch (error) {
+                    console.error(`[Encoding Progress] Error sending progress update:`, error);
+                }
+            };
 
-        console.log('[Main Process] Encoding process finished with result:', result);
+            // Merge received options with the progress callback, overwrite flag, jobId, and log path
+            const optionsWithCallback: EncodingOptions = {
+                ...options,
+                overwriteInput: isOverwrite, // Pass the determined flag
+                progressCallback: progressCallback,
+                jobId: jobId, // Pass jobId
+                logDirectoryPath: logDir // Pass log directory path
+            };
 
-        // Prepare the result object to send back to UI, always include jobId
-        let finalResult: any = { ...result, jobId: jobId }; // Ensure jobId is always returned
+            console.log('[Main Process] Calling startEncodingProcess with options:', JSON.stringify(optionsWithCallback, null, 2));
 
-        // --- Post-Encoding Update (Conditional) --- 
-        if (result.success && result.outputPath) {
-            try {
-                console.log(`[Main Process] Encoding/Rename successful for Job ID ${jobId}. Final path: ${result.outputPath}`);
-                const probeData = await probeFile(result.outputPath); // Probe the final file
-                
-                if (probeData) {
-                    if (isOverwrite) {
-                        console.log(`[Main Process] Overwrite mode: Updating database record for original input path: ${options.inputPath}`);
-                        // Pass original input path for DB update when overwriting
-                        await updateMediaAfterEncoding(probeData, jobId, options.inputPath);
-                        console.log(`[Main Process] Database updated successfully for Job ID ${jobId}.`);
-                         mainWindow?.webContents.send('encodingProgress', {
-                            jobId,
-                            status: `Overwrite complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. DB Updated. File: ${result.outputPath}`
-                        });
+            // Call the actual encoding function from ffmpegUtils
+            const result = await startEncodingProcess(optionsWithCallback);
+
+            console.log('[Main Process] Encoding process finished with result:', result);
+
+            // Prepare the result object to send back to UI, always include jobId
+            let finalResult: any = { ...result, jobId: jobId }; // Ensure jobId is always returned
+
+            // --- Post-Encoding Update (Conditional) --- 
+            if (result.success && result.outputPath) {
+                try {
+                    console.log(`[Main Process] Encoding/Rename successful for Job ID ${jobId}. Final path: ${result.outputPath}`);
+                    const probeData = await probeFile(result.outputPath); // Probe the final file
+                    
+                    if (probeData) {
+                        if (isOverwrite) {
+                            console.log(`[Main Process] Overwrite mode: Updating database record for original input path: ${options.inputPath}`);
+                            // Pass original input path for DB update when overwriting
+                            await updateMediaAfterEncoding(probeData, jobId, options.inputPath);
+                            console.log(`[Main Process] Database updated successfully for Job ID ${jobId}.`);
+                            mainWindow?.webContents.send('encodingProgress', {
+                                jobId,
+                                status: `Overwrite complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. DB Updated. File: ${result.outputPath}`
+                            });
+                        } else {
+                            // Saved as new file, don't update original DB record
+                            console.log(`[Main Process] Save As New mode: Database record for original file not updated. New file at: ${result.outputPath}`);
+                            mainWindow?.webContents.send('encodingProgress', {
+                                jobId,
+                                status: `Save As New complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. File: ${result.outputPath}`
+                            });
+                        }
                     } else {
-                        // Saved as new file, don't update original DB record
-                        console.log(`[Main Process] Save As New mode: Database record for original file not updated. New file at: ${result.outputPath}`);
-                         mainWindow?.webContents.send('encodingProgress', {
+                        console.warn(`[Main Process] Probe failed for final file ${result.outputPath}. Database not updated.`);
+                        mainWindow?.webContents.send('encodingProgress', {
                             jobId,
-                            status: `Save As New complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. File: ${result.outputPath}`
+                            status: `Encoding complete but probe failed. Output: ${result.outputPath}`
                         });
                     }
-                } else {
-                    console.warn(`[Main Process] Probe failed for final file ${result.outputPath}. Database not updated.`);
+                } catch (updateError) {
+                    console.error(`[Main Process] Error during post-encoding probe/update for Job ID ${jobId}:`, updateError);
                     mainWindow?.webContents.send('encodingProgress', {
                         jobId,
-                        status: `Encoding complete but probe failed. Output: ${result.outputPath}`
+                        status: isOverwrite 
+                            ? `Overwrite complete but DB update failed. File: ${result.outputPath}`
+                            : `Save As New complete but post-encode step failed. File: ${result.outputPath}`
                     });
                 }
-            } catch (updateError) {
-                console.error(`[Main Process] Error during post-encoding probe/update for Job ID ${jobId}:`, updateError);
-                 mainWindow?.webContents.send('encodingProgress', {
+            } else if (!result.success) {
+                // Send failure status update
+                mainWindow?.webContents.send('encodingProgress', {
                     jobId,
-                    status: isOverwrite 
-                        ? `Overwrite complete but DB update failed. File: ${result.outputPath}`
-                        : `Save As New complete but post-encode step failed. File: ${result.outputPath}`
+                    status: `Encoding failed: ${result.error}`
                 });
             }
-        } else if (!result.success) {
-            // Send failure status update
-            mainWindow?.webContents.send('encodingProgress', {
-                jobId,
-                status: `Encoding failed: ${result.error}`
-            });
-        }
-        // --- End Post-Encoding Update --- 
+            // --- End Post-Encoding Update --- 
 
-        return finalResult; // Return the result including the jobId
+            return finalResult; // Return the result including the jobId
+        } catch (error) {
+            console.error('[Main Process] Error in start-encoding-process:', error);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error)
+            };
+        }
     });
 
     // --- Add New Handler for Reading Logs ---
@@ -1536,7 +1722,7 @@ app.on("ready", async () => {
             resolutionHeight = videoStream?.height ?? null;
             audioChannels = audioStream?.channels ?? null;
         }
-
+                
         console.log(`[DB Update] Attempting to update media for file path in DB: ${targetDbFilePath} with Job ID: ${jobId}`);
         console.log(`[DB Update] New Data: Size=${fileSize}, VideoCodec=${videoCodec}, AudioCodec=${audioCodec}, Resolution=${resolutionWidth}x${resolutionHeight}, Channels=${audioChannels}`);
 
@@ -1585,6 +1771,42 @@ app.on("ready", async () => {
     // Add new handler for getting initial logs
     ipcMain.handle('get-initial-logs', async () => {
         return getLogBuffer();
+    });
+
+    // Add handler for custom confirmation dialog
+    ipcMain.handle('show-confirmation-dialog', async (_event, options) => {
+        console.log(`[Main Process] Received request to show confirmation dialog:`, options);
+        
+        try {
+            if (!mainWindow || mainWindow.isDestroyed()) {
+                console.error('[Main Process] Cannot show dialog - main window not available');
+                return { confirmed: false, error: 'Main window not available' };
+            }
+            
+            // Default options if not provided
+            const dialogOpts = {
+                type: 'question',
+                buttons: ['Cancel', 'Confirm'],
+                defaultId: 0,
+                title: options.title || 'Confirmation',
+                message: options.message || 'Please confirm this action',
+                detail: options.detail || '',
+                ...options
+            };
+            
+            console.log(`[Main Process] Showing confirmation dialog`);
+            const result = await dialog.showMessageBox(mainWindow, dialogOpts);
+            console.log(`[Main Process] Dialog result:`, result);
+            
+            // User confirmed if they clicked the second button (index 1)
+            return { 
+                confirmed: result.response === 1,
+                response: result.response
+            };
+        } catch (error) {
+            console.error(`[Main Process] Error showing confirmation dialog:`, error);
+            return { confirmed: false, error: String(error) };
+        }
     });
 })
 

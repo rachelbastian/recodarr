@@ -3,8 +3,24 @@ import { Button } from "src/components/ui/button";
 import { Input } from "src/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "src/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "src/components/ui/table";
-import { Trash2, RefreshCw } from 'lucide-react'; // Added RefreshCw icon
+import { Trash2, RefreshCw, MoreVertical } from 'lucide-react';
 import { cn } from "@/lib/utils";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from "src/components/ui/dropdown-menu";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "src/components/ui/alert-dialog";
 
 // Define the type for a watched folder, matching types.d.ts
 // Note: Duplicating this here for component scope, could be imported from a shared types file
@@ -23,10 +39,12 @@ interface ScanStatusUpdate {
 const Libraries: React.FC = () => {
     const [watchedFolders, setWatchedFolders] = useState<WatchedFolder[]>([]);
     const [newLibraryName, setNewLibraryName] = useState<string>('');
-    const [newLibraryType, setNewLibraryType] = useState<'TV' | 'Movies' | 'Anime' | ''>( '' ); // Initialize as empty
+    const [newLibraryType, setNewLibraryType] = useState<'TV' | 'Movies' | 'Anime' | ''>('');
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
-    const [scanStatus, setScanStatus] = useState<ScanStatusUpdate | null>(null); // Added state for scan status
+    const [scanStatus, setScanStatus] = useState<ScanStatusUpdate | null>(null);
+    const [libraryToDelete, setLibraryToDelete] = useState<WatchedFolder | null>(null);
+    const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
     // Fetch watched folders
     const fetchFolders = useCallback(async () => {
@@ -98,18 +116,45 @@ const Libraries: React.FC = () => {
         }
     };
 
+    // Handle scanning a single folder
+    const handleSingleFolderScan = async (folderPath: string, libraryName: string) => {
+        setOpenMenuId(null); // Close the menu first
+        setError(null);
+        setScanStatus({ status: 'running', message: `Initializing scan for ${libraryName}...` });
+        setIsLoading(true);
+        try {
+            const result = await window.electron.triggerFolderScan(folderPath);
+            console.log("Single folder scan triggered result:", result);
+            // Status will be updated via the subscription
+        } catch (err) {
+            console.error(`Error triggering scan for folder ${folderPath}:`, err);
+            setError(err instanceof Error ? err.message : `Failed to trigger scan for ${libraryName}`);
+            setScanStatus({ status: 'error', message: err instanceof Error ? err.message : `Failed to trigger scan for ${libraryName}` });
+            setIsLoading(false);
+        }
+    };
+
+    // Confirm library removal
+    const confirmRemoveLibrary = (folder: WatchedFolder) => {
+        setOpenMenuId(null); // Close the menu first
+        setLibraryToDelete(folder);
+    };
+
     // Handle removing a library
-    const handleRemoveLibrary = async (folderPath: string) => {
+    const handleRemoveLibrary = async () => {
+        if (!libraryToDelete) return;
+        
         setIsLoading(true);
         setError(null);
         try {
-            await window.electron.removeWatchedFolder(folderPath);
+            await window.electron.removeWatchedFolder(libraryToDelete.path);
             await fetchFolders(); // Refresh the list
         } catch (err) {
             console.error("Error removing watched folder:", err);
             setError(err instanceof Error ? err.message : 'Failed to remove library');
         } finally {
             setIsLoading(false);
+            setLibraryToDelete(null); // Reset after operation completes
         }
     };
 
@@ -132,6 +177,11 @@ const Libraries: React.FC = () => {
     };
 
     const isScanning = scanStatus?.status === 'running';
+
+    // Function to handle menu open state
+    const handleMenuOpenChange = (open: boolean, folderId: string) => {
+        setOpenMenuId(open ? folderId : null);
+    };
 
     return (
         <div className="container mx-auto p-6 space-y-6">
@@ -220,15 +270,38 @@ const Libraries: React.FC = () => {
                                     <TableCell>{folder.libraryType}</TableCell>
                                     <TableCell className="text-muted-foreground">{folder.path}</TableCell>
                                     <TableCell className="text-right">
-                                        <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            onClick={() => handleRemoveLibrary(folder.path)}
-                                            disabled={isLoading || isScanning} // Disable during scan too
-                                            aria-label="Remove folder"
+                                        <DropdownMenu
+                                            open={openMenuId === folder.path}
+                                            onOpenChange={(open) => handleMenuOpenChange(open, folder.path)}
                                         >
-                                            <Trash2 className="h-4 w-4" />
-                                        </Button>
+                                            <DropdownMenuTrigger asChild>
+                                                <Button 
+                                                    variant="ghost" 
+                                                    size="icon"
+                                                    disabled={isLoading || isScanning}
+                                                >
+                                                    <MoreVertical className="h-4 w-4" />
+                                                    <span className="sr-only">Actions</span>
+                                                </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent align="end">
+                                                <DropdownMenuItem 
+                                                    onClick={() => handleSingleFolderScan(folder.path, folder.libraryName)}
+                                                    disabled={isLoading || isScanning}
+                                                >
+                                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                                    Scan Library
+                                                </DropdownMenuItem>
+                                                <DropdownMenuItem 
+                                                    onClick={() => confirmRemoveLibrary(folder)}
+                                                    disabled={isLoading || isScanning}
+                                                    variant="destructive"
+                                                >
+                                                    <Trash2 className="mr-2 h-4 w-4" />
+                                                    Remove Library
+                                                </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                        </DropdownMenu>
                                     </TableCell>
                                 </TableRow>
                             ))
@@ -236,6 +309,29 @@ const Libraries: React.FC = () => {
                     </TableBody>
                 </Table>
             </div>
+
+            {/* Confirmation Dialog for Library Removal */}
+            <AlertDialog open={!!libraryToDelete} onOpenChange={(open) => !open && setLibraryToDelete(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Are you sure you want to remove this library?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Removing "{libraryToDelete?.libraryName}" will stop monitoring this folder for media files.
+                            This action cannot be undone. The actual files in the folder will not be deleted.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel disabled={isLoading}>Cancel</AlertDialogCancel>
+                        <AlertDialogAction 
+                            onClick={handleRemoveLibrary} 
+                            disabled={isLoading}
+                            className="bg-red-600 hover:bg-red-700 text-white font-medium"
+                        >
+                            {isLoading ? 'Removing...' : 'Remove Library'}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 };

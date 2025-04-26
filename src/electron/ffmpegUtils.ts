@@ -28,6 +28,8 @@ interface EncodingOptions {
     lookAhead?: number; 
     pixelFormat?: string; 
     mapVideo?: string; 
+    videoFilter?: string; // Add for resolution/scaling
+    resolution?: string; // Add for explicit resolution
     // Audio options
     audioCodec?: string; 
     audioBitrate?: string; 
@@ -273,12 +275,26 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
                     if (options.videoQuality) {
                         if (['libx264', 'libx265'].includes(options.videoCodec)) {
                             outputOpts.push('-crf', String(options.videoQuality)); 
-                        } else if (['hevc_qsv', 'h264_qsv'].includes(options.videoCodec)) {
+                        } else if (['hevc_qsv', 'h264_qsv', 'av1_qsv'].includes(options.videoCodec)) {
                             outputOpts.push('-global_quality:v', String(options.videoQuality)); 
                         }
                     }
                     if (options.lookAhead !== undefined) outputOpts.push('-look_ahead', String(options.lookAhead)); 
-                    if (options.pixelFormat) outputOpts.push('-pix_fmt', options.pixelFormat); 
+                    if (options.pixelFormat) outputOpts.push('-pix_fmt', options.pixelFormat);
+                    
+                    // Apply resolution setting (takes precedence)
+                    if (options.resolution) {
+                        outputOpts.push('-s', options.resolution);
+                        console.log(`[Encoding Process] Forcing resolution to: ${options.resolution}`);
+                        writeLog(`[Info] Forcing resolution to: ${options.resolution}`);
+                    }
+                    
+                    // Apply video filter (may be used in addition to resolution for better scaling)
+                    if (options.videoFilter) {
+                        outputOpts.push('-vf', options.videoFilter);
+                        console.log(`[Encoding Process] Applying video filter: ${options.videoFilter}`);
+                        writeLog(`[Info] Applying video filter: ${options.videoFilter}`);
+                    }
                 }
             } else if (options.mapVideo) {
                  outputOpts.push('-c:v', 'copy'); 
@@ -310,6 +326,50 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             // 5. Metadata / Chapters / General
             outputOpts.push('-map_metadata', '0');
             outputOpts.push('-map_chapters', '0');
+            
+            // Add custom metadata to mark this file as processed by Recodarr
+            // For global metadata across container types, use the global metadata tag
+            writeLog('[Info] Adding Recodarr processing metadata tags');
+            
+            // Apply specific metadata tags with explicit key/value for detection
+            // These core tags will be used to identify processed files
+            outputOpts.push('-metadata', `encoded_by=Recodarr`); // Standard tag recognized by most players
+            outputOpts.push('-metadata', `processed_by=Recodarr`); // Our custom tag
+            outputOpts.push('-metadata', `processed_date=${new Date().toISOString()}`);
+            
+            // Add detailed codec information regardless of container type
+            if (options.videoCodec) {
+                outputOpts.push('-metadata', `recodarr_video_codec=${options.videoCodec}`);
+                writeLog(`[Info] Adding video codec metadata: ${options.videoCodec}`);
+            }
+            if (options.audioCodec) {
+                outputOpts.push('-metadata', `recodarr_audio_codec=${options.audioCodec}`);
+                writeLog(`[Info] Adding audio codec metadata: ${options.audioCodec}`);
+            }
+            
+            // Container-specific handling for extended metadata
+            const outputExt = path.extname(tempOutputPath).toLowerCase();
+            if (outputExt === '.mkv') {
+                // MKV-specific metadata format
+                writeLog('[Info] MKV container detected - adding MKV-specific metadata');
+                
+                // Add MKV comment tag which is well-supported
+                const commentText = `Processed by Recodarr on ${new Date().toISOString()}`;
+                outputOpts.push('-metadata', `comment=${commentText}`);
+                
+                // Add metadata to individual streams as well for better detection
+                if (options.mapVideo) {
+                    outputOpts.push('-metadata:s:v:0', 'encoded_by=Recodarr');
+                    outputOpts.push('-metadata:s:v:0', `comment=${commentText}`);
+                }
+                if (options.mapAudio) {
+                    outputOpts.push('-metadata:s:a:0', 'encoded_by=Recodarr');
+                    outputOpts.push('-metadata:s:a:0', `comment=${commentText}`);
+                }
+            }
+            
+            writeLog(`[Info] Metadata tags added to output options`);
+            
             outputOpts.push('-hide_banner');
             outputOpts.push('-y'); // Overwrite output (this applies to the *temp* file initially)
 
@@ -445,7 +505,25 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
                 writeLog(`[Info] Attempting to rename ${tempOutputPath} to ${finalTargetPath}`);
 
                 try {
-                    // Rename the temporary file to the final path, overwriting if it exists
+                    // When overwriting, we need to ensure the target file doesn't exist first
+                    // as fs.rename may fail on Windows if the target exists
+                    if (overwriteInput && finalTargetPath !== tempOutputPath) {
+                        try {
+                            // Check if target file exists and unlink it before rename
+                            await fs.access(finalTargetPath, fs.constants.F_OK);
+                            console.log(`[Encoding Process] Target file exists, removing it: ${finalTargetPath}`);
+                            writeLog(`[Info] Removing existing target file: ${finalTargetPath}`);
+                            await fs.unlink(finalTargetPath);
+                        } catch (accessError: any) {
+                            // File doesn't exist, which is fine for our rename operation
+                            if (accessError.code !== 'ENOENT') {
+                                console.warn(`[Encoding Process] Warning checking target file: ${accessError.message}`);
+                                writeLog(`[Warning] Error checking target file: ${accessError.message}`);
+                            }
+                        }
+                    }
+                    
+                    // Rename the temporary file to the final path
                     await fs.rename(tempOutputPath, finalTargetPath);
                     console.log(`[Encoding Process] Successfully renamed temp file to: ${finalTargetPath}`);
                     writeLog(`[Success] Renamed temp file to: ${finalTargetPath}`);

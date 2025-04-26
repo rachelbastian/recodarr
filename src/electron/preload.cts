@@ -145,6 +145,7 @@ type LocalElectronApi = {
     addWatchedFolder: (folderInfo: Omit<WatchedFolder, 'path'>) => Promise<WatchedFolder | null>;
     removeWatchedFolder: (folderPath: string) => Promise<void>;
     triggerScan: () => Promise<{ status: string }>;
+    triggerFolderScan: (folderPath: string) => Promise<{ status: string }>;
     subscribeScanStatus: (callback: (payload: EventPayloadMapping['scan-status-update']) => void) => UnsubscribeFunction;
     getManualGpuVram: () => Promise<number | null>;
     setManualGpuVram: (vramMb: number | null) => Promise<void>;
@@ -169,6 +170,9 @@ type LocalElectronApi = {
     // Logger methods
     subscribeToLogs: (callback: (logEntry: LocalLogEntry) => void) => UnsubscribeFunction;
     getInitialLogs: () => Promise<LocalLogEntry[]>;
+
+    // Add function to show confirmation dialog
+    showConfirmationDialog: (options: DialogOptions) => Promise<DialogResult>;
 };
 
 // Expose methods using the locally defined types
@@ -187,6 +191,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
     addWatchedFolder: (folderInfo) => ipcInvoke('add-watched-folder', folderInfo),
     removeWatchedFolder: (folderPath) => ipcInvoke('remove-watched-folder', folderPath),
     triggerScan: () => ipcInvoke('trigger-scan'),
+    triggerFolderScan: (folderPath) => ipcInvoke('trigger-folder-scan', folderPath),
     subscribeScanStatus: (callback) => ipcOn("scan-status-update", callback),
     getManualGpuVram: () => ipcInvoke("get-manual-gpu-vram"),
     setManualGpuVram: (vramMb) => ipcInvoke("set-manual-gpu-vram", vramMb),
@@ -225,6 +230,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
         return ipcOn<LocalLogEntry>('log-message', callback);
     },
     getInitialLogs: () => ipcInvoke<LocalLogEntry[]>('get-initial-logs'),
+
+    // Add function to show confirmation dialog
+    showConfirmationDialog: (options: DialogOptions) => ipcInvoke('show-confirmation-dialog', options),
 
 } satisfies LocalElectronApi); // Satisfy against the local type
 

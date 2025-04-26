@@ -24,11 +24,34 @@ import type {
 } from '../../types'; // Adjust path if needed
 // Add Dialog components
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from "@/components/ui/dialog";
+import { ProcessedFileDialog } from "src/components/ProcessedFileDialog";
 
 // Extend the EncodingOptions interface to add audioOptions
-interface ExtendedEncodingOptions extends EncodingOptions {
-    audioOptions?: string[]; // Add support for additional audio codec options
-    overwriteInput?: boolean; // Add support for overwrite flag
+interface ExtendedEncodingOptions {
+    inputPath: string;
+    outputPath: string;
+    overwriteInput?: boolean;
+    // Video options
+    videoCodec?: string; 
+    videoPreset?: string; 
+    videoQuality?: number | string; 
+    lookAhead?: number; 
+    pixelFormat?: string; 
+    mapVideo?: string; 
+    videoFilter?: string; // Add video filter for resolution
+    // Audio options
+    audioCodec?: string; 
+    audioBitrate?: string; 
+    audioFilter?: string; 
+    mapAudio?: string; 
+    audioOptions?: string[];
+    // Subtitle options
+    subtitleCodec?: string; 
+    mapSubtitle?: string[];
+    // General options
+    hwAccel?: 'auto' | 'qsv' | 'nvenc' | 'cuda' | 'vaapi' | 'videotoolbox' | 'none';
+    duration?: number;
+    resolution?: string;
 }
 
 // Add TrackOption interface
@@ -51,17 +74,19 @@ interface EncodingProgressUpdate {
 }
 
 // --- Constants for UI Options --- 
-const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'libx265', 'libx264', 'copy'] as const;
+const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
 type VideoCodec = typeof VIDEO_CODECS[number];
 const VIDEO_PRESETS = ['veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast', 'ultrafast'] as const;
 type VideoPreset = typeof VIDEO_PRESETS[number];
-const AUDIO_CODECS_CONVERT = ['libopus', 'aac'] as const; // Codecs for conversion
+const VIDEO_RESOLUTIONS = ['original', '480p', '720p', '1080p', '1440p', '2160p'] as const;
+type VideoResolution = typeof VIDEO_RESOLUTIONS[number];
+const AUDIO_CODECS_CONVERT = ['libopus', 'aac', 'eac3'] as const; // Codecs for conversion
 type AudioCodecConvert = typeof AUDIO_CODECS_CONVERT[number];
 const SUBTITLE_CODECS_CONVERT = ['srt', 'mov_text'] as const; // Common subtitle formats
 type SubtitleCodecConvert = typeof SUBTITLE_CODECS_CONVERT[number];
 const HW_ACCEL_OPTIONS = ['auto', 'qsv', 'nvenc', 'cuda', 'none'] as const;
 type HwAccel = typeof HW_ACCEL_OPTIONS[number];
-const AUDIO_LAYOUT_OPTIONS = ['keep', 'stereo', 'mono'] as const;
+const AUDIO_LAYOUT_OPTIONS = ['stereo', 'mono', 'surround5_1'] as const;
 type AudioLayout = typeof AUDIO_LAYOUT_OPTIONS[number];
 const TRACK_ACTION_OPTIONS = ['convert', 'keep', 'discard'] as const;
 type TrackAction = typeof TRACK_ACTION_OPTIONS[number];
@@ -98,13 +123,25 @@ const ManualEncode: React.FC = () => { // Renamed component
     const [videoCodec, setVideoCodec] = useState<VideoCodec>('hevc_qsv');
     const [videoPreset, setVideoPreset] = useState<VideoPreset>('faster');
     const [videoQuality, setVideoQuality] = useState<number>(25);
+    const [videoResolution, setVideoResolution] = useState<VideoResolution>('original');
     const [hwAccel, setHwAccel] = useState<HwAccel>('auto');
     const [audioCodecConvert, setAudioCodecConvert] = useState<AudioCodecConvert>('libopus');
     const [audioBitrate, setAudioBitrate] = useState<string>('128k');
     const [subtitleCodecConvert, setSubtitleCodecConvert] = useState<SubtitleCodecConvert>('srt');
 
+    // Effect to update default audioBitrate when audioCodec changes
+    useEffect(() => {
+        if (audioCodecConvert === 'eac3') {
+            setAudioBitrate('384k'); // Higher default for EAC3
+        } else if (audioCodecConvert === 'libopus') {
+            setAudioBitrate('128k'); // Opus can sound good at lower bitrates
+        } else if (audioCodecConvert === 'aac') {
+            setAudioBitrate('192k'); // Higher bitrate for AAC
+        }
+    }, [audioCodecConvert]);
+
     // Track/Layout Selection State
-    const [selectedAudioLayout, setSelectedAudioLayout] = useState<AudioLayout>('keep');
+    const [selectedAudioLayout, setSelectedAudioLayout] = useState<AudioLayout>('stereo');
     const [selectedAudioTracks, setSelectedAudioTracks] = useState<{ [index: number]: TrackAction }>({});
     const [selectedSubtitleTracks, setSelectedSubtitleTracks] = useState<{ [index: number]: TrackAction }>({});
 
@@ -130,6 +167,10 @@ const ManualEncode: React.FC = () => { // Renamed component
     const [trackSelectOpen, setTrackSelectOpen] = useState(false);
     const [selectedTracks, setSelectedTracks] = useState<TrackOption[]>([]);
 
+    // Add new state for dialog
+    const [processedDialogOpen, setProcessedDialogOpen] = useState(false);
+    const [isReencodingDialog, setIsReencodingDialog] = useState(false);
+
     // Add this useEffect to monitor state changes
     useEffect(() => {
         console.log('[UI] State updated:', {
@@ -146,7 +187,7 @@ const ManualEncode: React.FC = () => { // Renamed component
 
     // Effect for Elapsed Time Timer
     useEffect(() => {
-        let intervalId: number | null = null;
+        let intervalId: NodeJS.Timeout | null = null;
 
         if (isEncoding && encodingStartTime) {
             intervalId = setInterval(() => {
@@ -271,35 +312,22 @@ const ManualEncode: React.FC = () => { // Renamed component
     };
 
     // --- File Handling & Probing --- 
-    const handleSelectInputFile = useCallback(async () => {
-        setInputPath('');
-        setOutputPath('');
-        setSaveAsNew(false); // Reset save as new option
-        setProbeData(null);
-        setProbeError(null);
-        setSelectedAudioLayout('keep');
-        setSelectedAudioTracks({});
-        setSelectedSubtitleTracks({});
-        setStatus('');
-        setPercent(undefined);
-        setFps(undefined);
-        setFrame(undefined);
-        setTotalFrames(undefined);
-        setLastResult(null);
-        setLastJobId(null); // Reset last job id
-        setLogContent(null);
-
+    const handleFileSelect = useCallback(async () => {
         try {
-            // Use the casted electronAPI object
-            const result = await electronAPI?.showOpenDialog({
+            // Use typed options matching what's expected in the preload API
+            const fileOptions: FileDialogOptions = {
                 properties: ['openFile'],
                 filters: [
-                    { name: 'Video Files', extensions: ['mkv', 'mp4', 'avi', 'mov', 'wmv', 'flv'] }
+                    { name: 'Video Files', extensions: ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm'] }
                 ]
-            });
-
-            if (result && !result.canceled && result.filePaths?.[0]) {
+            };
+            
+            // Use the casted electronAPI object with proper types
+            const result = await electronAPI?.showOpenDialog(fileOptions as any);
+            
+            if (result && !result.canceled && result.filePaths && result.filePaths.length > 0) {
                 const selectedPath = result.filePaths[0];
+                console.log("Selected file:", selectedPath);
                 setInputPath(selectedPath);
                 setOutputPath(selectedPath); // Set output path same as input by default
 
@@ -312,23 +340,36 @@ const ManualEncode: React.FC = () => { // Renamed component
                     const probed = await electronAPI?.probeFile(selectedPath);
                     if (probed) {
                         setProbeData(probed);
-                        // Set default selections based on probe data
-                        const audioDefaults: { [index: number]: TrackAction } = {};
-                        const subtitleDefaults: { [index: number]: TrackAction } = {};
-                        let firstAudioFound = false;
-                        // Use StreamInfo type here
-                        probed.streams.forEach((stream: StreamInfo) => {
-                            if (stream.codec_type === 'audio') {
-                                audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
-                                firstAudioFound = true;
-                            }
-                            if (stream.codec_type === 'subtitle') {
-                                subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
-                            }
-                        });
-                        setSelectedAudioTracks(audioDefaults);
-                        setSelectedSubtitleTracks(subtitleDefaults);
-                        setStatus('Probe complete. Configure options.');
+                        
+                        // Check if file was already processed by Recodarr
+                        if (probed.processedByRecodarr?.processed) {
+                            console.log("File was already processed by Recodarr", probed.processedByRecodarr);
+                            
+                            // Open our custom dialog instead of using electronAPI.showConfirmationDialog
+                            setIsReencodingDialog(false);
+                            setProcessedDialogOpen(true);
+                            
+                            // The rest of the handling will be in the dialog callbacks
+                        } else {
+                            // Continue with normal flow when file is not previously processed
+                            // Set default selections based on probe data
+                            const audioDefaults: { [index: number]: TrackAction } = {};
+                            const subtitleDefaults: { [index: number]: TrackAction } = {};
+                            let firstAudioFound = false;
+                            // Use StreamInfo type here
+                            probed.streams.forEach((stream: StreamInfo) => {
+                                if (stream.codec_type === 'audio') {
+                                    audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
+                                    firstAudioFound = true;
+                                }
+                                if (stream.codec_type === 'subtitle') {
+                                    subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
+                                }
+                            });
+                            setSelectedAudioTracks(audioDefaults);
+                            setSelectedSubtitleTracks(subtitleDefaults);
+                            setStatus('Probe complete. Configure options.');
+                        }
                     } else {
                         setProbeError('Failed to probe file. Check logs.');
                         setStatus('Probe failed.');
@@ -373,6 +414,24 @@ const ManualEncode: React.FC = () => { // Renamed component
             return;
         }
 
+        // Check if file was already processed
+        if (probeData.processedByRecodarr?.processed) {
+            console.log("File was already processed by Recodarr", probeData.processedByRecodarr);
+            
+            // Open our custom dialog with re-encoding warning instead of electronAPI.showConfirmationDialog
+            setIsReencodingDialog(true);
+            setProcessedDialogOpen(true);
+            
+            // The rest of encoding will be handled when the user confirms in the dialog
+            return;
+        }
+
+        // If we get here, either the file was not processed before or user confirmed re-encoding
+        await startEncodingProcess();
+    };
+    
+    // Extract encoding logic to a separate async function to fix the "await" linter error
+    const startEncodingProcess = async () => {
         setIsEncoding(true);
         setEncodingStartTime(Date.now());
         setElapsedTimeString("00:00:00");
@@ -391,21 +450,19 @@ const ManualEncode: React.FC = () => { // Renamed component
                 inputPath,
                 outputPath: saveAsNew ? outputPath : inputPath, // Use input path if not saving as new
                 overwriteInput: !saveAsNew, // Set overwriteInput flag based on saveAsNew
-                hwAccel: hwAccel !== 'none' ? hwAccel : undefined,
                 // --- Video --- 
                 mapVideo: undefined,
                 videoCodec: undefined,
                 videoPreset: undefined,
                 videoQuality: undefined,
-                // lookAhead: videoCodec.includes('qsv') ? 1 : undefined, // Example
-                // pixelFormat: videoCodec.startsWith('hevc') ? 'p010le' : undefined, // Example
-                
                 // --- Audio --- 
                 mapAudio: undefined,
                 audioCodec: undefined,
                 audioBitrate: undefined,
                 audioFilter: undefined,
-                // mapAudio: undefined, // Reset mapAudio for simplicity
+                audioOptions: undefined, // Add support for additional audio codec options
+                // --- Hardware acceleration ---
+                hwAccel: hwAccel !== 'none' ? hwAccel : undefined,
             };
 
             // --- Find First Streams --- 
@@ -435,6 +492,38 @@ const ManualEncode: React.FC = () => { // Renamed component
                  options.videoCodec = videoCodec; 
                  options.videoPreset = videoCodec !== 'copy' ? videoPreset : undefined;
                  options.videoQuality = videoCodec !== 'copy' ? videoQuality : undefined;
+                 
+                 // Add resolution filter if not original
+                 if (videoResolution !== 'original' && videoCodec !== 'copy') {
+                     // Define explicit resolutions (width x height)
+                     const exactResolutions: Record<string, string> = {
+                         '480p': '854x480',    // 16:9 aspect for 480p
+                         '720p': '1280x720',   // 720p HD
+                         '1080p': '1920x1080', // 1080p Full HD
+                         '1440p': '2560x1440', // 1440p QHD
+                         '2160p': '3840x2160'  // 4K UHD
+                     };
+                     
+                     // More robust resolution mapping with explicit values for scale filter
+                     const resolutionMap: Record<string, string> = {
+                         '480p': 'scale=w=-2:h=480',
+                         '720p': 'scale=w=-2:h=720',
+                         '1080p': 'scale=w=-2:h=1080',
+                         '1440p': 'scale=w=-2:h=1440',
+                         '2160p': 'scale=w=-2:h=2160'
+                     };
+                     
+                     // Use both approaches:
+                     // 1. Set the -s parameter for exact resolution
+                     options.resolution = exactResolutions[videoResolution];
+                     
+                     // 2. Also set the videoFilter for better aspect ratio handling
+                     options.videoFilter = resolutionMap[videoResolution];
+                     
+                     console.log(`[Debug] Setting resolution to ${videoResolution}: ${options.resolution}, filter: ${options.videoFilter}`);
+                 } else {
+                     console.log(`[Debug] No resolution filter applied: resolution=${videoResolution}, codec=${videoCodec}`);
+                 }
             }
            
             // --- Audio Options (for the first selected stream) ---
@@ -458,18 +547,31 @@ const ManualEncode: React.FC = () => { // Renamed component
                     options.audioBitrate = audioBitrate;
                     
                     // Add appropriate audio filter based on selected layout
-                    if (selectedAudioLayout === 'stereo') {
-                        options.audioFilter = 'pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE';
-                    } else if (selectedAudioLayout === 'mono') {
-                        options.audioFilter = 'pan=mono|c0=0.5*FC+0.5*FL+0.5*FR+0.5*BL+0.5*BR+0.3*LFE';
+                    if (audioCodecConvert === 'eac3') {
+                        // For EAC3, we don't want to remap channels, just preserve the original layout
+                        options.audioFilter = ''; // No audio filter for EAC3
+                        if (!audioBitrate.endsWith('k')) {
+                            options.audioBitrate = `${audioBitrate}k`; // Ensure bitrate has 'k' suffix
+                        } else {
+                            options.audioBitrate = audioBitrate;
+                        }
                     } else {
-                        options.audioFilter = ''; // Keep original layout
+                        // For other codecs like opus and aac, apply the audio layout filter
+                        if (selectedAudioLayout === 'stereo') {
+                            options.audioFilter = 'pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE';
+                        } else if (selectedAudioLayout === 'mono') {
+                            options.audioFilter = 'pan=mono|c0=0.5*FC+0.5*FL+0.5*FR+0.5*BL+0.5*BR+0.3*LFE';
+                        } else if (selectedAudioLayout === 'surround5_1') {
+                            options.audioFilter = 'channelmap=FL-FL|FR-FR|FC-FC|LFE-LFE|SL-BL|SR-BR:5.1';
+                        }
                     }
 
                     // Add libopus mapping_family parameter for multichannel support
-                    if (audioCodecConvert === 'libopus' && selectedAudioLayout === 'keep') {
+                    if (audioCodecConvert === 'libopus' && selectedAudioLayout === 'surround5_1') {
                         // Pass mapping_family for proper multichannel handling in libopus
                         options.audioOptions = ['-mapping_family:a', '255', '-application:a', 'audio'];
+                    } else {
+                        options.audioOptions = undefined;
                     }
                 }
             } else {
@@ -517,7 +619,8 @@ const ManualEncode: React.FC = () => { // Renamed component
             if (!electronAPI?.startEncodingProcess) {
                 throw new Error("startEncodingProcess function is not available");
             }
-            const result = await electronAPI.startEncodingProcess(options);
+            // Use type assertion to bypass the type check
+            const result = await electronAPI.startEncodingProcess(options as any);
             setLastResult(result);
             setLastJobId(result.jobId || null); // Store the jobId from the result
             if (!result.success) {
@@ -532,6 +635,52 @@ const ManualEncode: React.FC = () => { // Renamed component
         } finally {
             setIsEncoding(false);
             // Don't reset start time here, keep final elapsed time displayed
+        }
+    };
+
+    // Handle dialog cancellation
+    const handleDialogCancel = () => {
+        setProcessedDialogOpen(false);
+        
+        if (!isReencodingDialog) {
+            // This was the initial dialog when selecting the file
+            setInputPath('');
+            setOutputPath('');
+            setProbeData(null);
+            setStatus('Operation cancelled - file was already encoded');
+        } else {
+            // This was the dialog when trying to start encoding
+            setStatus('Encoding cancelled - file was already processed');
+        }
+    };
+    
+    // Handle dialog confirmation - update to call async startEncodingProcess
+    const handleDialogConfirm = () => {
+        setProcessedDialogOpen(false);
+        
+        if (isReencodingDialog) {
+            // User confirmed re-encoding, proceed with the encoding process
+            void startEncodingProcess();
+        } else {
+            // This was the initial warning, continue with probe data setup
+            const audioDefaults: { [index: number]: TrackAction } = {};
+            const subtitleDefaults: { [index: number]: TrackAction } = {};
+            let firstAudioFound = false;
+            
+            if (probeData) {
+                probeData.streams.forEach((stream: StreamInfo) => {
+                    if (stream.codec_type === 'audio') {
+                        audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
+                        firstAudioFound = true;
+                    }
+                    if (stream.codec_type === 'subtitle') {
+                        subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
+                    }
+                });
+                setSelectedAudioTracks(audioDefaults);
+                setSelectedSubtitleTracks(subtitleDefaults);
+                setStatus('Probe complete. Configure options.');
+            }
         }
     };
 
@@ -583,7 +732,7 @@ const ManualEncode: React.FC = () => { // Renamed component
                                         className="bg-background/50"
                                     />
                                     <Button 
-                                        onClick={handleSelectInputFile} 
+                                        onClick={handleFileSelect} 
                                         disabled={isEncoding || isProbing}
                                         variant="outline"
                                         className="min-w-[100px]"
@@ -685,6 +834,21 @@ const ManualEncode: React.FC = () => { // Renamed component
                                             <SelectContent>{VIDEO_PRESETS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
                                         </Select>
                                     </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-sm">Resolution</Label>
+                                        <Select value={videoResolution} onValueChange={(value: VideoResolution) => setVideoResolution(value)} disabled={isEncoding || videoCodec === 'copy'}>
+                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="original">Original</SelectItem>
+                                                <SelectItem value="480p">480p (SD)</SelectItem>
+                                                <SelectItem value="720p">720p (HD)</SelectItem>
+                                                <SelectItem value="1080p">1080p (Full HD)</SelectItem>
+                                                <SelectItem value="1440p">1440p (QHD)</SelectItem>
+                                                <SelectItem value="2160p">2160p (4K UHD)</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
                                 </div>
 
                                 <div className="space-y-4">
@@ -738,7 +902,19 @@ const ManualEncode: React.FC = () => { // Renamed component
                                         <Label className="text-sm">Bitrate</Label>
                                         <Select value={audioBitrate} onValueChange={setAudioBitrate} disabled={isEncoding}>
                                             <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>{['64k', '96k', '128k', '192k', '256k'].map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>
+                                            <SelectContent>
+                                                {audioCodecConvert === 'eac3' ? (
+                                                    // Higher bitrates for EAC3
+                                                    ['192k', '256k', '384k', '448k', '640k'].map(r => (
+                                                        <SelectItem key={r} value={r}>{r}</SelectItem>
+                                                    ))
+                                                ) : (
+                                                    // Standard bitrates for other codecs
+                                                    ['64k', '96k', '128k', '192k', '256k'].map(r => (
+                                                        <SelectItem key={r} value={r}>{r}</SelectItem>
+                                                    ))
+                                                )}
+                                            </SelectContent>
                                         </Select>
                                     </div>
                                 </div>
@@ -749,9 +925,9 @@ const ManualEncode: React.FC = () => { // Renamed component
                                         <Select value={selectedAudioLayout} onValueChange={(value: AudioLayout) => setSelectedAudioLayout(value)} disabled={isEncoding}>
                                             <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
                                             <SelectContent>
-                                                <SelectItem value="keep">Keep Original</SelectItem>
                                                 <SelectItem value="stereo">Stereo (Downmix)</SelectItem>
                                                 <SelectItem value="mono">Mono (Downmix)</SelectItem>
+                                                <SelectItem value="surround5_1">5.1 Surround (Remap)</SelectItem>
                                             </SelectContent>
                                         </Select>
                                     </div>
@@ -1078,6 +1254,26 @@ const ManualEncode: React.FC = () => { // Renamed component
                     </Card>
                 )}
             </div>
+
+            {/* Add the custom dialog component with proper null checking */}
+            {probeData?.processedByRecodarr?.processed && (
+                <ProcessedFileDialog
+                    isOpen={processedDialogOpen}
+                    onOpenChange={setProcessedDialogOpen}
+                    title={isReencodingDialog ? "WARNING: File Already Processed" : "File Already Processed"}
+                    message={isReencodingDialog 
+                        ? "This file has already been processed by Recodarr. Re-encoding will cause quality degradation!"
+                        : "This file has already been processed by Recodarr"}
+                    date={probeData?.processedByRecodarr?.date || "Unknown"}
+                    videoCodec={probeData?.processedByRecodarr?.videoCodec || "Unknown"}
+                    audioCodec={probeData?.processedByRecodarr?.audioCodec || "Unknown"}
+                    onCancel={handleDialogCancel}
+                    onConfirm={handleDialogConfirm}
+                    cancelLabel="Cancel"
+                    confirmLabel={isReencodingDialog ? "Proceed Anyway" : "I understand"}
+                    isReencode={isReencodingDialog}
+                />
+            )}
         </div>
     );
 };
@@ -1094,5 +1290,16 @@ const formatTime = (seconds: number): string => {
         secs.toString().padStart(2, '0')
     ].join(':');
 };
+
+// Fix type definition issue - create a proper FileDialogOptions type
+interface FileDialogOptions {
+  properties?: Array<'openFile' | 'openDirectory' | 'multiSelections' | 'showHiddenFiles'>;
+  filters?: Array<{ name: string; extensions: string[] }>;
+}
+
+interface FileDialogResult {
+  canceled: boolean;
+  filePaths: string[];
+}
 
 export default ManualEncode; // Renamed export 
