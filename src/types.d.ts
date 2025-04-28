@@ -254,6 +254,11 @@ export interface IElectronAPI {
 
     // --- Add New Methods ---
     showConfirmationDialog: (options: DialogOptions) => Promise<DialogResult>;
+
+    // --- Encoding Presets --- 
+    getPresets: () => Promise<EncodingPreset[]>;
+    savePreset: (preset: EncodingPreset) => Promise<EncodingPreset>;
+    deletePreset: (id: string) => Promise<{ changes: number }>;
 }
 
 // --- Add LogEntry type definition --- 
@@ -294,3 +299,35 @@ export interface DialogResult {
     confirmed: boolean;
     error?: string;
 } 
+
+// --- Define EncodingPreset type here to be shared ---
+// (Copied from Presets.tsx / preload.cts)
+const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
+type VideoCodec = typeof VIDEO_CODECS[number];
+const VIDEO_PRESETS = ['veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast', 'ultrafast'] as const;
+type VideoPreset = typeof VIDEO_PRESETS[number];
+const VIDEO_RESOLUTIONS = ['original', '480p', '720p', '1080p', '1440p', '2160p'] as const;
+type VideoResolution = typeof VIDEO_RESOLUTIONS[number];
+const AUDIO_CODECS_CONVERT = ['libopus', 'aac', 'eac3'] as const;
+type AudioCodecConvert = typeof AUDIO_CODECS_CONVERT[number];
+const SUBTITLE_CODECS_CONVERT = ['srt', 'mov_text'] as const;
+type SubtitleCodecConvert = typeof SUBTITLE_CODECS_CONVERT[number];
+const HW_ACCEL_OPTIONS = ['auto', 'qsv', 'nvenc', 'cuda', 'none'] as const;
+type HwAccel = typeof HW_ACCEL_OPTIONS[number];
+const AUDIO_LAYOUT_OPTIONS = ['stereo', 'mono', 'surround5_1'] as const;
+type AudioLayout = typeof AUDIO_LAYOUT_OPTIONS[number];
+
+interface EncodingPreset {
+    id: string;
+    name: string;
+    videoCodec?: VideoCodec;
+    videoPreset?: VideoPreset;
+    videoQuality?: number;
+    videoResolution?: VideoResolution;
+    hwAccel?: HwAccel;
+    audioCodecConvert?: AudioCodecConvert;
+    audioBitrate?: string;
+    selectedAudioLayout?: AudioLayout;
+    subtitleCodecConvert?: SubtitleCodecConvert;
+}
+// --- End EncodingPreset type definition --- 

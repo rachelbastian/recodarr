@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Settings, BarChart2, Search, Library, PlusCircle, Film, Share2, ListOrdered } from 'lucide-react';
+import { Home, Settings, BarChart2, Search, Library, PlusCircle, Film, Share2, ListOrdered, SlidersHorizontal } from 'lucide-react';
 import { cn } from "@/lib/utils";
 import { Button } from "src/components/ui/button";
 
@@ -42,16 +42,15 @@ const Navbar: React.FC = () => {
       <div className="flex-1 overflow-y-auto p-3 bg-sidebar">
         <div className="space-y-1">
           <SidebarItem icon={<Home className="h-4 w-4" />} label="Dashboard" href="/" active={isActive('/')} />
-          <SidebarItem icon={<BarChart2 className="h-4 w-4" />} label="Statistics" href="/statistics" active={isActive('/statistics')} />
+          {/* <SidebarItem icon={<BarChart2 className="h-4 w-4" />} label="Statistics" href="/statistics" active={isActive('/statistics')} /> */}
+          
           <SidebarItem icon={<Film className="h-4 w-4" />} label="Media" href="/media" active={isActive('/media')} />
           <SidebarItem icon={<Library className="h-4 w-4" />} label="Libraries" href="/libraries" active={isActive('/libraries')} />
           <SidebarItem icon={<Share2 className="h-4 w-4" />} label="Workflows" href="/workflows" active={isActive('/workflows')} />
-          <SidebarItem icon={<ListOrdered className="h-4 w-4" />} label="Manual Encode" href="/encoding" active={isActive('/encoding')} />
-        </div>
-        
-        <div className="mt-8">
-          <h3 className="text-sm font-medium text-sidebar-foreground/70 mb-2 px-2">Quick Actions</h3>
-          <SidebarItem icon={<PlusCircle className="h-4 w-4" />} label="Add New Media" href="/add" active={isActive('/add')} />
+          
+          <SidebarItem icon={<ListOrdered className="h-4 w-4" />} label="Encoding" href="/encoding" active={isActive('/encoding')} />
+          <SidebarItem icon={<SlidersHorizontal className="h-4 w-4" />} label="Presets" href="/presets" active={isActive('/presets')} />
+          
         </div>
       </div>
 

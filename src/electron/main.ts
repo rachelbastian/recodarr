@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, IpcMainInvokeEvent, clipboard, systemPreferences, nativeTheme } from 'electron';
 import { isDev } from "./util.js";
 import { getPreloadPath, getUIPath } from "./pathResolver.js";
-import { getStaticData, pollResources } from "./test.js";
+import { getStaticData, pollResources, stopPolling } from "./test.js";
 import si from 'systeminformation';
 import Store from 'electron-store';
 import { exec, execFile } from 'child_process';
@@ -258,8 +258,15 @@ async function probeFile(filePath: string): Promise<any | null> {
     return new Promise((resolve) => {
         execFile(ffprobePath, args, { timeout: 30000, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
             if (error) {
-                console.error(`ffprobe error for ${filePath}:`, error.message);
-                // Don't reject, just return null if ffprobe fails
+                // Check if it's an AppleDouble file error before logging
+                if (path.basename(filePath).startsWith('._')) {
+                    // Optional: Log as debug if needed, but avoid console.error for expected failures
+                    // console.debug(`Ignoring expected ffprobe failure for macOS metadata file: ${filePath}`);
+                } else {
+                    // Log other, unexpected ffprobe errors
+                    console.error(`ffprobe error for ${filePath}:`, error.message);
+                }
+                // Don't reject, just return null if ffprobe fails for any reason
                 return resolve(null); 
             }
             if (stderr) {
@@ -562,6 +569,14 @@ async function scanSingleFolder(folderPath: string, window: BrowserWindow | null
 
 // Updated function to use PowerShell's -EncodedCommand
 function runPsCommand(command: string): Promise<string> {
+    console.log(`[DEBUG] PowerShell command requested: ${command.substring(0, 50)}${command.length > 50 ? '...' : ''}`);
+    
+    // Skip GPU monitoring commands if the setting is disabled
+    if ((command.includes('Get-Counter') || command.includes('\\GPU')) && !store.get(ENABLE_PS_GPU_KEY, false)) {
+        console.log('[DEBUG] Skipping PowerShell GPU monitoring command due to setting disabled');
+        return Promise.resolve(''); // Return empty string instead of running command
+    }
+    
     return new Promise((resolve, reject) => {
         // Encode the command as UTF-16LE Buffer, then Base64
         const encodedCommand = Buffer.from(command, 'utf16le').toString('base64');
@@ -676,7 +691,12 @@ async function getSystemStats(): Promise<SystemStats> {
 
 // Added function to poll system stats and send to renderer
 function pollSystemStats(window: BrowserWindow) {
-    setInterval(async () => {
+    // Clear any existing timer
+    if (systemStatsTimer) {
+        clearInterval(systemStatsTimer);
+    }
+    
+    systemStatsTimer = setInterval(async () => {
         const stats = await getSystemStats();
         if (window && !window.isDestroyed()) {
             window.webContents.send("system-stats-update", stats);
@@ -955,6 +975,8 @@ app.on("ready", async () => {
 
     const mainWindow = new BrowserWindow({
         // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
+        width: 1450,
+        height: 750,
         webPreferences: {
             preload: getPreloadPath(),
         }
@@ -1088,6 +1110,25 @@ app.on("ready", async () => {
                 added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(device_type, model, vendor, device_id) -- Unique combination including device_id
+            );
+        `);
+
+        // Create encoding_presets table
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS encoding_presets (
+                id TEXT PRIMARY KEY, -- Using TEXT for potential UUIDs later, keep consistent with UI
+                name TEXT NOT NULL UNIQUE,
+                videoCodec TEXT,
+                videoPreset TEXT,
+                videoQuality INTEGER,
+                videoResolution TEXT,
+                hwAccel TEXT,
+                audioCodecConvert TEXT,
+                audioBitrate TEXT,
+                selectedAudioLayout TEXT,
+                subtitleCodecConvert TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
@@ -1808,15 +1849,77 @@ app.on("ready", async () => {
             return { confirmed: false, error: String(error) };
         }
     });
+
+    // --- Encoding Preset Handlers ---
+    ipcMain.handle('get-presets', async () => {
+        if (!db) throw new Error("Database not initialized");
+        try {
+            const stmt = db.prepare('SELECT * FROM encoding_presets ORDER BY name');
+            return stmt.all();
+        } catch (error) {
+            console.error("Error fetching encoding presets:", error);
+            throw error;
+        }
+    });
+
+    ipcMain.handle('save-preset', async (_event, preset: any) => {
+        if (!db) throw new Error("Database not initialized");
+        const { id, name, ...settings } = preset; // Separate id and name from other settings
+        console.log(`Received save request for preset ID: ${id}, Name: ${name}`);
+
+        try {
+            // Check if a preset with this ID exists
+            const existingPreset = db.prepare('SELECT id FROM encoding_presets WHERE id = ?').get(id) as { id: string } | undefined;
+
+            if (existingPreset) {
+                 console.log(`Updating existing preset ID: ${id}`);
+                // Update existing preset
+                const setClauses = Object.keys(settings).map(key => `${key} = @${key}`).join(', ');
+                const sql = `UPDATE encoding_presets SET name = @name, ${setClauses}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`;
+                const stmt = db.prepare(sql);
+                const info = stmt.run({ id, name, ...settings });
+                console.log(`Update result: Changes=${info.changes}`);
+                return { ...preset }; // Return the updated preset data
+            } else {
+                 console.log(`Inserting new preset with ID: ${id}, Name: ${name}`);
+                // Insert new preset
+                const columns = ['id', 'name', ...Object.keys(settings)];
+                const placeholders = columns.map(key => `@${key}`).join(', ');
+                const sql = `INSERT INTO encoding_presets (${columns.join(', ')}) VALUES (${placeholders})`;
+                const stmt = db.prepare(sql);
+                const info = stmt.run({ id, name, ...settings });
+                 console.log(`Insert result: Changes=${info.changes}, LastInsertRowid=${info.lastInsertRowid}`);
+                return { id, name, ...settings }; // Return the newly inserted preset data
+            }
+        } catch (error) {
+            console.error(`Error saving preset (ID: ${id}, Name: ${name}):`, error);
+             if (error instanceof Error && error.message.includes('UNIQUE constraint failed: encoding_presets.name')) {
+                 throw new Error(`Preset name "${name}" already exists. Please choose a different name.`);
+             }
+            throw error;
+        }
+    });
+
+    ipcMain.handle('delete-preset', async (_event, id: string) => {
+        if (!db) throw new Error("Database not initialized");
+        try {
+            const stmt = db.prepare('DELETE FROM encoding_presets WHERE id = ?');
+            const info = stmt.run(id);
+            console.log(`Deleted preset ID: ${id}, Changes: ${info.changes}`);
+            return info; // Return info about deletion (e.g., info.changes)
+        } catch (error) {
+            console.error(`Error deleting preset ${id}:`, error);
+            throw error;
+        }
+    });
+    // --- End Encoding Preset Handlers ---
 })
 
 // Quit when all windows are closed, except on macOS.
 app.on('window-all-closed', () => {
-  // On OS X it is common for applications and their menu bar
-  // to stay active until the user quits explicitly with Cmd + Q
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  // Always quit the app when all windows are closed, even on macOS
+  // This ensures the npm run dev process also terminates
+  app.quit()
 })
 
 app.on('activate', () => {
@@ -1831,9 +1934,24 @@ app.on('activate', () => {
 
 // Optional: Close the database connection gracefully on quit
 app.on('will-quit', () => {
+    // Stop all polling/interval functions
     stopWatching();
+    
+    // Clear system stats timer
+    if (systemStatsTimer) {
+        clearInterval(systemStatsTimer);
+        systemStatsTimer = null;
+    }
+    
+    // Stop resource polling from test.js
+    stopPolling();
+    
+    // Close database
     if (db) {
         console.log("Closing database connection.");
         db.close();
     }
 });
+
+// Keep track of system stats timer
+let systemStatsTimer: NodeJS.Timeout | null = null;

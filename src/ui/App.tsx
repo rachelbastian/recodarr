@@ -1,12 +1,16 @@
+import React from 'react';
 import { HashRouter as Router, Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Header from './components/Header';
 import Dashboard from './pages/Dashboard';
-import Settings from './pages/Settings';
-import Libraries from './pages/Libraries';
+// import Statistics from './pages/Statistics'; // Commented out - file doesn't exist
 import Media from './pages/Media';
-import Workflows from './pages/workflows';
-import ManualEncode from './pages/ManualEncode';
+import Libraries from './pages/Libraries';
+// import Workflows from './pages/Workflows'; // Old import
+import { WorkflowsPage } from './pages/workflows/components/WorkflowsPage'; // Correct import for named export
+import Settings from './pages/Settings';
+import ManualEncode from './pages/ManualEncode'; // Import ManualEncode
+import Presets from './pages/Presets'; // Import the new Presets page
 import './App.css';
 import { useEffect, useState } from 'react';
 
@@ -20,11 +24,14 @@ function App() {
                     <main className="flex-1 overflow-y-auto">
                         <Routes>
                             <Route path="/" element={<Dashboard />} />
-                            <Route path="/settings" element={<Settings />} />
-                            <Route path="/libraries" element={<Libraries />} />
+                            {/* <Route path="/statistics" element={<Statistics />} /> */}{/* Commented out */}
                             <Route path="/media" element={<Media />} />
-                            <Route path="/workflows" element={<Workflows />} />
-                            <Route path="/encoding" element={<ManualEncode />} />
+                            <Route path="/libraries" element={<Libraries />} />
+                            {/* <Route path="/workflows" element={<Workflows />} /> */}
+                            <Route path="/workflows" element={<WorkflowsPage />} />
+                            <Route path="/settings" element={<Settings />} />
+                            <Route path="/encoding" element={<ManualEncode />} /> {/* Add Manual Encode route */}
+                            <Route path="/presets" element={<Presets />} /> {/* Add Presets route */}
                         </Routes>
                     </main>
                 </div>
