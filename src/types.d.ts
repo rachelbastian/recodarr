@@ -332,5 +332,8 @@ interface EncodingPreset {
     // --- Audio Language Preferences --- 
     // Replaced preferredAudioLanguages, keepOriginalAudio, defaultAudioLanguage
     audioLanguageOrder?: string[]; // Ordered array of lang codes (e.g., ['eng', 'original', 'jpn'])
+    // --- Subtitle Preferences ---
+    subtitleLanguageOrder?: string[]; // Ordered array of subtitle language codes in priority order
+    subtitleTypeOrder?: string[]; // Ordered array of subtitle types (forced, sdh, cc, etc.) in priority order
 }
 // --- End EncodingPreset type definition --- 

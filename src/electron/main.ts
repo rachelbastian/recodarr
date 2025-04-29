@@ -1193,6 +1193,9 @@ app.on("ready", async () => {
             if (!presetsColumns.includes('defaultAudioLanguage')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN defaultAudioLanguage TEXT`);
             // Add migration for the new column
             if (!presetsColumns.includes('audioLanguageOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN audioLanguageOrder TEXT`);
+            // Add migrations for the new subtitle order columns
+            if (!presetsColumns.includes('subtitleLanguageOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN subtitleLanguageOrder TEXT`);
+            if (!presetsColumns.includes('subtitleTypeOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN subtitleTypeOrder TEXT`);
 
             if (presetMigrations.length > 0) {
                 console.log('Starting database migration transaction for encoding_presets table...');
@@ -1907,6 +1910,32 @@ app.on("ready", async () => {
                     console.log(`Constructed fallback order for ${preset.id}:`, result.audioLanguageOrder);
                 }
 
+                // Deserialize subtitleLanguageOrder
+                if (typeof result.subtitleLanguageOrder === 'string') {
+                    try {
+                        result.subtitleLanguageOrder = JSON.parse(result.subtitleLanguageOrder);
+                    } catch (e) {
+                        console.error(`Error parsing subtitleLanguageOrder for preset ${preset.id}:`, e);
+                        result.subtitleLanguageOrder = null; // Fallback on error
+                    }
+                } else if (result.subtitleLanguageOrder === null || result.subtitleLanguageOrder === undefined) {
+                    // Default to empty array for new installations
+                    result.subtitleLanguageOrder = [];
+                }
+
+                // Deserialize subtitleTypeOrder
+                if (typeof result.subtitleTypeOrder === 'string') {
+                    try {
+                        result.subtitleTypeOrder = JSON.parse(result.subtitleTypeOrder);
+                    } catch (e) {
+                        console.error(`Error parsing subtitleTypeOrder for preset ${preset.id}:`, e);
+                        result.subtitleTypeOrder = null; // Fallback on error
+                    }
+                } else if (result.subtitleTypeOrder === null || result.subtitleTypeOrder === undefined) {
+                    // Default to empty array for new installations
+                    result.subtitleTypeOrder = [];
+                }
+
                 // Clean up old fields from the result sent to UI
                 delete result.preferredAudioLanguages;
                 delete result.keepOriginalAudio;
@@ -1922,19 +1951,37 @@ app.on("ready", async () => {
 
     ipcMain.handle('save-preset', async (_event, preset: any) => {
         if (!db) throw new Error("Database not initialized");
-        // Destructure known fields, including the new one
-        const { id, name, audioLanguageOrder, ...settings } = preset;
+        // Destructure known fields, including the new ones
+        const { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings } = preset;
         console.log(`Received save request for preset ID: ${id}, Name: ${name}`);
 
         // Process settings for storage
         const processedSettings = { ...settings };
-        let serializedAudioOrder: string | null = null;
         
-        // Serialize the new audioLanguageOrder field
+        // Serialize array fields to JSON strings
+        let serializedAudioOrder: string | null = null;
+        let serializedSubtitleLangOrder: string | null = null;
+        let serializedSubtitleTypeOrder: string | null = null;
+        
+        // Serialize the audioLanguageOrder field
         if (Array.isArray(audioLanguageOrder)) {
             serializedAudioOrder = JSON.stringify(audioLanguageOrder);
         } else if (audioLanguageOrder === undefined || audioLanguageOrder === null) {
             serializedAudioOrder = null; // Explicitly null if missing or null
+        }
+        
+        // Serialize the subtitleLanguageOrder field
+        if (Array.isArray(subtitleLanguageOrder)) {
+            serializedSubtitleLangOrder = JSON.stringify(subtitleLanguageOrder);
+        } else if (subtitleLanguageOrder === undefined || subtitleLanguageOrder === null) {
+            serializedSubtitleLangOrder = null;
+        }
+        
+        // Serialize the subtitleTypeOrder field
+        if (Array.isArray(subtitleTypeOrder)) {
+            serializedSubtitleTypeOrder = JSON.stringify(subtitleTypeOrder);
+        } else if (subtitleTypeOrder === undefined || subtitleTypeOrder === null) {
+            serializedSubtitleTypeOrder = null;
         }
         
         // Remove potentially interfering old audio fields from settings if they exist
@@ -1955,34 +2002,62 @@ app.on("ready", async () => {
             if (existingPreset) {
                  console.log(`Updating existing preset ID: ${id}`);
                 const updateFields = Object.keys(processedSettings);
-                // Add the new field explicitly
-                const setClauses = ['audioLanguageOrder = @audioLanguageOrder', ...updateFields.map(key => `${key} = @${key}`)].join(', ');
+                // Add all serialized fields explicitly
+                const setClauses = [
+                    'audioLanguageOrder = @audioLanguageOrder',
+                    'subtitleLanguageOrder = @subtitleLanguageOrder',
+                    'subtitleTypeOrder = @subtitleTypeOrder',
+                    ...updateFields.map(key => `${key} = @${key}`)
+                ].join(', ');
                 const sql = `UPDATE encoding_presets SET name = @name, ${setClauses}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`;
                 const stmt = db.prepare(sql);
-                // Include the serialized audioLanguageOrder in params
-                const params = { id, name, audioLanguageOrder: serializedAudioOrder, ...processedSettings };
+                // Include all serialized fields in params
+                const params = { 
+                    id, 
+                    name, 
+                    audioLanguageOrder: serializedAudioOrder,
+                    subtitleLanguageOrder: serializedSubtitleLangOrder,
+                    subtitleTypeOrder: serializedSubtitleTypeOrder,
+                    ...processedSettings 
+                };
                 console.log("Update Params:", params);
                 const info = stmt.run(params);
                 console.log(`Update result: Changes=${info.changes}`);
                 // Return the original preset structure received from UI
-                return { id, name, audioLanguageOrder, ...settings }; 
+                return { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings }; 
             } else {
                  console.log(`Inserting new preset with ID: ${id}, Name: ${name}`);
                 const insertFields = Object.keys(processedSettings).filter(key => processedSettings[key] !== null);
-                // Add the new field explicitly if it's not null
-                const columns = ['id', 'name', ...(serializedAudioOrder !== null ? ['audioLanguageOrder'] : []), ...insertFields];
+                
+                // Add serialized fields explicitly if they're not null
+                const columns = [
+                    'id', 
+                    'name', 
+                    ...(serializedAudioOrder !== null ? ['audioLanguageOrder'] : []),
+                    ...(serializedSubtitleLangOrder !== null ? ['subtitleLanguageOrder'] : []),
+                    ...(serializedSubtitleTypeOrder !== null ? ['subtitleTypeOrder'] : []),
+                    ...insertFields
+                ];
+                
                 const placeholders = columns.map(key => `@${key}`).join(', ');
                 const sql = `INSERT INTO encoding_presets (${columns.join(', ')}) VALUES (${placeholders})`;
                 const stmt = db.prepare(sql);
+                
                 // Define params with a more flexible type signature
                 const params: { [key: string]: any } = { id, name };
+                
                 if (serializedAudioOrder !== null) params['audioLanguageOrder'] = serializedAudioOrder;
+                if (serializedSubtitleLangOrder !== null) params['subtitleLanguageOrder'] = serializedSubtitleLangOrder;
+                if (serializedSubtitleTypeOrder !== null) params['subtitleTypeOrder'] = serializedSubtitleTypeOrder;
+                
                 insertFields.forEach(key => params[key] = processedSettings[key]);
                 console.log("Insert Params:", params);
+                
                 const info = stmt.run(params);
-                 console.log(`Insert result: Changes=${info.changes}, LastInsertRowid=${info.lastInsertRowid}`);
-                 // Return the original preset structure received from UI
-                return { id, name, audioLanguageOrder, ...settings };
+                console.log(`Insert result: Changes=${info.changes}, LastInsertRowid=${info.lastInsertRowid}`);
+                
+                // Return the original preset structure received from UI
+                return { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings };
             }
         } catch (error) {
             console.error(`Error saving preset (ID: ${id}, Name: ${name}):`, error);

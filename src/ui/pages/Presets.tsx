@@ -32,6 +32,10 @@ type HwAccel = typeof HW_ACCEL_OPTIONS[number];
 const AUDIO_LAYOUT_OPTIONS = ['stereo', 'mono', 'surround5_1'] as const;
 type AudioLayout = typeof AUDIO_LAYOUT_OPTIONS[number];
 
+// Add subtitle type options
+const SUBTITLE_TYPES = ['forced', 'sdh', 'cc', 'hi', 'normal', 'signs', 'song'] as const;
+type SubtitleType = typeof SUBTITLE_TYPES[number];
+
 // Language options for audio tracks
 const COMMON_LANGUAGES = [
   { value: 'original', label: 'Original Language (Track 0)' },
@@ -81,6 +85,8 @@ const defaultPresetValues: Omit<EncodingPreset, 'id'> = {
     audioBitrate: '128k',
     selectedAudioLayout: 'stereo',
     audioLanguageOrder: ['eng', 'original'], // Default to English first, then Original
+    subtitleLanguageOrder: ['eng'], // Default to English subtitles
+    subtitleTypeOrder: ['forced', 'normal', 'sdh'], // Default type order
     subtitleCodecConvert: 'srt',
 };
 
@@ -205,6 +211,255 @@ const AudioOrderSelector: React.FC<AudioOrderSelectorProps> = ({ orderedLanguage
     );
 };
 // --- END Audio Order Selector Component ---
+
+// --- NEW Subtitle Order Selector Component ---
+interface SubtitleOrderSelectorProps {
+    orderedLanguages: string[]; // Current order (e.g., ['eng', 'original'])
+    onChange: (newOrder: string[]) => void;
+}
+
+const SubtitleOrderSelector: React.FC<SubtitleOrderSelectorProps> = ({ orderedLanguages, onChange }) => {
+    const [addLangOpen, setAddLangOpen] = useState(false);
+
+    const getLanguageLabel = useCallback((code: string) => {
+        return EXTENDED_LANGUAGES.find(l => l.value === code)?.label || code;
+    }, []);
+
+    const handleAddLanguage = (langCode: string) => {
+        if (langCode && !orderedLanguages.includes(langCode)) {
+            onChange([...orderedLanguages, langCode]);
+        }
+        setAddLangOpen(false);
+    };
+
+    const handleRemoveLanguage = (langCode: string) => {
+        onChange(orderedLanguages.filter(l => l !== langCode));
+    };
+
+    const moveItem = (index: number, direction: 'up' | 'down') => {
+        const newOrder = [...orderedLanguages];
+        const item = newOrder[index];
+        const swapIndex = direction === 'up' ? index - 1 : index + 1;
+
+        if (swapIndex >= 0 && swapIndex < newOrder.length) {
+            newOrder.splice(index, 1);
+            newOrder.splice(swapIndex, 0, item);
+            onChange(newOrder);
+        }
+    };
+
+    return (
+        <div className="space-y-3">
+            {orderedLanguages.length > 0 && (
+                <Card className="bg-background/30 p-3 border border-border/50">
+                    <div className="space-y-2">
+                        {orderedLanguages.map((langCode, index) => (
+                            <div key={langCode} className="flex items-center justify-between gap-2 p-2 rounded bg-muted/50">
+                                <span className="font-medium text-sm">
+                                    <span className="text-xs text-muted-foreground mr-2">{index + 1}.</span> 
+                                    {getLanguageLabel(langCode)}
+                                </span>
+                                <div className="flex items-center">
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => moveItem(index, 'up')} 
+                                        disabled={index === 0}
+                                        className="h-6 w-6"
+                                    >
+                                        <ArrowUp className="h-4 w-4" />
+                                    </Button>
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => moveItem(index, 'down')} 
+                                        disabled={index === orderedLanguages.length - 1}
+                                        className="h-6 w-6"
+                                    >
+                                        <ArrowDown className="h-4 w-4" />
+                                    </Button>
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => handleRemoveLanguage(langCode)}
+                                        className="h-6 w-6 text-destructive hover:text-destructive"
+                                    >
+                                        <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </Card>
+            )}
+
+            <Popover open={addLangOpen} onOpenChange={setAddLangOpen}>
+                <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-full justify-start">
+                        <PlusCircle className="mr-2 h-4 w-4" /> Add Subtitle Language
+                    </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0">
+                    <Command>
+                        <CommandInput placeholder="Search languages..." />
+                        <CommandList>
+                            <CommandEmpty>No language found.</CommandEmpty>
+                            <ScrollArea className="h-[300px]">
+                                <CommandGroup>
+                                    {EXTENDED_LANGUAGES
+                                        .filter(lang => !orderedLanguages.includes(lang.value)) // Only show unselected languages
+                                        .map((language) => (
+                                        <CommandItem
+                                            key={language.value}
+                                            value={language.label} // Search by label
+                                            onSelect={() => handleAddLanguage(language.value)}
+                                        >
+                                            {language.label}
+                                        </CommandItem>
+                                    ))}
+                                </CommandGroup>
+                            </ScrollArea>
+                        </CommandList>
+                    </Command>
+                </PopoverContent>
+            </Popover>
+            <p className="text-xs text-muted-foreground mt-1">
+                Define the preferred order of subtitle languages. Subtitles will be selected according to this order. Missing languages are ignored.
+            </p>
+        </div>
+    );
+};
+// --- END Subtitle Order Selector Component ---
+
+// --- NEW Subtitle Type Order Selector Component ---
+interface SubtitleTypeOrderSelectorProps {
+    orderedTypes: string[]; // Current order of subtitle types
+    onChange: (newOrder: string[]) => void;
+}
+
+const SubtitleTypeOrderSelector: React.FC<SubtitleTypeOrderSelectorProps> = ({ orderedTypes, onChange }) => {
+    const [addTypeOpen, setAddTypeOpen] = useState(false);
+
+    // Map of subtitle types to display names
+    const subtitleTypeLabels: Record<string, string> = {
+        'forced': 'Forced Subtitles',
+        'sdh': 'SDH (Deaf/Hard of Hearing)',
+        'cc': 'Closed Captions',
+        'hi': 'Hearing Impaired',
+        'normal': 'Normal Subtitles',
+        'signs': 'Signs & Text',
+        'song': 'Song/Lyrics'
+    };
+    
+    const getTypeLabel = useCallback((type: string) => {
+        return subtitleTypeLabels[type] || type;
+    }, []);
+
+    const handleAddType = (type: string) => {
+        if (type && !orderedTypes.includes(type)) {
+            onChange([...orderedTypes, type]);
+        }
+        setAddTypeOpen(false);
+    };
+
+    const handleRemoveType = (type: string) => {
+        onChange(orderedTypes.filter(t => t !== type));
+    };
+
+    const moveItem = (index: number, direction: 'up' | 'down') => {
+        const newOrder = [...orderedTypes];
+        const item = newOrder[index];
+        const swapIndex = direction === 'up' ? index - 1 : index + 1;
+
+        if (swapIndex >= 0 && swapIndex < newOrder.length) {
+            newOrder.splice(index, 1);
+            newOrder.splice(swapIndex, 0, item);
+            onChange(newOrder);
+        }
+    };
+
+    return (
+        <div className="space-y-3">
+            {orderedTypes.length > 0 && (
+                <Card className="bg-background/30 p-3 border border-border/50">
+                    <div className="space-y-2">
+                        {orderedTypes.map((type, index) => (
+                            <div key={type} className="flex items-center justify-between gap-2 p-2 rounded bg-muted/50">
+                                <span className="font-medium text-sm">
+                                    <span className="text-xs text-muted-foreground mr-2">{index + 1}.</span> 
+                                    {getTypeLabel(type)}
+                                </span>
+                                <div className="flex items-center">
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => moveItem(index, 'up')} 
+                                        disabled={index === 0}
+                                        className="h-6 w-6"
+                                    >
+                                        <ArrowUp className="h-4 w-4" />
+                                    </Button>
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => moveItem(index, 'down')} 
+                                        disabled={index === orderedTypes.length - 1}
+                                        className="h-6 w-6"
+                                    >
+                                        <ArrowDown className="h-4 w-4" />
+                                    </Button>
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => handleRemoveType(type)}
+                                        className="h-6 w-6 text-destructive hover:text-destructive"
+                                    >
+                                        <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </Card>
+            )}
+
+            <Popover open={addTypeOpen} onOpenChange={setAddTypeOpen}>
+                <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-full justify-start">
+                        <PlusCircle className="mr-2 h-4 w-4" /> Add Subtitle Type
+                    </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0">
+                    <Command>
+                        <CommandInput placeholder="Search subtitle types..." />
+                        <CommandList>
+                            <CommandEmpty>No subtitle type found.</CommandEmpty>
+                            <ScrollArea className="h-[300px]">
+                                <CommandGroup>
+                                    {SUBTITLE_TYPES
+                                        .filter(type => !orderedTypes.includes(type)) // Only show unselected types
+                                        .map((type) => (
+                                        <CommandItem
+                                            key={type}
+                                            value={getTypeLabel(type)} // Search by label
+                                            onSelect={() => handleAddType(type)}
+                                        >
+                                            {getTypeLabel(type)}
+                                        </CommandItem>
+                                    ))}
+                                </CommandGroup>
+                            </ScrollArea>
+                        </CommandList>
+                    </Command>
+                </PopoverContent>
+            </Popover>
+            <p className="text-xs text-muted-foreground mt-1">
+                Define the preferred order of subtitle types. For each language, subtitles will be prioritized according to this order.
+            </p>
+        </div>
+    );
+};
+// --- END Subtitle Type Order Selector Component ---
 
 const Presets: React.FC = () => {
     const [presets, setPresets] = useState<EncodingPreset[]>([]);
@@ -341,6 +596,22 @@ const Presets: React.FC = () => {
             parts.push(`Aud Order: ${orderSummary}${preset.audioLanguageOrder.length > 3 ? '...' : ''}`);
         } else {
              parts.push('Aud Order: Default'); // Or indicate no preference
+        }
+        
+        // Subtitle language/type summary
+        if (Array.isArray(preset.subtitleLanguageOrder) && preset.subtitleLanguageOrder.length > 0) {
+            const langSummary = preset.subtitleLanguageOrder
+                .map(code => EXTENDED_LANGUAGES.find(l => l.value === code)?.label || code)
+                .slice(0, 2) // Show first 2
+                .join(', ');
+            parts.push(`Sub Lang: ${langSummary}${preset.subtitleLanguageOrder.length > 2 ? '...' : ''}`);
+            
+            if (Array.isArray(preset.subtitleTypeOrder) && preset.subtitleTypeOrder.length > 0) {
+                const typeSummary = preset.subtitleTypeOrder
+                    .slice(0, 2) // Show first 2 types
+                    .join(', ');
+                parts.push(`Sub Type: ${typeSummary}${preset.subtitleTypeOrder.length > 2 ? '...' : ''}`);
+            }
         }
         
         return parts.join(', ') || 'Default Settings';
@@ -534,6 +805,33 @@ const Presets: React.FC = () => {
                                 <SelectTrigger className="col-span-3"><SelectValue placeholder="Select format..." /></SelectTrigger>
                                 <SelectContent>{SUBTITLE_CODECS_CONVERT.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                             </Select>
+                        </div>
+
+                        <Separator />
+                        
+                        <h4 className="font-medium text-lg -mb-2">Subtitle Language Order</h4>
+                        <div className="grid grid-cols-4 items-start gap-4">
+                            <Label className="text-right pt-2">Language Preference</Label>
+                            <div className="col-span-3">
+                                <SubtitleOrderSelector 
+                                    orderedLanguages={formData.subtitleLanguageOrder || []} 
+                                    onChange={(newOrder) => handleInputChange('subtitleLanguageOrder', newOrder)} 
+                                />
+                            </div>
+                        </div>
+                        
+                        <h4 className="font-medium text-lg -mb-2 mt-4">Subtitle Type Order</h4>
+                        <div className="grid grid-cols-4 items-start gap-4">
+                            <Label className="text-right pt-2">Type Preference</Label>
+                            <div className="col-span-3">
+                                <SubtitleTypeOrderSelector 
+                                    orderedTypes={formData.subtitleTypeOrder || []} 
+                                    onChange={(newOrder) => handleInputChange('subtitleTypeOrder', newOrder)} 
+                                />
+                                <p className="text-xs text-muted-foreground mt-2">
+                                    For multiple subtitles of the same language, prioritize according to this type order.
+                                </p>
+                            </div>
                         </div>
 
                     </div>

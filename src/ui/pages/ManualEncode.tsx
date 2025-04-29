@@ -92,6 +92,10 @@ type AudioLayout = typeof AUDIO_LAYOUT_OPTIONS[number];
 const TRACK_ACTION_OPTIONS = ['convert', 'keep', 'discard'] as const;
 type TrackAction = typeof TRACK_ACTION_OPTIONS[number];
 
+// Add at the top where constants and types are defined
+const SUBTITLE_TYPES = ['forced', 'sdh', 'cc', 'hi', 'normal', 'signs', 'song'] as const;
+type SubtitleType = typeof SUBTITLE_TYPES[number];
+
 // --- Helper Functions --- 
 // Basic stream description
 const getStreamDescription = (stream: StreamInfo): string => {
@@ -380,15 +384,40 @@ const ManualEncode: React.FC = () => { // Renamed component
                 setSelectedAudioTracks(audioDefaults);
                 console.log("[Preset Track Select] Updated selectedAudioTracks:", audioDefaults);
 
-                // Reset subtitle selection to default (keep ENG, discard others) when preset changes
+                // --- FIX: Set subtitle selection based on preset language order --- 
                 const subtitleDefaults: { [index: number]: TrackAction } = {};
+                const presetSubLangsLower = (activePreset.subtitleLanguageOrder || [])
+                    .map(lang => lang.toLowerCase());
+                
+                // --- DEBUG: Verify preset and stream languages --- 
+                console.log(`[Preset Track Select] Active Preset Subtitle Lang Order:`, activePreset.subtitleLanguageOrder);
+                console.log(`[Preset Track Select] Lowercase Preset Subtitle Langs:`, presetSubLangsLower);
+                // --- END DEBUG --- 
+                
+                console.log(`[Preset Track Select] Applying subtitle language order from preset:`, presetSubLangsLower);
+                
                 probeData.streams
                     .filter(s => s.codec_type === 'subtitle')
                     .forEach(stream => {
-                        subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
+                        const langLower = stream.tags?.language?.toLowerCase() || 'unknown';
+                        
+                        // --- DEBUG: Log stream language and match result --- 
+                        const isIncluded = presetSubLangsLower.includes(langLower);
+                        console.log(`[Preset Track Select] Stream ${stream.index}: LangTag="${stream.tags?.language}", Lower="${langLower}", IncludedInPreset=${isIncluded}`);
+                        // --- END DEBUG --- 
+                        
+                        // Keep subtitles whose language is in the preset's order
+                        if (isIncluded) { // Use the calculated variable
+                            subtitleDefaults[stream.index] = 'keep'; // Default to 'keep'
+                            console.log(`[Preset Track Select] Setting subtitle ${stream.index} (${langLower}) to 'keep' based on preset.`);
+                        } else {
+                            subtitleDefaults[stream.index] = 'discard';
+                            console.log(`[Preset Track Select] Setting subtitle ${stream.index} (${langLower}) to 'discard' as it's not in preset order.`);
+                        }
                     });
                 setSelectedSubtitleTracks(subtitleDefaults);
-                console.log("[Preset Track Select] Reset selectedSubtitleTracks to default:", subtitleDefaults);
+                console.log("[Preset Track Select] Updated selectedSubtitleTracks based on preset:", subtitleDefaults);
+                // --- END FIX --- 
 
             } else if (activePreset) {
                  // Handle presets without a defined (or empty) audioLanguageOrder - default to converting first audio track
@@ -401,7 +430,7 @@ const ManualEncode: React.FC = () => { // Renamed component
                  setSelectedAudioTracks(audioDefaults);
                  console.log("[Preset Track Select] Updated selectedAudioTracks (default first):", audioDefaults);
 
-                 // Reset subtitles as well
+                 // --- FIX: Also apply default subtitle logic here (keep ENG) --- 
                 const subtitleDefaults: { [index: number]: TrackAction } = {};
                 probeData.streams
                     .filter(s => s.codec_type === 'subtitle')
@@ -409,7 +438,8 @@ const ManualEncode: React.FC = () => { // Renamed component
                         subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
                     });
                 setSelectedSubtitleTracks(subtitleDefaults);
-                 console.log("[Preset Track Select] Reset selectedSubtitleTracks to default:", subtitleDefaults);
+                 console.log("[Preset Track Select] Reset selectedSubtitleTracks to default (keep ENG) because audio order was missing:", subtitleDefaults);
+                 // --- END FIX --- 
             }
         } else if (probeData?.streams && selectedPresetId === 'custom') {
              // Keep the existing logic for 'custom' mode (convert first audio, keep ENG subs)
@@ -861,29 +891,138 @@ const ManualEncode: React.FC = () => { // Renamed component
                     (selectedSubtitleTracks[s.index] === 'keep' || selectedSubtitleTracks[s.index] === 'convert')
                 );
             
-            // Generate multiple map strings
-            options.mapSubtitle = subtitlesToMap.length > 0 
-                ? subtitlesToMap.map((s: StreamInfo) => {
-                    // Calculate subtitle-specific index for each subtitle
-                    const subtitleIndex = probeData.streams
-                        .filter(stream => stream.codec_type === 'subtitle')
-                        .findIndex(stream => stream.index === s.index);
-                    return `0:s:${subtitleIndex}`;
-                }) 
-                : undefined;
-
-             // Determine codec: convert if ANY selected need conversion, else copy if ANY are selected, else undefined
-             const needsConversion = subtitlesToMap.some((s: StreamInfo) => selectedSubtitleTracks[s.index] === 'convert');
-             if (needsConversion) {
-                 options.subtitleCodec = subtitleCodecConvert;
-             } else if (subtitlesToMap.length > 0) { 
-                 options.subtitleCodec = 'copy';
-             } else {
-                 options.subtitleCodec = undefined;
-             }
-            // --- DEBUG LOG --- 
-            console.log(`[Debug] Mapping Subtitle Streams: ${options.mapSubtitle?.join(', ') ?? 'None'}`);
-            console.log(`[Debug] Subtitle Codec Chosen: ${options.subtitleCodec ?? 'None'}`);
+            // Early return if no subtitles selected
+            if (subtitlesToMap.length === 0) {
+                options.mapSubtitle = undefined;
+                options.subtitleCodec = undefined;
+            } else {
+                // Get active preset for subtitle ordering
+                const activePreset = selectedPresetId !== 'custom' && availablePresets.length > 0 
+                    ? availablePresets.find(p => p.id === selectedPresetId)
+                    : null;
+                
+                // Convert subtitle streams to DTOs with metadata
+                const subtitleStreamDTOs = subtitlesToMap.map(s => {
+                    // Identify subtitle type - look for keywords in the title or disposition
+                    const subtitleType = getSubtitleType(s);
+                    console.log(`[Debug] Subtitle ${s.index}: Language=${s.tags?.language || 'unknown'}, Title="${s.tags?.title || ''}", Detected Type=${subtitleType}`);
+                    
+                    return {
+                        streamIndex: s.index,
+                        language: s.tags?.language?.toLowerCase() || '',
+                        title: s.tags?.title || '',
+                        disposition: s.disposition || {},
+                        ffmpegIndex: probeData.streams
+                            .filter(stream => stream.codec_type === 'subtitle')
+                            .findIndex(stream => stream.index === s.index),
+                        type: subtitleType,
+                        action: selectedSubtitleTracks[s.index] // 'keep' or 'convert'
+                    };
+                });
+                
+                // Sort the subtitle streams if we have a preset with subtitle priorities
+                if (activePreset && 
+                    activePreset.subtitleLanguageOrder && 
+                    Array.isArray(activePreset.subtitleLanguageOrder) && 
+                    activePreset.subtitleLanguageOrder.length > 0) {
+                    
+                    console.log(`[Debug] Sorting subtitle streams according to preset "${activePreset.name}" priorities:`, 
+                        activePreset.subtitleLanguageOrder);
+                    
+                    // Create list of sorted streams
+                    const sortedStreams: typeof subtitleStreamDTOs = [];
+                    
+                    // Track languages we've already processed to ensure we get one subtitle per language
+                    const processedLanguages = new Set<string>();
+                    
+                    // Process each language priority in order
+                    for (const lang of activePreset.subtitleLanguageOrder) {
+                        const langLower = lang.toLowerCase();
+                        
+                        // Skip if we already processed this language
+                        if (processedLanguages.has(langLower)) {
+                            console.log(`[Debug] Skipping ${langLower} - already processed`);
+                            continue;
+                        }
+                        
+                        // Get all subtitles for this language
+                        let langTracks = subtitleStreamDTOs.filter(
+                            dto => dto.language === langLower
+                        );
+                        
+                        if (langTracks.length === 0) {
+                            console.log(`[Debug] No subtitles found for language: ${langLower}`);
+                            continue; // Skip to the next language
+                        }
+                        
+                        console.log(`[Debug] Found ${langTracks.length} ${langLower} subtitles to consider.`);
+                        
+                        // Filter by preferred types if type order is defined
+                        if (activePreset.subtitleTypeOrder && 
+                            Array.isArray(activePreset.subtitleTypeOrder) && 
+                            activePreset.subtitleTypeOrder.length > 0) {
+                            
+                            const preferredTypes = activePreset.subtitleTypeOrder;
+                            console.log(`[Debug] Filtering ${langLower} subtitles by preferred types:`, preferredTypes);
+                            
+                            // Keep only tracks whose type is in the preferred list
+                            langTracks = langTracks.filter(track => {
+                                const included = preferredTypes.includes(track.type);
+                                if (!included) {
+                                    console.log(`[Debug] Discarding ${langLower} subtitle: type=${track.type}, title="${track.title}" (not in preferred types)`);
+                                }
+                                return included;
+                            });
+                            
+                            if (langTracks.length === 0) {
+                                console.log(`[Debug] No ${langLower} subtitles matched the preferred types.`);
+                                continue; // Skip if no tracks match the types
+                            }
+                            
+                            console.log(`[Debug] ${langTracks.length} ${langLower} subtitles matched preferred types. Sorting...`);
+                            
+                            // Sort the *remaining* tracks by subtitle type preference
+                            langTracks.sort((a, b) => {
+                                const typeIndexA = preferredTypes.indexOf(a.type);
+                                const typeIndexB = preferredTypes.indexOf(b.type);
+                                
+                                // Since we filtered, both types should be >= 0
+                                return typeIndexA - typeIndexB;
+                            });
+                            
+                            // Log subtitle types after filtering and sorting
+                            langTracks.forEach((track, i) => {
+                                console.log(`[Debug] ${langLower} subtitle ${i+1} (post-filter/sort): type=${track.type}, title="${track.title}"`);
+                            });
+                            
+                        } else {
+                            // If no type order is specified, keep all tracks for this language
+                            console.log(`[Debug] No subtitle type preference specified for ${langLower}, keeping all ${langTracks.length} tracks.`);
+                        }
+                        
+                        // Add all filtered and sorted tracks for this language to the main list
+                        if (langTracks.length > 0) {
+                            sortedStreams.push(...langTracks);
+                            console.log(`[Debug] Added ${langTracks.length} ${langLower} subtitle(s) to the final list.`);
+                        }
+                    }
+                    
+                    // Replace the original array with the sorted one
+                    subtitleStreamDTOs.length = 0;
+                    subtitleStreamDTOs.push(...sortedStreams);
+                }
+                
+                // Generate mapping strings for the sorted subtitles
+                options.mapSubtitle = subtitleStreamDTOs.map(dto => `0:s:${dto.ffmpegIndex}`);
+                
+                // Determine codec based on the actions
+                const needsConversion = subtitleStreamDTOs.some(dto => dto.action === 'convert');
+                options.subtitleCodec = needsConversion ? subtitleCodecConvert : 'copy';
+                
+                // Debug log final subtitle mapping
+                console.log(`[Debug] Final Subtitle Mapping Generated: ${options.mapSubtitle.join(', ')}`);
+                console.log(`[Debug] Final Subtitle Codec: ${options.subtitleCodec}`);
+            }
 
             // --- Log and Execute --- 
             setStatus('Starting encoding process...');
@@ -1486,7 +1625,7 @@ const ManualEncode: React.FC = () => { // Renamed component
 
                             {lastResult && (
                                 <div className="space-y-3">
-                                    {/* --- Last Result Header with View Log Button --- */} 
+                                    {/* --- Last Result Header with View Log Button --- */}
                                     <div className="flex justify-between items-center">
                                         <Label className="text-xs text-muted-foreground">Last Result</Label>
                                         {lastJobId && (
@@ -1601,6 +1740,222 @@ interface FileDialogOptions {
 interface FileDialogResult {
   canceled: boolean;
   filePaths: string[];
+}
+
+// Add this helper function
+// Function to determine subtitle type from stream info
+const getSubtitleType = (stream: StreamInfo): SubtitleType => {
+    const title = (stream.tags?.title || '').toLowerCase();
+    const language = (stream.tags?.language || '').toLowerCase();
+    const disposition = stream.disposition || {};
+    const codecName = (stream.codec_name || '').toLowerCase();
+    
+    // Get raw stream descriptor string
+    const rawStreamDescriptor = stream.codec_tag_string || stream.codec_type_string || '';
+    
+    // Log all available data for debugging
+    console.log(`[SubtitleDetector] Raw stream data for stream #${stream.index}:`, {
+        rawStreamDescriptor, // Add the raw stream descriptor line
+        language,
+        codecName,
+        title,
+        disposition,
+        // Include any additional properties that might contain subtitle info
+        tags: stream.tags,
+        streamInfo: { ...stream }
+    });
+    
+    // 1. Check for embedded flags in the raw stream data (e.g., "forced", "hearing impaired")
+    // Since ffprobe puts these flags in different places depending on container format,
+    // we need to check multiple places
+    
+    // Attempt to extract flags from the raw stream data
+    // The raw stream might include flags like "(dub) (forced)" or "(hearing impaired)"
+    let streamFlags: string[] = [];
+    
+    // NEW: Try to extract the full stream descriptor line which might contain flags
+    // Example: "Stream #0:32(fre): Subtitle: subrip (srt) (dub) (forced)"
+    if (stream.codec_type === 'subtitle') {
+        // First look for the codec_long_name which might include descriptors
+        if (stream.codec_long_name) {
+            streamFlags = [...streamFlags, ...extractFlagsFromString(stream.codec_long_name)];
+        }
+        
+        // Try to rebuild a approximation of the stream descriptor line
+        const streamDesc = `Subtitle: ${codecName} (${language})`;
+        streamFlags = [...streamFlags, ...extractFlagsFromString(streamDesc)];
+    }
+    
+    // Check if tags has a raw FFmpeg output field that might contain flags
+    const rawInfo = stream.codec_tag_string || stream.codec_info || '';
+    if (typeof rawInfo === 'string') {
+        streamFlags = [...streamFlags, ...extractFlagsFromString(rawInfo)];
+    }
+    
+    // Check if there's a direct forced flag in disposition
+    if (disposition.forced) {
+        streamFlags.push('forced');
+    }
+    
+    // Check if there's a hearing_impaired flag in disposition
+    if (disposition.hearing_impaired) {
+        streamFlags.push('hearing impaired');
+    }
+    
+    // Check additional nested properties that might exist in some ffprobe outputs
+    if (stream.tags?.HANDLER_NAME) {
+        streamFlags = [...streamFlags, ...extractFlagsFromString(stream.tags.HANDLER_NAME)];
+    }
+    
+    // Look at stream description if available
+    if (stream.tags?.description) {
+        streamFlags = [...streamFlags, ...extractFlagsFromString(stream.tags.description)];
+    }
+    
+    // NEW: Look in all properties of the stream object for any strings that might contain flags
+    for (const key in stream) {
+        const value = stream[key];
+        if (typeof value === 'string') {
+            // Try to extract any flags in parentheses
+            const extracted = extractFlagsFromString(value);
+            if (extracted.length > 0) {
+                console.log(`[SubtitleDetector] Found flags in stream.${key}: ${extracted.join(', ')}`);
+                streamFlags = [...streamFlags, ...extracted];
+            }
+        }
+    }
+    
+    // Log the collected flags
+    console.log(`[SubtitleDetector] Extracted flags:`, streamFlags);
+    
+    // 2. Check title field directly (often contains useful type info)
+    if (title) {
+        streamFlags = [...streamFlags, ...extractFlagsFromString(title)];
+        
+        // Special case for titles that explicitly indicate the type
+        if (/^(forced|sdh|hi|cc)$/i.test(title)) {
+            const explicitType = title.toLowerCase();
+            console.log(`[SubtitleDetector] Found explicit type in title: ${explicitType}`);
+            if (explicitType === 'sdh' || explicitType === 'hi' || explicitType === 'cc') {
+                return 'hi';
+            } else if (explicitType === 'forced') {
+                return 'forced';
+            }
+        }
+        
+        // NEW: Look for key phrases in the title
+        if (title === 'traditional' && language === 'chi') {
+            console.log(`[SubtitleDetector] Detected Traditional Chinese subtitle`);
+            return 'normal';
+        }
+        
+        if (title === 'simplified' && language === 'chi') {
+            console.log(`[SubtitleDetector] Detected Simplified Chinese subtitle`);
+            return 'normal';
+        }
+    }
+    
+    // 3. Map detected flags to subtitle types with priority
+    
+    // NEW: Detect dubs which often have special meaning
+    if (streamFlags.includes('dub') || streamFlags.includes('dubbed')) {
+        // If it's dubbed AND forced, it's likely forced narrative text for a dubbed audio track
+        if (streamFlags.includes('forced')) {
+            console.log(`[SubtitleDetector] Detected "forced" subtitle for dubbed audio`);
+            return 'forced';
+        }
+        
+        // If it's dubbed AND hearing impaired, prioritize that
+        if (streamFlags.some(flag => /\b(hearing.?impaired|sdh|hi|cc|closed.?caption|deaf)\b/i.test(flag))) {
+            console.log(`[SubtitleDetector] Detected "hi" subtitle for dubbed audio`);
+            return 'hi';
+        }
+        
+        // Otherwise just note it's for dubbed audio but treat it as normal
+        console.log(`[SubtitleDetector] Detected subtitle for dubbed audio, treating as normal`);
+    }
+    
+    // Check for forced subtitles (highest priority)
+    if (streamFlags.some(flag => /\b(forced|force)\b/i.test(flag))) {
+        console.log(`[SubtitleDetector] Detected "forced" subtitle from flags`);
+        return 'forced';
+    }
+    
+    // Check for hearing impaired subtitles
+    if (streamFlags.some(flag => /\b(hearing.?impaired|sdh|hi|cc|closed.?caption|deaf)\b/i.test(flag))) {
+        console.log(`[SubtitleDetector] Detected "hi" subtitle from flags`);
+        return 'hi';
+    }
+    
+    // Check for sign/song subtitles
+    if (streamFlags.some(flag => /\b(signs?|songs?|lyrics|karaoke)\b/i.test(flag))) {
+        if (streamFlags.some(flag => /\b(signs?)\b/i.test(flag))) {
+            console.log(`[SubtitleDetector] Detected "signs" subtitle from flags`);
+            return 'signs';
+        } else {
+            console.log(`[SubtitleDetector] Detected "song" subtitle from flags`);
+            return 'song';
+        }
+    }
+    
+    // 4. Use codec information as a hint
+    if (codecName) {
+        // ASS/SSA is often used for stylized or sign subtitles 
+        if (codecName.includes('ass') || codecName.includes('ssa')) {
+            console.log(`[SubtitleDetector] ASS/SSA codec detected, likely a signs/styling subtitle`);
+            return 'signs';
+        }
+    }
+    
+    // 5. Fallback to title and pattern detection if no flags were found
+    
+    // More robust title detection with wider patterns
+    const patterns = {
+        forced: [/\b(forced|force)\b/, /\bfor[cç]é\b/, /\.(forced|force)\b/],
+        sdh: [/\b(sdh|deaf|hard.?of.?hearing)\b/, /\.(sdh)\b/],
+        cc: [/\b(cc|closed.?caption)\b/, /\.(cc)\b/],
+        hi: [/\b(hi|hearing.?impaired)\b/, /\.(hi)\b/, /\bhear.imp\b/],
+        signs: [/\b(signs|sign)\b/, /\bsign.?song\b/, /\.(signs)\b/],
+        song: [/\b(lyrics|karaoke|songs?)\b/, /\.(song)\b/]
+    };
+    
+    // Check each pattern group
+    for (const [type, regexList] of Object.entries(patterns)) {
+        for (const regex of regexList) {
+            if (regex.test(title)) {
+                console.log(`[SubtitleDetector] Detected "${type}" from title regex ${regex}`);
+                return type as SubtitleType;
+            }
+        }
+    }
+    
+    // Special case checks based on usage patterns seen in common media files
+    if (title.includes('english') && title.includes('hearing')) {
+        console.log(`[SubtitleDetector] Special case: Detected "hi" from English+Hearing combination`);
+        return 'hi';
+    }
+    
+    if (title.includes('commentary') || title.includes('comment')) {
+        console.log(`[SubtitleDetector] Special case: Detected commentary - treating as "normal"`);
+        return 'normal';
+    }
+    
+    // Default type
+    console.log(`[SubtitleDetector] No specific type detected, using "normal"`);
+    return 'normal';
+};
+
+// Helper function to extract potential flags from a string like "(dub) (forced)"
+function extractFlagsFromString(str: string): string[] {
+    if (!str) return [];
+    
+    // Look for patterns like "(flag)" or "[flag]"
+    const bracketMatches = str.match(/\(([^)]+)\)|\[([^\]]+)\]/g) || [];
+    
+    // Extract the actual flag text from the brackets
+    return bracketMatches.map(match => 
+        match.replace(/[()[\]]/g, '').trim().toLowerCase()
+    );
 }
 
 export default ManualEncode; // Renamed export 
