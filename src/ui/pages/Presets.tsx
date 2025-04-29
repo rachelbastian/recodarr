@@ -15,6 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { defaultPresetValues, getPresetSummary, loadPresets as loadPresetsUtil } from '@/utils/presetUtil';
 
 // --- Constants from ManualEncode (adjust as needed) ---
 const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
@@ -72,23 +73,6 @@ const EXTENDED_LANGUAGES = [
 
 // Simplify to just a string type for language codes
 type LanguageCode = string;
-
-// Default values for a new preset using the new interface
-const defaultPresetValues: Omit<EncodingPreset, 'id'> = {
-    name: '',
-    videoCodec: 'hevc_qsv',
-    videoPreset: 'faster',
-    videoQuality: 25,
-    videoResolution: 'original',
-    hwAccel: 'auto',
-    audioCodecConvert: 'libopus',
-    audioBitrate: '128k',
-    selectedAudioLayout: 'stereo',
-    audioLanguageOrder: ['eng', 'original'], // Default to English first, then Original
-    subtitleLanguageOrder: ['eng'], // Default to English subtitles
-    subtitleTypeOrder: ['forced', 'normal', 'sdh'], // Default type order
-    subtitleCodecConvert: 'srt',
-};
 
 // Cast window.electron to the imported type
 const electronAPI = window.electron as IElectronAPI;
@@ -478,10 +462,8 @@ const Presets: React.FC = () => {
             setIsLoading(true);
             setError(null);
             try {
-                const loadedPresets = await electronAPI.getPresets();
-                // Ensure audioLanguageOrder is always an array, even if null from DB
-                const sanitizedPresets = loadedPresets.map(p => ({ ...p, audioLanguageOrder: p.audioLanguageOrder ?? [] }));
-                setPresets(sanitizedPresets);
+                const loadedPresets = await loadPresetsUtil(electronAPI);
+                setPresets(loadedPresets);
             } catch (err) {
                 console.error("Error loading presets:", err);
                 setError(err instanceof Error ? err.message : String(err));
@@ -566,55 +548,6 @@ const Presets: React.FC = () => {
             console.error("Error deleting preset:", err);
             setError(`Failed to delete preset "${name}": ${err instanceof Error ? err.message : String(err)}`);
         }
-    };
-
-    // Helper to display preset summary
-    const getPresetSummary = (preset: EncodingPreset): string => {
-        const parts: string[] = [];
-        
-        // Video info
-        if (preset.videoCodec) {
-            parts.push(`Vid: ${preset.videoCodec}${preset.videoQuality ? ` (Q${preset.videoQuality})` : ''}`);
-        }
-        
-        // Audio codec info
-        if (preset.audioCodecConvert) {
-            parts.push(`Aud: ${preset.audioCodecConvert}${preset.audioBitrate ? ` (${preset.audioBitrate})` : ''}`);
-        }
-        
-        // Resolution if not original
-        if (preset.videoResolution && preset.videoResolution !== 'original') {
-            parts.push(`Res: ${preset.videoResolution}`);
-        }
-        
-        // Audio language summary based on order
-        if (preset.audioLanguageOrder && preset.audioLanguageOrder.length > 0) {
-            const orderSummary = preset.audioLanguageOrder
-                .map(code => EXTENDED_LANGUAGES.find(l => l.value === code)?.label || code)
-                .slice(0, 3) // Show first 3
-                .join(', ');
-            parts.push(`Aud Order: ${orderSummary}${preset.audioLanguageOrder.length > 3 ? '...' : ''}`);
-        } else {
-             parts.push('Aud Order: Default'); // Or indicate no preference
-        }
-        
-        // Subtitle language/type summary
-        if (Array.isArray(preset.subtitleLanguageOrder) && preset.subtitleLanguageOrder.length > 0) {
-            const langSummary = preset.subtitleLanguageOrder
-                .map(code => EXTENDED_LANGUAGES.find(l => l.value === code)?.label || code)
-                .slice(0, 2) // Show first 2
-                .join(', ');
-            parts.push(`Sub Lang: ${langSummary}${preset.subtitleLanguageOrder.length > 2 ? '...' : ''}`);
-            
-            if (Array.isArray(preset.subtitleTypeOrder) && preset.subtitleTypeOrder.length > 0) {
-                const typeSummary = preset.subtitleTypeOrder
-                    .slice(0, 2) // Show first 2 types
-                    .join(', ');
-                parts.push(`Sub Type: ${typeSummary}${preset.subtitleTypeOrder.length > 2 ? '...' : ''}`);
-            }
-        }
-        
-        return parts.join(', ') || 'Default Settings';
     };
 
     return (

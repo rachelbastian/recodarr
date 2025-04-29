@@ -26,6 +26,9 @@ import type {
 // Add Dialog components
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { ProcessedFileDialog } from "src/components/ProcessedFileDialog";
+import { getAudioTrackActions, getSubtitleTrackActions, loadPresets as loadPresetsUtil, 
+  getPresetById, getDefaultEncodingOptions, getSubtitleType as getSubtitleTypeUtil, 
+  orderSubtitlesByPreset } from '@/utils/presetUtil';
 
 // Extend the EncodingOptions interface to add audioOptions
 interface ExtendedEncodingOptions {
@@ -188,7 +191,7 @@ const ManualEncode: React.FC = () => { // Renamed component
     useEffect(() => {
         const loadPresets = async () => {
             try {
-                const presets = await electronAPI.getPresets();
+                const presets = await loadPresetsUtil(electronAPI);
                 setAvailablePresets(presets);
             } catch (error) {
                 console.error("Failed to load presets:", error);
@@ -203,8 +206,7 @@ const ManualEncode: React.FC = () => { // Renamed component
     const applyPreset = useCallback((presetId: string) => {
         setSelectedPresetId(presetId);
         if (presetId === 'custom') {
-            // Optionally reset to defaults or do nothing, allowing custom changes
-            // For now, let's reset to the default manual encode values
+            // Reset to the default manual encode values
             setVideoCodec('hevc_qsv');
             setVideoPreset('faster');
             setVideoQuality(25);
@@ -218,22 +220,24 @@ const ManualEncode: React.FC = () => { // Renamed component
             return;
         }
 
-        const preset = availablePresets.find(p => p.id === presetId);
+        const preset = getPresetById(availablePresets, presetId);
         if (preset) {
             console.log("Applying preset:", preset.name, preset);
-            // Apply preset values, using defaults from `defaultPresetValues` from Presets.tsx if a field is missing
-            // Note: We might need to import `defaultPresetValues` or redefine defaults here
-            // Using optional chaining and nullish coalescing for safety
-            setVideoCodec(preset.videoCodec ?? 'hevc_qsv');
-            setVideoPreset(preset.videoPreset ?? 'faster');
-            setVideoQuality(preset.videoQuality ?? 25);
-            setVideoResolution(preset.videoResolution ?? 'original');
-            setHwAccel(preset.hwAccel ?? 'auto');
-            setAudioCodecConvert(preset.audioCodecConvert ?? 'libopus');
-            setAudioBitrate(preset.audioBitrate ?? '128k');
-            setSelectedAudioLayout(preset.selectedAudioLayout ?? 'stereo');
-            setSubtitleCodecConvert(preset.subtitleCodecConvert ?? 'srt');
-            setAudioLanguageOrder(preset.audioLanguageOrder ?? ['eng', 'original']); // Apply audio order
+            
+            // Get default options based on the preset
+            const options = getDefaultEncodingOptions(preset);
+            
+            // Apply preset values to state
+            setVideoCodec(options.videoCodec as VideoCodec);
+            setVideoPreset(options.videoPreset as VideoPreset);
+            setVideoQuality(options.videoQuality as number);
+            setVideoResolution(options.videoResolution as VideoResolution);
+            setHwAccel(options.hwAccel as HwAccel);
+            setAudioCodecConvert(options.audioCodecConvert as AudioCodecConvert);
+            setAudioBitrate(options.audioBitrate as string);
+            setSelectedAudioLayout(options.selectedAudioLayout as AudioLayout);
+            setSubtitleCodecConvert(options.subtitleCodecConvert as SubtitleCodecConvert);
+            setAudioLanguageOrder(options.audioLanguageOrder as string[]);
         }
     }, [availablePresets]);
     // --- End Apply Preset Logic ---
@@ -332,136 +336,45 @@ const ManualEncode: React.FC = () => { // Renamed component
 
     // --- Add useEffect for Preset-based Track Selection ---
     useEffect(() => {
-        if (probeData?.streams && selectedPresetId !== 'custom' && availablePresets.length > 0) {
-            const activePreset = availablePresets.find(p => p.id === selectedPresetId);
-            // Ensure audioLanguageOrder exists and is an array
-            if (activePreset && Array.isArray(activePreset.audioLanguageOrder) && activePreset.audioLanguageOrder.length > 0) {
-                console.log(`[Preset Track Select] Applying audio order from preset "${activePreset.name}":`, activePreset.audioLanguageOrder);
-
-                const audioStreams = probeData.streams.filter(s => s.codec_type === 'audio');
-                const presetLangsLower = activePreset.audioLanguageOrder.map(lang => lang.toLowerCase());
-                const selectedIndices: number[] = [];
+        if (probeData?.streams && selectedPresetId !== 'custom') {
+            const activePreset = getPresetById(availablePresets, selectedPresetId);
+            
+            if (activePreset) {
+                console.log(`[Preset Track Select] Applying track selection from preset "${activePreset.name}"`);
                 
-                // Track which preset languages have been matched to avoid duplicates
-                const matchedPresetLangs = new Set<string>();
-
-                // Process each language in the preset's order
-                for (const langCode of presetLangsLower) {
-                    if (langCode === 'original') {
-                        const firstAudioStream = audioStreams[0];
-                        if (firstAudioStream && !selectedIndices.includes(firstAudioStream.index)) {
-                            console.log(`[Preset Track Select] Found match for "original": Index ${firstAudioStream.index}`);
-                            selectedIndices.push(firstAudioStream.index);
-                            matchedPresetLangs.add(langCode);
-                        }
-                        continue;
-                    }
-
-                    // Find streams for the current language code that haven't already been selected
-                    const foundStreams = audioStreams.filter(stream => 
-                        !selectedIndices.includes(stream.index) && 
-                        stream.tags?.language?.toLowerCase() === langCode
-                    );
-
-                    if (foundStreams.length > 0) {
-                        console.log(`[Preset Track Select] Found ${foundStreams.length} match(es) for "${langCode}".`);
-                        foundStreams.forEach(streamToSelect => {
-                            if (!selectedIndices.includes(streamToSelect.index)) {
-                                selectedIndices.push(streamToSelect.index);
-                                console.log(`  - Adding Index ${streamToSelect.index}`);
-                            }
-                        });
-                        matchedPresetLangs.add(langCode);
-                    }
-                }
-
-                // Set the selectedAudioTracks state based on the found indices
-                const audioDefaults: { [index: number]: TrackAction } = {};
-                audioStreams.forEach(stream => {
-                    // Mark tracks in selectedIndices for conversion, others for discard
-                    audioDefaults[stream.index] = selectedIndices.includes(stream.index) ? 'convert' : 'discard';
-                });
+                // Get audio track actions based on preset
+                const audioDefaults = getAudioTrackActions(probeData.streams, activePreset);
                 setSelectedAudioTracks(audioDefaults);
                 console.log("[Preset Track Select] Updated selectedAudioTracks:", audioDefaults);
-
-                // --- FIX: Set subtitle selection based on preset language order --- 
-                const subtitleDefaults: { [index: number]: TrackAction } = {};
-                const presetSubLangsLower = (activePreset.subtitleLanguageOrder || [])
-                    .map(lang => lang.toLowerCase());
                 
-                // --- DEBUG: Verify preset and stream languages --- 
-                console.log(`[Preset Track Select] Active Preset Subtitle Lang Order:`, activePreset.subtitleLanguageOrder);
-                console.log(`[Preset Track Select] Lowercase Preset Subtitle Langs:`, presetSubLangsLower);
-                // --- END DEBUG --- 
-                
-                console.log(`[Preset Track Select] Applying subtitle language order from preset:`, presetSubLangsLower);
-                
-                probeData.streams
-                    .filter(s => s.codec_type === 'subtitle')
-                    .forEach(stream => {
-                        const langLower = stream.tags?.language?.toLowerCase() || 'unknown';
-                        
-                        // --- DEBUG: Log stream language and match result --- 
-                        const isIncluded = presetSubLangsLower.includes(langLower);
-                        console.log(`[Preset Track Select] Stream ${stream.index}: LangTag="${stream.tags?.language}", Lower="${langLower}", IncludedInPreset=${isIncluded}`);
-                        // --- END DEBUG --- 
-                        
-                        // Keep subtitles whose language is in the preset's order
-                        if (isIncluded) { // Use the calculated variable
-                            subtitleDefaults[stream.index] = 'keep'; // Default to 'keep'
-                            console.log(`[Preset Track Select] Setting subtitle ${stream.index} (${langLower}) to 'keep' based on preset.`);
-                        } else {
-                            subtitleDefaults[stream.index] = 'discard';
-                            console.log(`[Preset Track Select] Setting subtitle ${stream.index} (${langLower}) to 'discard' as it's not in preset order.`);
-                        }
-                    });
+                // Get subtitle track actions based on preset
+                const subtitleDefaults = getSubtitleTrackActions(probeData.streams, activePreset);
                 setSelectedSubtitleTracks(subtitleDefaults);
                 console.log("[Preset Track Select] Updated selectedSubtitleTracks based on preset:", subtitleDefaults);
-                // --- END FIX --- 
-
-            } else if (activePreset) {
-                 // Handle presets without a defined (or empty) audioLanguageOrder - default to converting first audio track
-                 console.warn(`[Preset Track Select] Preset "${activePreset.name}" found, but has no valid audioLanguageOrder defined. Defaulting to first audio track.`);
-                 const audioStreams = probeData.streams.filter(s => s.codec_type === 'audio');
-                 const audioDefaults: { [index: number]: TrackAction } = {};
-                 audioStreams.forEach((stream, idx) => {
-                    audioDefaults[stream.index] = (idx === 0) ? 'convert' : 'discard'; // Convert first, discard rest
-                 });
-                 setSelectedAudioTracks(audioDefaults);
-                 console.log("[Preset Track Select] Updated selectedAudioTracks (default first):", audioDefaults);
-
-                 // --- FIX: Also apply default subtitle logic here (keep ENG) --- 
+            } 
+            else if (probeData.streams) {
+                // Default selection for custom mode
+                const audioDefaults: { [index: number]: TrackAction } = {};
                 const subtitleDefaults: { [index: number]: TrackAction } = {};
-                probeData.streams
-                    .filter(s => s.codec_type === 'subtitle')
-                    .forEach(stream => {
+                let firstAudioFound = false;
+                
+                probeData.streams.forEach((stream: StreamInfo) => {
+                    if (stream.codec_type === 'audio') {
+                        audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
+                        firstAudioFound = true;
+                    }
+                    if (stream.codec_type === 'subtitle') {
                         subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
-                    });
+                    }
+                });
+                
+                setSelectedAudioTracks(audioDefaults);
                 setSelectedSubtitleTracks(subtitleDefaults);
-                 console.log("[Preset Track Select] Reset selectedSubtitleTracks to default (keep ENG) because audio order was missing:", subtitleDefaults);
-                 // --- END FIX --- 
+                console.log("[Manual Track Select] Set default tracks for 'custom' mode.");
             }
-        } else if (probeData?.streams && selectedPresetId === 'custom') {
-             // Keep the existing logic for 'custom' mode (convert first audio, keep ENG subs)
-             // This part seems correct for handling manual configuration.
-             const audioDefaults: { [index: number]: TrackAction } = {};
-             const subtitleDefaults: { [index: number]: TrackAction } = {};
-             let firstAudioFound = false;
-             probeData.streams.forEach((stream: StreamInfo) => {
-                 if (stream.codec_type === 'audio') {
-                     audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
-                     firstAudioFound = true;
-                 }
-                 if (stream.codec_type === 'subtitle') {
-                     subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
-                 }
-             });
-             setSelectedAudioTracks(audioDefaults);
-             setSelectedSubtitleTracks(subtitleDefaults);
-             console.log("[Manual Track Select] Set default tracks for 'custom' mode.");
         }
-    }, [probeData, selectedPresetId, availablePresets]); // Trigger when these change
-    // --- End Preset Track Selection Effect ---
+    }, [probeData, selectedPresetId, availablePresets]);
+    // --- End Track Selection Effect ---
 
     // Update track selection when probe data changes
     useEffect(() => {
@@ -902,7 +815,7 @@ const ManualEncode: React.FC = () => { // Renamed component
                     : null;
                 
                 // Convert subtitle streams to DTOs with metadata
-                const subtitleStreamDTOs = subtitlesToMap.map(s => {
+                let subtitleStreamDTOs = subtitlesToMap.map(s => {
                     // Identify subtitle type - look for keywords in the title or disposition
                     const subtitleType = getSubtitleType(s);
                     console.log(`[Debug] Subtitle ${s.index}: Language=${s.tags?.language || 'unknown'}, Title="${s.tags?.title || ''}", Detected Type=${subtitleType}`);
@@ -921,95 +834,10 @@ const ManualEncode: React.FC = () => { // Renamed component
                 });
                 
                 // Sort the subtitle streams if we have a preset with subtitle priorities
-                if (activePreset && 
-                    activePreset.subtitleLanguageOrder && 
-                    Array.isArray(activePreset.subtitleLanguageOrder) && 
-                    activePreset.subtitleLanguageOrder.length > 0) {
-                    
-                    console.log(`[Debug] Sorting subtitle streams according to preset "${activePreset.name}" priorities:`, 
-                        activePreset.subtitleLanguageOrder);
-                    
-                    // Create list of sorted streams
-                    const sortedStreams: typeof subtitleStreamDTOs = [];
-                    
-                    // Track languages we've already processed to ensure we get one subtitle per language
-                    const processedLanguages = new Set<string>();
-                    
-                    // Process each language priority in order
-                    for (const lang of activePreset.subtitleLanguageOrder) {
-                        const langLower = lang.toLowerCase();
-                        
-                        // Skip if we already processed this language
-                        if (processedLanguages.has(langLower)) {
-                            console.log(`[Debug] Skipping ${langLower} - already processed`);
-                            continue;
-                        }
-                        
-                        // Get all subtitles for this language
-                        let langTracks = subtitleStreamDTOs.filter(
-                            dto => dto.language === langLower
-                        );
-                        
-                        if (langTracks.length === 0) {
-                            console.log(`[Debug] No subtitles found for language: ${langLower}`);
-                            continue; // Skip to the next language
-                        }
-                        
-                        console.log(`[Debug] Found ${langTracks.length} ${langLower} subtitles to consider.`);
-                        
-                        // Filter by preferred types if type order is defined
-                        if (activePreset.subtitleTypeOrder && 
-                            Array.isArray(activePreset.subtitleTypeOrder) && 
-                            activePreset.subtitleTypeOrder.length > 0) {
-                            
-                            const preferredTypes = activePreset.subtitleTypeOrder;
-                            console.log(`[Debug] Filtering ${langLower} subtitles by preferred types:`, preferredTypes);
-                            
-                            // Keep only tracks whose type is in the preferred list
-                            langTracks = langTracks.filter(track => {
-                                const included = preferredTypes.includes(track.type);
-                                if (!included) {
-                                    console.log(`[Debug] Discarding ${langLower} subtitle: type=${track.type}, title="${track.title}" (not in preferred types)`);
-                                }
-                                return included;
-                            });
-                            
-                            if (langTracks.length === 0) {
-                                console.log(`[Debug] No ${langLower} subtitles matched the preferred types.`);
-                                continue; // Skip if no tracks match the types
-                            }
-                            
-                            console.log(`[Debug] ${langTracks.length} ${langLower} subtitles matched preferred types. Sorting...`);
-                            
-                            // Sort the *remaining* tracks by subtitle type preference
-                            langTracks.sort((a, b) => {
-                                const typeIndexA = preferredTypes.indexOf(a.type);
-                                const typeIndexB = preferredTypes.indexOf(b.type);
-                                
-                                // Since we filtered, both types should be >= 0
-                                return typeIndexA - typeIndexB;
-                            });
-                            
-                            // Log subtitle types after filtering and sorting
-                            langTracks.forEach((track, i) => {
-                                console.log(`[Debug] ${langLower} subtitle ${i+1} (post-filter/sort): type=${track.type}, title="${track.title}"`);
-                            });
-                            
-                        } else {
-                            // If no type order is specified, keep all tracks for this language
-                            console.log(`[Debug] No subtitle type preference specified for ${langLower}, keeping all ${langTracks.length} tracks.`);
-                        }
-                        
-                        // Add all filtered and sorted tracks for this language to the main list
-                        if (langTracks.length > 0) {
-                            sortedStreams.push(...langTracks);
-                            console.log(`[Debug] Added ${langTracks.length} ${langLower} subtitle(s) to the final list.`);
-                        }
-                    }
-                    
-                    // Replace the original array with the sorted one
-                    subtitleStreamDTOs.length = 0;
-                    subtitleStreamDTOs.push(...sortedStreams);
+                if (activePreset) {
+                    subtitleStreamDTOs = orderSubtitlesByPreset(subtitleStreamDTOs, activePreset);
+                    console.log(`[Debug] Sorted subtitle streams according to preset "${activePreset.name}" priorities:`, 
+                        subtitleStreamDTOs.map(s => `${s.language}:${s.type}`));
                 }
                 
                 // Generate mapping strings for the sorted subtitles
@@ -1745,217 +1573,7 @@ interface FileDialogResult {
 // Add this helper function
 // Function to determine subtitle type from stream info
 const getSubtitleType = (stream: StreamInfo): SubtitleType => {
-    const title = (stream.tags?.title || '').toLowerCase();
-    const language = (stream.tags?.language || '').toLowerCase();
-    const disposition = stream.disposition || {};
-    const codecName = (stream.codec_name || '').toLowerCase();
-    
-    // Get raw stream descriptor string
-    const rawStreamDescriptor = stream.codec_tag_string || stream.codec_type_string || '';
-    
-    // Log all available data for debugging
-    console.log(`[SubtitleDetector] Raw stream data for stream #${stream.index}:`, {
-        rawStreamDescriptor, // Add the raw stream descriptor line
-        language,
-        codecName,
-        title,
-        disposition,
-        // Include any additional properties that might contain subtitle info
-        tags: stream.tags,
-        streamInfo: { ...stream }
-    });
-    
-    // 1. Check for embedded flags in the raw stream data (e.g., "forced", "hearing impaired")
-    // Since ffprobe puts these flags in different places depending on container format,
-    // we need to check multiple places
-    
-    // Attempt to extract flags from the raw stream data
-    // The raw stream might include flags like "(dub) (forced)" or "(hearing impaired)"
-    let streamFlags: string[] = [];
-    
-    // NEW: Try to extract the full stream descriptor line which might contain flags
-    // Example: "Stream #0:32(fre): Subtitle: subrip (srt) (dub) (forced)"
-    if (stream.codec_type === 'subtitle') {
-        // First look for the codec_long_name which might include descriptors
-        if (stream.codec_long_name) {
-            streamFlags = [...streamFlags, ...extractFlagsFromString(stream.codec_long_name)];
-        }
-        
-        // Try to rebuild a approximation of the stream descriptor line
-        const streamDesc = `Subtitle: ${codecName} (${language})`;
-        streamFlags = [...streamFlags, ...extractFlagsFromString(streamDesc)];
-    }
-    
-    // Check if tags has a raw FFmpeg output field that might contain flags
-    const rawInfo = stream.codec_tag_string || stream.codec_info || '';
-    if (typeof rawInfo === 'string') {
-        streamFlags = [...streamFlags, ...extractFlagsFromString(rawInfo)];
-    }
-    
-    // Check if there's a direct forced flag in disposition
-    if (disposition.forced) {
-        streamFlags.push('forced');
-    }
-    
-    // Check if there's a hearing_impaired flag in disposition
-    if (disposition.hearing_impaired) {
-        streamFlags.push('hearing impaired');
-    }
-    
-    // Check additional nested properties that might exist in some ffprobe outputs
-    if (stream.tags?.HANDLER_NAME) {
-        streamFlags = [...streamFlags, ...extractFlagsFromString(stream.tags.HANDLER_NAME)];
-    }
-    
-    // Look at stream description if available
-    if (stream.tags?.description) {
-        streamFlags = [...streamFlags, ...extractFlagsFromString(stream.tags.description)];
-    }
-    
-    // NEW: Look in all properties of the stream object for any strings that might contain flags
-    for (const key in stream) {
-        const value = stream[key];
-        if (typeof value === 'string') {
-            // Try to extract any flags in parentheses
-            const extracted = extractFlagsFromString(value);
-            if (extracted.length > 0) {
-                console.log(`[SubtitleDetector] Found flags in stream.${key}: ${extracted.join(', ')}`);
-                streamFlags = [...streamFlags, ...extracted];
-            }
-        }
-    }
-    
-    // Log the collected flags
-    console.log(`[SubtitleDetector] Extracted flags:`, streamFlags);
-    
-    // 2. Check title field directly (often contains useful type info)
-    if (title) {
-        streamFlags = [...streamFlags, ...extractFlagsFromString(title)];
-        
-        // Special case for titles that explicitly indicate the type
-        if (/^(forced|sdh|hi|cc)$/i.test(title)) {
-            const explicitType = title.toLowerCase();
-            console.log(`[SubtitleDetector] Found explicit type in title: ${explicitType}`);
-            if (explicitType === 'sdh' || explicitType === 'hi' || explicitType === 'cc') {
-                return 'hi';
-            } else if (explicitType === 'forced') {
-                return 'forced';
-            }
-        }
-        
-        // NEW: Look for key phrases in the title
-        if (title === 'traditional' && language === 'chi') {
-            console.log(`[SubtitleDetector] Detected Traditional Chinese subtitle`);
-            return 'normal';
-        }
-        
-        if (title === 'simplified' && language === 'chi') {
-            console.log(`[SubtitleDetector] Detected Simplified Chinese subtitle`);
-            return 'normal';
-        }
-    }
-    
-    // 3. Map detected flags to subtitle types with priority
-    
-    // NEW: Detect dubs which often have special meaning
-    if (streamFlags.includes('dub') || streamFlags.includes('dubbed')) {
-        // If it's dubbed AND forced, it's likely forced narrative text for a dubbed audio track
-        if (streamFlags.includes('forced')) {
-            console.log(`[SubtitleDetector] Detected "forced" subtitle for dubbed audio`);
-            return 'forced';
-        }
-        
-        // If it's dubbed AND hearing impaired, prioritize that
-        if (streamFlags.some(flag => /\b(hearing.?impaired|sdh|hi|cc|closed.?caption|deaf)\b/i.test(flag))) {
-            console.log(`[SubtitleDetector] Detected "hi" subtitle for dubbed audio`);
-            return 'hi';
-        }
-        
-        // Otherwise just note it's for dubbed audio but treat it as normal
-        console.log(`[SubtitleDetector] Detected subtitle for dubbed audio, treating as normal`);
-    }
-    
-    // Check for forced subtitles (highest priority)
-    if (streamFlags.some(flag => /\b(forced|force)\b/i.test(flag))) {
-        console.log(`[SubtitleDetector] Detected "forced" subtitle from flags`);
-        return 'forced';
-    }
-    
-    // Check for hearing impaired subtitles
-    if (streamFlags.some(flag => /\b(hearing.?impaired|sdh|hi|cc|closed.?caption|deaf)\b/i.test(flag))) {
-        console.log(`[SubtitleDetector] Detected "hi" subtitle from flags`);
-        return 'hi';
-    }
-    
-    // Check for sign/song subtitles
-    if (streamFlags.some(flag => /\b(signs?|songs?|lyrics|karaoke)\b/i.test(flag))) {
-        if (streamFlags.some(flag => /\b(signs?)\b/i.test(flag))) {
-            console.log(`[SubtitleDetector] Detected "signs" subtitle from flags`);
-            return 'signs';
-        } else {
-            console.log(`[SubtitleDetector] Detected "song" subtitle from flags`);
-            return 'song';
-        }
-    }
-    
-    // 4. Use codec information as a hint
-    if (codecName) {
-        // ASS/SSA is often used for stylized or sign subtitles 
-        if (codecName.includes('ass') || codecName.includes('ssa')) {
-            console.log(`[SubtitleDetector] ASS/SSA codec detected, likely a signs/styling subtitle`);
-            return 'signs';
-        }
-    }
-    
-    // 5. Fallback to title and pattern detection if no flags were found
-    
-    // More robust title detection with wider patterns
-    const patterns = {
-        forced: [/\b(forced|force)\b/, /\bfor[cç]é\b/, /\.(forced|force)\b/],
-        sdh: [/\b(sdh|deaf|hard.?of.?hearing)\b/, /\.(sdh)\b/],
-        cc: [/\b(cc|closed.?caption)\b/, /\.(cc)\b/],
-        hi: [/\b(hi|hearing.?impaired)\b/, /\.(hi)\b/, /\bhear.imp\b/],
-        signs: [/\b(signs|sign)\b/, /\bsign.?song\b/, /\.(signs)\b/],
-        song: [/\b(lyrics|karaoke|songs?)\b/, /\.(song)\b/]
-    };
-    
-    // Check each pattern group
-    for (const [type, regexList] of Object.entries(patterns)) {
-        for (const regex of regexList) {
-            if (regex.test(title)) {
-                console.log(`[SubtitleDetector] Detected "${type}" from title regex ${regex}`);
-                return type as SubtitleType;
-            }
-        }
-    }
-    
-    // Special case checks based on usage patterns seen in common media files
-    if (title.includes('english') && title.includes('hearing')) {
-        console.log(`[SubtitleDetector] Special case: Detected "hi" from English+Hearing combination`);
-        return 'hi';
-    }
-    
-    if (title.includes('commentary') || title.includes('comment')) {
-        console.log(`[SubtitleDetector] Special case: Detected commentary - treating as "normal"`);
-        return 'normal';
-    }
-    
-    // Default type
-    console.log(`[SubtitleDetector] No specific type detected, using "normal"`);
-    return 'normal';
+    return getSubtitleTypeUtil(stream) as SubtitleType;
 };
-
-// Helper function to extract potential flags from a string like "(dub) (forced)"
-function extractFlagsFromString(str: string): string[] {
-    if (!str) return [];
-    
-    // Look for patterns like "(flag)" or "[flag]"
-    const bracketMatches = str.match(/\(([^)]+)\)|\[([^\]]+)\]/g) || [];
-    
-    // Extract the actual flag text from the brackets
-    return bracketMatches.map(match => 
-        match.replace(/[()[\]]/g, '').trim().toLowerCase()
-    );
-}
 
 export default ManualEncode; // Renamed export 
