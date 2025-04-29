@@ -329,5 +329,8 @@ interface EncodingPreset {
     audioBitrate?: string;
     selectedAudioLayout?: AudioLayout;
     subtitleCodecConvert?: SubtitleCodecConvert;
+    // --- Audio Language Preferences --- 
+    // Replaced preferredAudioLanguages, keepOriginalAudio, defaultAudioLanguage
+    audioLanguageOrder?: string[]; // Ordered array of lang codes (e.g., ['eng', 'original', 'jpn'])
 }
 // --- End EncodingPreset type definition --- 

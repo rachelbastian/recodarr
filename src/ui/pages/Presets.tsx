@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { PlusCircle, Edit, Trash2, Loader2 } from 'lucide-react';
+import { PlusCircle, Edit, Trash2, Loader2, Check, ChevronsUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,7 +9,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider";
 import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { IElectronAPI } from '../../types';
+import { IElectronAPI, EncodingPreset } from '../../types';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
+import { cn } from "@/lib/utils";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 // --- Constants from ManualEncode (adjust as needed) ---
 const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
@@ -27,25 +32,44 @@ type HwAccel = typeof HW_ACCEL_OPTIONS[number];
 const AUDIO_LAYOUT_OPTIONS = ['stereo', 'mono', 'surround5_1'] as const;
 type AudioLayout = typeof AUDIO_LAYOUT_OPTIONS[number];
 
-// Expanded Preset Interface - Use optional fields for settings that might not be part of a preset
-interface EncodingPreset {
-    id: string;
-    name: string;
-    // Video
-    videoCodec?: VideoCodec;
-    videoPreset?: VideoPreset;
-    videoQuality?: number;
-    videoResolution?: VideoResolution;
-    hwAccel?: HwAccel;
-    // Audio (for conversion)
-    audioCodecConvert?: AudioCodecConvert;
-    audioBitrate?: string;
-    selectedAudioLayout?: AudioLayout;
-    // Subtitle (for conversion)
-    subtitleCodecConvert?: SubtitleCodecConvert;
-}
+// Language options for audio tracks
+const COMMON_LANGUAGES = [
+  { value: 'original', label: 'Original Language (Track 0)' },
+  { value: 'eng', label: 'English' },
+  { value: 'jpn', label: 'Japanese' },
+  { value: 'fre', label: 'French' }, // or 'fra'
+  { value: 'ger', label: 'German' }, // or 'deu'
+  { value: 'spa', label: 'Spanish' },
+  { value: 'ita', label: 'Italian' },
+  { value: 'rus', label: 'Russian' },
+  { value: 'kor', label: 'Korean' },
+  { value: 'chi', label: 'Chinese' }, // or 'zho'
+];
 
-// Default values for a new preset
+// Extended language list (ISO 639-2 codes)
+const EXTENDED_LANGUAGES = [
+  ...COMMON_LANGUAGES,
+  { value: 'ara', label: 'Arabic' },
+  { value: 'ces', label: 'Czech' },
+  { value: 'dan', label: 'Danish' },
+  { value: 'dut', label: 'Dutch' }, // or 'nld'
+  { value: 'fin', label: 'Finnish' },
+  { value: 'gre', label: 'Greek' }, // or 'ell'
+  { value: 'heb', label: 'Hebrew' },
+  { value: 'hun', label: 'Hungarian' },
+  { value: 'nor', label: 'Norwegian' },
+  { value: 'pol', label: 'Polish' },
+  { value: 'por', label: 'Portuguese' },
+  { value: 'swe', label: 'Swedish' },
+  { value: 'tha', label: 'Thai' },
+  { value: 'tur', label: 'Turkish' },
+  { value: 'vie', label: 'Vietnamese' },
+].sort((a, b) => a.label.localeCompare(b.label));
+
+// Simplify to just a string type for language codes
+type LanguageCode = string;
+
+// Default values for a new preset using the new interface
 const defaultPresetValues: Omit<EncodingPreset, 'id'> = {
     name: '',
     videoCodec: 'hevc_qsv',
@@ -56,11 +80,131 @@ const defaultPresetValues: Omit<EncodingPreset, 'id'> = {
     audioCodecConvert: 'libopus',
     audioBitrate: '128k',
     selectedAudioLayout: 'stereo',
+    audioLanguageOrder: ['eng', 'original'], // Default to English first, then Original
     subtitleCodecConvert: 'srt',
 };
 
 // Cast window.electron to the imported type
 const electronAPI = window.electron as IElectronAPI;
+
+// --- NEW Audio Order Selector Component ---
+interface AudioOrderSelectorProps {
+    orderedLanguages: string[]; // Current order (e.g., ['eng', 'original'])
+    onChange: (newOrder: string[]) => void;
+}
+
+const AudioOrderSelector: React.FC<AudioOrderSelectorProps> = ({ orderedLanguages, onChange }) => {
+    const [addLangOpen, setAddLangOpen] = useState(false);
+
+    const getLanguageLabel = useCallback((code: string) => {
+        return EXTENDED_LANGUAGES.find(l => l.value === code)?.label || code;
+    }, []);
+
+    const handleAddLanguage = (langCode: string) => {
+        if (langCode && !orderedLanguages.includes(langCode)) {
+            onChange([...orderedLanguages, langCode]);
+        }
+        setAddLangOpen(false);
+    };
+
+    const handleRemoveLanguage = (langCode: string) => {
+        onChange(orderedLanguages.filter(l => l !== langCode));
+    };
+
+    const moveItem = (index: number, direction: 'up' | 'down') => {
+        const newOrder = [...orderedLanguages];
+        const item = newOrder[index];
+        const swapIndex = direction === 'up' ? index - 1 : index + 1;
+
+        if (swapIndex >= 0 && swapIndex < newOrder.length) {
+            newOrder.splice(index, 1);
+            newOrder.splice(swapIndex, 0, item);
+            onChange(newOrder);
+        }
+    };
+
+    return (
+        <div className="space-y-3">
+            {orderedLanguages.length > 0 && (
+                <Card className="bg-background/30 p-3 border border-border/50">
+                    <div className="space-y-2">
+                        {orderedLanguages.map((langCode, index) => (
+                            <div key={langCode} className="flex items-center justify-between gap-2 p-2 rounded bg-muted/50">
+                                <span className="font-medium text-sm">
+                                    <span className="text-xs text-muted-foreground mr-2">{index + 1}.</span> 
+                                    {getLanguageLabel(langCode)}
+                                </span>
+                                <div className="flex items-center">
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => moveItem(index, 'up')} 
+                                        disabled={index === 0}
+                                        className="h-6 w-6"
+                                    >
+                                        <ArrowUp className="h-4 w-4" />
+                                    </Button>
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => moveItem(index, 'down')} 
+                                        disabled={index === orderedLanguages.length - 1}
+                                        className="h-6 w-6"
+                                    >
+                                        <ArrowDown className="h-4 w-4" />
+                                    </Button>
+                                    <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        onClick={() => handleRemoveLanguage(langCode)}
+                                        className="h-6 w-6 text-destructive hover:text-destructive"
+                                    >
+                                        <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </Card>
+            )}
+
+            <Popover open={addLangOpen} onOpenChange={setAddLangOpen}>
+                <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-full justify-start">
+                        <PlusCircle className="mr-2 h-4 w-4" /> Add Language Preference
+                    </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0">
+                    <Command>
+                        <CommandInput placeholder="Search languages..." />
+                        <CommandList>
+                            <CommandEmpty>No language found.</CommandEmpty>
+                            <ScrollArea className="h-[300px]">
+                                <CommandGroup>
+                                    {EXTENDED_LANGUAGES
+                                        .filter(lang => !orderedLanguages.includes(lang.value)) // Only show unselected languages
+                                        .map((language) => (
+                                        <CommandItem
+                                            key={language.value}
+                                            value={language.label} // Search by label
+                                            onSelect={() => handleAddLanguage(language.value)}
+                                        >
+                                            {language.label}
+                                        </CommandItem>
+                                    ))}
+                                </CommandGroup>
+                            </ScrollArea>
+                        </CommandList>
+                    </Command>
+                </PopoverContent>
+            </Popover>
+            <p className="text-xs text-muted-foreground mt-1">
+                Define the preferred order of audio tracks. Track 0 will be the first language in this list. Other tracks will follow this order. Missing languages are ignored.
+            </p>
+        </div>
+    );
+};
+// --- END Audio Order Selector Component ---
 
 const Presets: React.FC = () => {
     const [presets, setPresets] = useState<EncodingPreset[]>([]);
@@ -80,7 +224,9 @@ const Presets: React.FC = () => {
             setError(null);
             try {
                 const loadedPresets = await electronAPI.getPresets();
-                setPresets(loadedPresets);
+                // Ensure audioLanguageOrder is always an array, even if null from DB
+                const sanitizedPresets = loadedPresets.map(p => ({ ...p, audioLanguageOrder: p.audioLanguageOrder ?? [] }));
+                setPresets(sanitizedPresets);
             } catch (err) {
                 console.error("Error loading presets:", err);
                 setError(err instanceof Error ? err.message : String(err));
@@ -106,7 +252,7 @@ const Presets: React.FC = () => {
 
     const openCreateDialog = () => {
         setEditingPreset(null);
-        setFormData(defaultPresetValues);
+        setFormData({ ...defaultPresetValues, audioLanguageOrder: defaultPresetValues.audioLanguageOrder ?? [] });
         setFormError(null);
         setIsDialogOpen(true);
     };
@@ -114,8 +260,9 @@ const Presets: React.FC = () => {
     const openEditDialog = (preset: EncodingPreset) => {
         setEditingPreset(preset);
         setFormData({ 
-            ...defaultPresetValues, 
-            ...preset 
+            ...defaultPresetValues, // Start with defaults
+            ...preset, // Override with actual preset values
+            audioLanguageOrder: preset.audioLanguageOrder ?? [] // Ensure it's an array
         }); 
         setFormError(null);
         setIsDialogOpen(true);
@@ -129,16 +276,21 @@ const Presets: React.FC = () => {
         }
 
         try {
-            const presetToSave: EncodingPreset = editingPreset 
-                ? { ...editingPreset, ...formData }
-                : { ...formData, id: Date.now().toString() } as EncodingPreset;
+            // Ensure audioLanguageOrder is defined before saving
+            const presetToSave: EncodingPreset = {
+                ...(editingPreset ? { ...editingPreset, ...formData } : { ...formData, id: Date.now().toString() }),
+                audioLanguageOrder: formData.audioLanguageOrder ?? [], // Ensure it's an array
+            } as EncodingPreset;
 
             const savedPreset = await electronAPI.savePreset(presetToSave);
 
+            // Ensure the preset returned from save has the array format
+            const sanitizedSavedPreset = { ...savedPreset, audioLanguageOrder: savedPreset.audioLanguageOrder ?? [] };
+
             if (editingPreset) {
-                setPresets(prev => prev.map(p => p.id === savedPreset.id ? savedPreset : p));
+                setPresets(prev => prev.map(p => p.id === sanitizedSavedPreset.id ? sanitizedSavedPreset : p));
             } else {
-                setPresets(prev => [...prev, savedPreset]);
+                setPresets(prev => [...prev, sanitizedSavedPreset]);
             }
             setIsDialogOpen(false);
         } catch (err) {
@@ -164,9 +316,33 @@ const Presets: React.FC = () => {
     // Helper to display preset summary
     const getPresetSummary = (preset: EncodingPreset): string => {
         const parts: string[] = [];
-        if (preset.videoCodec) parts.push(`Vid: ${preset.videoCodec}${preset.videoQuality ? ` (Q${preset.videoQuality})` : ''}`);
-        if (preset.audioCodecConvert) parts.push(`Aud: ${preset.audioCodecConvert}${preset.audioBitrate ? ` (${preset.audioBitrate})` : ''}`);
-        if (preset.videoResolution && preset.videoResolution !== 'original') parts.push(`Res: ${preset.videoResolution}`);
+        
+        // Video info
+        if (preset.videoCodec) {
+            parts.push(`Vid: ${preset.videoCodec}${preset.videoQuality ? ` (Q${preset.videoQuality})` : ''}`);
+        }
+        
+        // Audio codec info
+        if (preset.audioCodecConvert) {
+            parts.push(`Aud: ${preset.audioCodecConvert}${preset.audioBitrate ? ` (${preset.audioBitrate})` : ''}`);
+        }
+        
+        // Resolution if not original
+        if (preset.videoResolution && preset.videoResolution !== 'original') {
+            parts.push(`Res: ${preset.videoResolution}`);
+        }
+        
+        // Audio language summary based on order
+        if (preset.audioLanguageOrder && preset.audioLanguageOrder.length > 0) {
+            const orderSummary = preset.audioLanguageOrder
+                .map(code => EXTENDED_LANGUAGES.find(l => l.value === code)?.label || code)
+                .slice(0, 3) // Show first 3
+                .join(', ');
+            parts.push(`Aud Order: ${orderSummary}${preset.audioLanguageOrder.length > 3 ? '...' : ''}`);
+        } else {
+             parts.push('Aud Order: Default'); // Or indicate no preference
+        }
+        
         return parts.join(', ') || 'Default Settings';
     };
 
@@ -338,6 +514,19 @@ const Presets: React.FC = () => {
                         
                         <Separator />
                         
+                        <h4 className="font-medium text-lg -mb-2">Audio Language Order</h4>
+                        <div className="grid grid-cols-4 items-start gap-4">
+                            <Label className="text-right pt-2">Track Preference</Label>
+                            <div className="col-span-3">
+                                <AudioOrderSelector 
+                                    orderedLanguages={formData.audioLanguageOrder || []} 
+                                    onChange={(newOrder) => handleInputChange('audioLanguageOrder', newOrder)} 
+                                />
+                            </div>
+                        </div>
+                        
+                        <Separator />
+
                         <h4 className="font-medium text-lg -mb-2">Subtitles (Conversion)</h4>
                         <div className="grid grid-cols-4 items-center gap-4">
                             <Label htmlFor="subtitleCodecConvert" className="text-right">Format</Label>

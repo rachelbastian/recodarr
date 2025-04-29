@@ -261,10 +261,50 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             
             // 1. Mapping
             if (options.mapVideo) outputOpts.push('-map', options.mapVideo + '?');
-            if (options.mapAudio) outputOpts.push('-map', options.mapAudio + '?');
+            if (options.mapAudio) {
+                // Check if mapAudio contains multiple entries (semicolon-separated)
+                if (options.mapAudio.includes(';')) {
+                    // Split by semicolon and map each audio stream
+                    const audioMaps = options.mapAudio.split(';');
+                    
+                    // Process the audio streams in the order they should appear in the output
+                    audioMaps.forEach((map, index) => {
+                        if (map.trim()) { // Only process non-empty entries
+                            // Add the map
+                            outputOpts.push('-map', map.trim() + '?');
+                            writeLog(`[Info] Mapping audio stream ${index}: ${map.trim()}`);
+                            
+                            // Set disposition - default for first track, none for others
+                            if (index === 0) {
+                                // Set the first mapped audio stream as default
+                                outputOpts.push(`-disposition:a:${index}`, 'default');
+                                writeLog(`[Info] Setting audio stream ${index} as default`);
+                            } else {
+                                // Ensure other streams are not marked as default
+                                outputOpts.push(`-disposition:a:${index}`, 'none');
+                            }
+                        }
+                    });
+                } else {
+                    // Original behavior for single audio stream
+                    outputOpts.push('-map', options.mapAudio + '?');
+                    // Set as default
+                    outputOpts.push('-disposition:a:0', 'default');
+                }
+            }
             // Iterate over mapSubtitle array
             if (options.mapSubtitle && Array.isArray(options.mapSubtitle)) {
-                options.mapSubtitle.forEach(map => outputOpts.push('-map', map + '?'));
+                options.mapSubtitle.forEach((map, index) => {
+                    outputOpts.push('-map', map + '?');
+                    
+                    // Set subtitle disposition - make the first one default
+                    if (index === 0) {
+                        outputOpts.push(`-disposition:s:${index}`, 'default');
+                        writeLog(`[Info] Setting subtitle stream ${index} as default`);
+                    } else {
+                        outputOpts.push(`-disposition:s:${index}`, 'none');
+                    }
+                });
             }
 
             // 2. Video Codec & Options
@@ -302,14 +342,41 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
 
             // 3. Audio Codec & Options
             if (options.audioCodec && options.mapAudio) { 
-                 outputOpts.push('-c:a', options.audioCodec);
-                 if (options.audioCodec !== 'copy') { 
-                    if (options.audioBitrate) outputOpts.push('-b:a', options.audioBitrate); 
-                    if (options.audioFilter) outputOpts.push('-af', options.audioFilter);
-                    // Add support for additional audio codec options (like mapping_family for libopus)
-                    if (options.audioOptions && options.audioOptions.length > 0) {
-                        outputOpts.push(...options.audioOptions);
-                    }
+                 // Check if multiple audio streams are mapped
+                 if (options.mapAudio.includes(';')) {
+                     const audioMaps = options.mapAudio.split(';');
+                     const audioMapCount = audioMaps.filter(map => map.trim()).length;
+                     
+                     // Apply codec to all audio streams
+                     outputOpts.push('-c:a', options.audioCodec);
+                     
+                     if (options.audioCodec !== 'copy') {
+                         // Apply bitrate to all audio streams
+                         if (options.audioBitrate) outputOpts.push('-b:a', options.audioBitrate);
+                         
+                         // For multiple streams with filters, we need to apply filters individually to each stream
+                         // Unfortunately, applying filters to specific streams can be complex
+                         // For now, apply the filter to all streams if specified
+                         if (options.audioFilter) {
+                             outputOpts.push('-af', options.audioFilter);
+                             writeLog(`[Info] Applying audio filter to all streams: ${options.audioFilter}`);
+                         }
+                         
+                         // Add support for additional audio codec options (like mapping_family for libopus)
+                         if (options.audioOptions && options.audioOptions.length > 0) {
+                             outputOpts.push(...options.audioOptions);
+                         }
+                     }
+                 } else {
+                     // Original behavior for single audio stream
+                     outputOpts.push('-c:a', options.audioCodec);
+                     if (options.audioCodec !== 'copy') { 
+                         if (options.audioBitrate) outputOpts.push('-b:a', options.audioBitrate); 
+                         if (options.audioFilter) outputOpts.push('-af', options.audioFilter);
+                         if (options.audioOptions && options.audioOptions.length > 0) {
+                             outputOpts.push(...options.audioOptions);
+                         }
+                     }
                  }
             } else if (options.mapAudio) {
                  outputOpts.push('-c:a', 'copy'); 

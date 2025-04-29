@@ -20,7 +20,8 @@ import type {
     ProbeData, 
     StreamInfo, 
     EncodingOptions, 
-    EncodingResult 
+    EncodingResult,
+    EncodingPreset
 } from '../../types'; // Adjust path if needed
 // Add Dialog components
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from "@/components/ui/dialog";
@@ -119,6 +120,11 @@ const ManualEncode: React.FC = () => { // Renamed component
     const [probeData, setProbeData] = useState<ProbeData | null>(null);
     const [probeError, setProbeError] = useState<string | null>(null);
 
+    // --- Preset State --- 
+    const [availablePresets, setAvailablePresets] = useState<EncodingPreset[]>([]);
+    const [selectedPresetId, setSelectedPresetId] = useState<string>('custom'); // 'custom' represents no preset selected
+    // --- End Preset State ---
+
     // Encoding Param State
     const [videoCodec, setVideoCodec] = useState<VideoCodec>('hevc_qsv');
     const [videoPreset, setVideoPreset] = useState<VideoPreset>('faster');
@@ -128,6 +134,9 @@ const ManualEncode: React.FC = () => { // Renamed component
     const [audioCodecConvert, setAudioCodecConvert] = useState<AudioCodecConvert>('libopus');
     const [audioBitrate, setAudioBitrate] = useState<string>('128k');
     const [subtitleCodecConvert, setSubtitleCodecConvert] = useState<SubtitleCodecConvert>('srt');
+
+    // Add state for the new audio order preference (to be set by preset)
+    const [audioLanguageOrder, setAudioLanguageOrder] = useState<string[]>(['eng', 'original']);
 
     // Effect to update default audioBitrate when audioCodec changes
     useEffect(() => {
@@ -170,6 +179,60 @@ const ManualEncode: React.FC = () => { // Renamed component
     // Add new state for dialog
     const [processedDialogOpen, setProcessedDialogOpen] = useState(false);
     const [isReencodingDialog, setIsReencodingDialog] = useState(false);
+
+    // --- Load Presets on Mount --- 
+    useEffect(() => {
+        const loadPresets = async () => {
+            try {
+                const presets = await electronAPI.getPresets();
+                setAvailablePresets(presets);
+            } catch (error) {
+                console.error("Failed to load presets:", error);
+                // Optionally show an error to the user
+            }
+        };
+        loadPresets();
+    }, []);
+    // --- End Load Presets ---
+
+    // --- Apply Preset Logic --- 
+    const applyPreset = useCallback((presetId: string) => {
+        setSelectedPresetId(presetId);
+        if (presetId === 'custom') {
+            // Optionally reset to defaults or do nothing, allowing custom changes
+            // For now, let's reset to the default manual encode values
+            setVideoCodec('hevc_qsv');
+            setVideoPreset('faster');
+            setVideoQuality(25);
+            setVideoResolution('original');
+            setHwAccel('auto');
+            setAudioCodecConvert('libopus');
+            setAudioBitrate('128k');
+            setSelectedAudioLayout('stereo');
+            setSubtitleCodecConvert('srt');
+            setAudioLanguageOrder(['eng', 'original']); // Reset audio order
+            return;
+        }
+
+        const preset = availablePresets.find(p => p.id === presetId);
+        if (preset) {
+            console.log("Applying preset:", preset.name, preset);
+            // Apply preset values, using defaults from `defaultPresetValues` from Presets.tsx if a field is missing
+            // Note: We might need to import `defaultPresetValues` or redefine defaults here
+            // Using optional chaining and nullish coalescing for safety
+            setVideoCodec(preset.videoCodec ?? 'hevc_qsv');
+            setVideoPreset(preset.videoPreset ?? 'faster');
+            setVideoQuality(preset.videoQuality ?? 25);
+            setVideoResolution(preset.videoResolution ?? 'original');
+            setHwAccel(preset.hwAccel ?? 'auto');
+            setAudioCodecConvert(preset.audioCodecConvert ?? 'libopus');
+            setAudioBitrate(preset.audioBitrate ?? '128k');
+            setSelectedAudioLayout(preset.selectedAudioLayout ?? 'stereo');
+            setSubtitleCodecConvert(preset.subtitleCodecConvert ?? 'srt');
+            setAudioLanguageOrder(preset.audioLanguageOrder ?? ['eng', 'original']); // Apply audio order
+        }
+    }, [availablePresets]);
+    // --- End Apply Preset Logic ---
 
     // Add this useEffect to monitor state changes
     useEffect(() => {
@@ -263,9 +326,116 @@ const ManualEncode: React.FC = () => { // Renamed component
         };
     }, []);
 
+    // --- Add useEffect for Preset-based Track Selection ---
+    useEffect(() => {
+        if (probeData?.streams && selectedPresetId !== 'custom' && availablePresets.length > 0) {
+            const activePreset = availablePresets.find(p => p.id === selectedPresetId);
+            // Ensure audioLanguageOrder exists and is an array
+            if (activePreset && Array.isArray(activePreset.audioLanguageOrder) && activePreset.audioLanguageOrder.length > 0) {
+                console.log(`[Preset Track Select] Applying audio order from preset "${activePreset.name}":`, activePreset.audioLanguageOrder);
+
+                const audioStreams = probeData.streams.filter(s => s.codec_type === 'audio');
+                const presetLangsLower = activePreset.audioLanguageOrder.map(lang => lang.toLowerCase());
+                const selectedIndices: number[] = [];
+                
+                // Track which preset languages have been matched to avoid duplicates
+                const matchedPresetLangs = new Set<string>();
+
+                // Process each language in the preset's order
+                for (const langCode of presetLangsLower) {
+                    if (langCode === 'original') {
+                        const firstAudioStream = audioStreams[0];
+                        if (firstAudioStream && !selectedIndices.includes(firstAudioStream.index)) {
+                            console.log(`[Preset Track Select] Found match for "original": Index ${firstAudioStream.index}`);
+                            selectedIndices.push(firstAudioStream.index);
+                            matchedPresetLangs.add(langCode);
+                        }
+                        continue;
+                    }
+
+                    // Find streams for the current language code that haven't already been selected
+                    const foundStreams = audioStreams.filter(stream => 
+                        !selectedIndices.includes(stream.index) && 
+                        stream.tags?.language?.toLowerCase() === langCode
+                    );
+
+                    if (foundStreams.length > 0) {
+                        console.log(`[Preset Track Select] Found ${foundStreams.length} match(es) for "${langCode}".`);
+                        foundStreams.forEach(streamToSelect => {
+                            if (!selectedIndices.includes(streamToSelect.index)) {
+                                selectedIndices.push(streamToSelect.index);
+                                console.log(`  - Adding Index ${streamToSelect.index}`);
+                            }
+                        });
+                        matchedPresetLangs.add(langCode);
+                    }
+                }
+
+                // Set the selectedAudioTracks state based on the found indices
+                const audioDefaults: { [index: number]: TrackAction } = {};
+                audioStreams.forEach(stream => {
+                    // Mark tracks in selectedIndices for conversion, others for discard
+                    audioDefaults[stream.index] = selectedIndices.includes(stream.index) ? 'convert' : 'discard';
+                });
+                setSelectedAudioTracks(audioDefaults);
+                console.log("[Preset Track Select] Updated selectedAudioTracks:", audioDefaults);
+
+                // Reset subtitle selection to default (keep ENG, discard others) when preset changes
+                const subtitleDefaults: { [index: number]: TrackAction } = {};
+                probeData.streams
+                    .filter(s => s.codec_type === 'subtitle')
+                    .forEach(stream => {
+                        subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
+                    });
+                setSelectedSubtitleTracks(subtitleDefaults);
+                console.log("[Preset Track Select] Reset selectedSubtitleTracks to default:", subtitleDefaults);
+
+            } else if (activePreset) {
+                 // Handle presets without a defined (or empty) audioLanguageOrder - default to converting first audio track
+                 console.warn(`[Preset Track Select] Preset "${activePreset.name}" found, but has no valid audioLanguageOrder defined. Defaulting to first audio track.`);
+                 const audioStreams = probeData.streams.filter(s => s.codec_type === 'audio');
+                 const audioDefaults: { [index: number]: TrackAction } = {};
+                 audioStreams.forEach((stream, idx) => {
+                    audioDefaults[stream.index] = (idx === 0) ? 'convert' : 'discard'; // Convert first, discard rest
+                 });
+                 setSelectedAudioTracks(audioDefaults);
+                 console.log("[Preset Track Select] Updated selectedAudioTracks (default first):", audioDefaults);
+
+                 // Reset subtitles as well
+                const subtitleDefaults: { [index: number]: TrackAction } = {};
+                probeData.streams
+                    .filter(s => s.codec_type === 'subtitle')
+                    .forEach(stream => {
+                        subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
+                    });
+                setSelectedSubtitleTracks(subtitleDefaults);
+                 console.log("[Preset Track Select] Reset selectedSubtitleTracks to default:", subtitleDefaults);
+            }
+        } else if (probeData?.streams && selectedPresetId === 'custom') {
+             // Keep the existing logic for 'custom' mode (convert first audio, keep ENG subs)
+             // This part seems correct for handling manual configuration.
+             const audioDefaults: { [index: number]: TrackAction } = {};
+             const subtitleDefaults: { [index: number]: TrackAction } = {};
+             let firstAudioFound = false;
+             probeData.streams.forEach((stream: StreamInfo) => {
+                 if (stream.codec_type === 'audio') {
+                     audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
+                     firstAudioFound = true;
+                 }
+                 if (stream.codec_type === 'subtitle') {
+                     subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
+                 }
+             });
+             setSelectedAudioTracks(audioDefaults);
+             setSelectedSubtitleTracks(subtitleDefaults);
+             console.log("[Manual Track Select] Set default tracks for 'custom' mode.");
+        }
+    }, [probeData, selectedPresetId, availablePresets]); // Trigger when these change
+    // --- End Preset Track Selection Effect ---
+
     // Update track selection when probe data changes
     useEffect(() => {
-        if (probeData) {
+        if (probeData?.streams) {
             const newTracks: TrackOption[] = [];
             
             // Add audio tracks
@@ -352,22 +522,30 @@ const ManualEncode: React.FC = () => { // Renamed component
                             // The rest of the handling will be in the dialog callbacks
                         } else {
                             // Continue with normal flow when file is not previously processed
-                            // Set default selections based on probe data
-                            const audioDefaults: { [index: number]: TrackAction } = {};
-                            const subtitleDefaults: { [index: number]: TrackAction } = {};
-                            let firstAudioFound = false;
-                            // Use StreamInfo type here
-                            probed.streams.forEach((stream: StreamInfo) => {
-                                if (stream.codec_type === 'audio') {
-                                    audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
-                                    firstAudioFound = true;
-                                }
-                                if (stream.codec_type === 'subtitle') {
-                                    subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
-                                }
-                            });
-                            setSelectedAudioTracks(audioDefaults);
-                            setSelectedSubtitleTracks(subtitleDefaults);
+                            // --- Default track selection (used for 'custom' mode or if preset logic fails) ---
+                            // This section will now primarily handle the 'custom' case,
+                            // as the useEffect above handles preset-based selection.
+                            if (selectedPresetId === 'custom') {
+                                const audioDefaults: { [index: number]: TrackAction } = {};
+                                const subtitleDefaults: { [index: number]: TrackAction } = {};
+                                let firstAudioFound = false;
+                                // Use StreamInfo type here
+                                probed.streams.forEach((stream: StreamInfo) => {
+                                    if (stream.codec_type === 'audio') {
+                                        // Default to converting first audio, discard others in custom mode
+                                        audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
+                                        firstAudioFound = true;
+                                    }
+                                    if (stream.codec_type === 'subtitle') {
+                                        // Default to keeping English, discard others in custom mode
+                                        subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
+                                    }
+                                });
+                                setSelectedAudioTracks(audioDefaults);
+                                setSelectedSubtitleTracks(subtitleDefaults);
+                                console.log("[Manual Track Select] Set default tracks for 'custom' mode.");
+                            }
+                            // --- End Default Track Selection ---
                             setStatus('Probe complete. Configure options.');
                         }
                     } else {
@@ -432,6 +610,12 @@ const ManualEncode: React.FC = () => { // Renamed component
     
     // Extract encoding logic to a separate async function to fix the "await" linter error
     const startEncodingProcess = async () => {
+        if (!probeData) {
+            setStatus('Probe data is missing. Cannot start encoding.');
+            console.error('startEncodingProcess called without valid probeData');
+            return;
+        }
+        
         setIsEncoding(true);
         setEncodingStartTime(Date.now());
         setElapsedTimeString("00:00:00");
@@ -445,6 +629,14 @@ const ManualEncode: React.FC = () => { // Renamed component
         setLogContent(null);
 
         try {
+            // --- DEBUG LOG: Inspect state before building options ---
+            console.log('[startEncodingProcess] Inspecting state before building options:');
+            console.log('Selected Preset ID:', selectedPresetId);
+            console.log('Probe Data Streams:', probeData?.streams);
+            console.log('Selected Audio Tracks State:', JSON.stringify(selectedAudioTracks, null, 2));
+            console.log('Selected Subtitle Tracks State:', JSON.stringify(selectedSubtitleTracks, null, 2));
+            // --- END DEBUG LOG ---
+
             // --- Build Structured Encoding Options ---
             const options: ExtendedEncodingOptions = {
                 inputPath,
@@ -467,10 +659,6 @@ const ManualEncode: React.FC = () => { // Renamed component
 
             // --- Find First Streams --- 
             const firstVideoStream = probeData.streams.find((s: StreamInfo) => s.codec_type === 'video');
-            const firstAudioStream = probeData.streams.find((s: StreamInfo) => 
-                s.codec_type === 'audio' && 
-                (selectedAudioTracks[s.index] === 'keep' || selectedAudioTracks[s.index] === 'convert')
-            );
             const firstSubtitleStream = probeData.streams.find((s: StreamInfo) => 
                 s.codec_type === 'subtitle' && 
                 (selectedSubtitleTracks[s.index] === 'keep' || selectedSubtitleTracks[s.index] === 'convert')
@@ -526,34 +714,109 @@ const ManualEncode: React.FC = () => { // Renamed component
                  }
             }
            
-            // --- Audio Options (for the first selected stream) ---
-            if (firstAudioStream) {
-                const action = selectedAudioTracks[firstAudioStream.index];
+            // --- Audio Options (multi-track) ---
+            // Find all audio streams selected for keep or convert
+            const audioStreamsToMap = probeData.streams
+                .filter((s: StreamInfo) => 
+                    s.codec_type === 'audio' && 
+                    (selectedAudioTracks[s.index] === 'keep' || selectedAudioTracks[s.index] === 'convert')
+                );
+            
+            // Setup for first audio stream (for backwards compatibility with the existing code)
+            const firstAudioStream = audioStreamsToMap.length > 0 ? audioStreamsToMap[0] : undefined;
+            
+            // Generate multiple map strings
+            if (audioStreamsToMap.length > 0) {
+                // Get active preset for language ordering
+                const activePreset = selectedPresetId !== 'custom' && availablePresets.length > 0 
+                    ? availablePresets.find(p => p.id === selectedPresetId)
+                    : null;
                 
-                // Calculate the audio-specific index (position among audio streams only)
-                const audioStreamIndex = probeData.streams
-                    .filter(s => s.codec_type === 'audio')
-                    .findIndex(s => s.index === firstAudioStream.index);
+                // Convert stream info to DTO with stream index and language info
+                const audioStreamDTOs = audioStreamsToMap.map(s => ({
+                    streamIndex: s.index,
+                    language: s.tags?.language?.toLowerCase() || '',
+                    isOriginalTrack: probeData.streams
+                        .filter(stream => stream.codec_type === 'audio')
+                        .findIndex(stream => stream.index === s.index) === 0,
+                    ffmpegIndex: probeData.streams
+                         .filter(stream => stream.codec_type === 'audio')
+                         .findIndex(stream => stream.index === s.index)
+                }));
                 
-                // --- DEBUG LOG --- 
-                console.log(`[Debug] Original Audio Stream Index: ${firstAudioStream.index}, Audio-specific Index: ${audioStreamIndex}`);
+                // Sort streams according to the preset's language priorities
+                if (activePreset && Array.isArray(activePreset.audioLanguageOrder) && activePreset.audioLanguageOrder.length > 0) {
+                    console.log(`[Debug] Sorting audio streams according to preset "${activePreset.name}" language priorities:`, activePreset.audioLanguageOrder);
+                    
+                    // Create list of sorted streams
+                    const sortedStreams: typeof audioStreamDTOs = [];
+                    
+                    // Process each language priority in order
+                    for (const lang of activePreset.audioLanguageOrder) {
+                        if (lang.toLowerCase() === 'original') {
+                            // Find the original audio track (0:a:0)
+                            const originalTrack = audioStreamDTOs.find(dto => dto.isOriginalTrack);
+                            if (originalTrack && !sortedStreams.includes(originalTrack)) {
+                                sortedStreams.push(originalTrack);
+                                console.log(`[Debug] Added original track (${originalTrack.ffmpegIndex}) to position ${sortedStreams.length - 1}`);
+                            }
+                        } else {
+                            // Find tracks matching this language
+                            const langTracks = audioStreamDTOs.filter(
+                                dto => dto.language === lang.toLowerCase() && !sortedStreams.includes(dto)
+                            );
+                            
+                            // Add all matching tracks in their original order
+                            for (const track of langTracks) {
+                                sortedStreams.push(track);
+                                console.log(`[Debug] Added ${lang} track (${track.ffmpegIndex}) to position ${sortedStreams.length - 1}`);
+                            }
+                        }
+                    }
+                    
+                    // Add any remaining tracks that weren't in the preset
+                    for (const track of audioStreamDTOs) {
+                        if (!sortedStreams.includes(track)) {
+                            sortedStreams.push(track);
+                            console.log(`[Debug] Added remaining track (${track.ffmpegIndex}) to position ${sortedStreams.length - 1}`);
+                        }
+                    }
+                    
+                    // Replace the original array with the sorted one
+                    audioStreamDTOs.length = 0;
+                    audioStreamDTOs.push(...sortedStreams);
+                    
+                    // Detailed debug logging to help troubleshoot
+                    console.log(`[Debug] Final Audio Track Order:`);
+                    audioStreamDTOs.forEach((dto, idx) => {
+                        console.log(`[Debug] Position ${idx}: Stream ${dto.streamIndex} (ffmpeg index ${dto.ffmpegIndex}): ` +
+                            `Language="${dto.language}", IsOriginal=${dto.isOriginalTrack}`);
+                    });
+                }
                 
-                options.mapAudio = `0:a:${audioStreamIndex}`;
+                // Get the final mapping indices in the sorted order
+                const mappedAudioIndices = audioStreamDTOs.map(dto => dto.ffmpegIndex);
                 
-                if (action === 'keep') {
-                    options.audioCodec = 'copy';
-                } else if (action === 'convert') {
+                // Determine if we need to convert any audio streams
+                const needsAudioConversion = audioStreamsToMap.some(
+                    (s: StreamInfo) => selectedAudioTracks[s.index] === 'convert'
+                );
+                
+                // DEBUG: Log the audio mapping information
+                console.log(`[Debug] Final Audio Mapping Order: ${mappedAudioIndices.join(', ')}`);
+                console.log(`[Debug] Audio streams that need conversion: ${needsAudioConversion}`);
+                
+                // Set audio codec based on selection - if any need conversion, use the selected codec
+                if (needsAudioConversion) {
                     options.audioCodec = audioCodecConvert;
                     options.audioBitrate = audioBitrate;
                     
-                    // Add appropriate audio filter based on selected layout
+                    // Apply audio filter (for the first stream, as filters can't be easily applied to multiple tracks)
                     if (audioCodecConvert === 'eac3') {
                         // For EAC3, we don't want to remap channels, just preserve the original layout
                         options.audioFilter = ''; // No audio filter for EAC3
                         if (!audioBitrate.endsWith('k')) {
                             options.audioBitrate = `${audioBitrate}k`; // Ensure bitrate has 'k' suffix
-                        } else {
-                            options.audioBitrate = audioBitrate;
                         }
                     } else {
                         // For other codecs like opus and aac, apply the audio layout filter
@@ -573,12 +836,22 @@ const ManualEncode: React.FC = () => { // Renamed component
                     } else {
                         options.audioOptions = undefined;
                     }
+                } else if (audioStreamsToMap.length > 0) {
+                    // If all selected tracks are 'keep', set codec to copy
+                    options.audioCodec = 'copy';
+                    options.audioBitrate = undefined;
+                    options.audioFilter = undefined;
                 }
+                
+                // Set map strings for all audio streams
+                options.mapAudio = mappedAudioIndices.map(idx => `0:a:${idx}`).join(';');
+                console.log(`[Debug] Final Audio Map String: ${options.mapAudio}`);
             } else {
-                 options.mapAudio = undefined;
-                 options.audioCodec = undefined;
-                 options.audioBitrate = undefined;
-                 options.audioFilter = undefined;
+                // No audio tracks selected
+                options.mapAudio = undefined;
+                options.audioCodec = undefined;
+                options.audioBitrate = undefined;
+                options.audioFilter = undefined;
             }
 
             // --- Subtitle Options (handle multiple selections) ---
@@ -717,7 +990,7 @@ const ManualEncode: React.FC = () => { // Renamed component
                 <Card className="border-none shadow-sm bg-card/50">
                     <CardHeader>
                         <CardTitle className="text-xl">Source & Destination</CardTitle>
-                        <CardDescription>Select your input video file and specify the output location</CardDescription>
+                        <CardDescription>Select input, output, and optionally apply an encoding preset</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-6">
                         <div className="space-y-4">
@@ -789,6 +1062,33 @@ const ManualEncode: React.FC = () => { // Renamed component
                                 </div>
                             )}
 
+                            {/* --- Preset Dropdown (New Position) --- */}
+                            <div className="space-y-2 pt-2"> {/* Added pt-2 for spacing */} 
+                                <Label htmlFor="preset-select" className="text-sm font-medium">Encoding Preset</Label>
+                                <Select 
+                                    value={selectedPresetId} 
+                                    onValueChange={applyPreset} // Call applyPreset when selection changes
+                                    disabled={isEncoding || isProbing || availablePresets.length === 0} // Disable if encoding or no presets
+                                >
+                                    <SelectTrigger id="preset-select" className="bg-background/50">
+                                        <SelectValue placeholder="Select a preset..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="custom">Custom Settings</SelectItem>
+                                        {availablePresets.map((preset) => (
+                                            <SelectItem key={preset.id} value={preset.id}>
+                                                {preset.name}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                {/* Display message only if no presets are available after initial load attempt */}
+                                {availablePresets.length === 0 && (
+                                    <p className="text-xs text-muted-foreground">No presets found. Create presets in the Presets page.</p>
+                                )}
+                            </div>
+                            {/* --- End Preset Dropdown (New Position) --- */}
+
                             {isProbing && (
                                 <p className="text-sm text-muted-foreground flex items-center">
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 
@@ -804,149 +1104,150 @@ const ManualEncode: React.FC = () => { // Renamed component
                     </CardContent>
                 </Card>
 
-                {/* Main Settings Card */}
-                <Card className="border-none shadow-sm bg-card/50">
-                    <CardHeader>
-                        <CardTitle className="text-xl">Encoding Settings</CardTitle>
-                        <CardDescription>Configure video and audio conversion parameters</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-8">
-                        {/* Video Settings */}
-                        <div className="space-y-6">
-                            <div className="flex items-center gap-2">
-                                <h3 className="font-medium text-lg text-foreground/90">Video Settings</h3>
-                                <Badge variant="outline" className="font-normal">Primary</Badge>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="space-y-4">
-                                    <div className="space-y-2">
-                                        <Label className="text-sm">Codec</Label>
-                                        <Select value={videoCodec} onValueChange={(value: VideoCodec) => setVideoCodec(value)} disabled={isEncoding}>
-                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>{VIDEO_CODECS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                                        </Select>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label className="text-sm">Preset</Label>
-                                        <Select value={videoPreset} onValueChange={(value: VideoPreset) => setVideoPreset(value)} disabled={isEncoding || videoCodec === 'copy'}>
-                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>{VIDEO_PRESETS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
-                                        </Select>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label className="text-sm">Resolution</Label>
-                                        <Select value={videoResolution} onValueChange={(value: VideoResolution) => setVideoResolution(value)} disabled={isEncoding || videoCodec === 'copy'}>
-                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="original">Original</SelectItem>
-                                                <SelectItem value="480p">480p (SD)</SelectItem>
-                                                <SelectItem value="720p">720p (HD)</SelectItem>
-                                                <SelectItem value="1080p">1080p (Full HD)</SelectItem>
-                                                <SelectItem value="1440p">1440p (QHD)</SelectItem>
-                                                <SelectItem value="2160p">2160p (4K UHD)</SelectItem>
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
+                {/* --- Conditionally Render Encoding Settings Card --- */}
+                {selectedPresetId === 'custom' && (
+                    <Card className="border-none shadow-sm bg-card/50">
+                        <CardHeader>
+                            <CardTitle className="text-xl">Encoding Settings</CardTitle>
+                            <CardDescription>Configure video and audio conversion parameters</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-8">
+                            {/* Video Settings */}
+                            <div className="space-y-6">
+                                <div className="flex items-center gap-2">
+                                    <h3 className="font-medium text-lg text-foreground/90">Video Settings</h3>
+                                    <Badge variant="outline" className="font-normal">Primary</Badge>
                                 </div>
-
-                                <div className="space-y-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     <div className="space-y-4">
-                                        <div className="flex justify-between items-center">
-                                            <Label className="text-sm">Quality</Label>
-                                            <span className="text-sm text-muted-foreground">{videoQuality}</span>
+                                        <div className="space-y-2">
+                                            <Label className="text-sm">Codec</Label>
+                                            <Select value={videoCodec} onValueChange={(value: VideoCodec) => setVideoCodec(value)} disabled={isEncoding}>
+                                                <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                                <SelectContent>{VIDEO_CODECS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                                            </Select>
                                         </div>
-                                        <Slider 
-                                            value={[videoQuality]} 
-                                            min={18} 
-                                            max={38} 
-                                            step={1} 
-                                            onValueChange={([v]) => setVideoQuality(v)} 
-                                            disabled={isEncoding || videoCodec === 'copy'}
-                                            className="[&>span]:bg-indigo-600"
-                                        />
-                                        <p className="text-xs text-muted-foreground">Lower values produce better quality but larger files</p>
+
+                                        <div className="space-y-2">
+                                            <Label className="text-sm">Preset</Label>
+                                            <Select value={videoPreset} onValueChange={(value: VideoPreset) => setVideoPreset(value)} disabled={isEncoding || videoCodec === 'copy'}>
+                                                <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                                <SelectContent>{VIDEO_PRESETS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+                                            </Select>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <Label className="text-sm">Resolution</Label>
+                                            <Select value={videoResolution} onValueChange={(value: VideoResolution) => setVideoResolution(value)} disabled={isEncoding || videoCodec === 'copy'}>
+                                                <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="original">Original</SelectItem>
+                                                    <SelectItem value="480p">480p (SD)</SelectItem>
+                                                    <SelectItem value="720p">720p (HD)</SelectItem>
+                                                    <SelectItem value="1080p">1080p (Full HD)</SelectItem>
+                                                    <SelectItem value="1440p">1440p (QHD)</SelectItem>
+                                                    <SelectItem value="2160p">2160p (4K UHD)</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
                                     </div>
 
-                                    <div className="space-y-2">
-                                        <Label className="text-sm">Hardware Acceleration</Label>
-                                        <Select value={hwAccel} onValueChange={(value: HwAccel) => setHwAccel(value)} disabled={isEncoding}>
-                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>{HW_ACCEL_OPTIONS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
-                                        </Select>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                                    <div className="space-y-4">
+                                        <div className="space-y-4">
+                                            <div className="flex justify-between items-center">
+                                                <Label className="text-sm">Quality</Label>
+                                                <span className="text-sm text-muted-foreground">{videoQuality}</span>
+                                            </div>
+                                            <Slider 
+                                                value={[videoQuality]} 
+                                                min={18} 
+                                                max={38} 
+                                                step={1} 
+                                                onValueChange={([v]) => setVideoQuality(v)} 
+                                                disabled={isEncoding || videoCodec === 'copy'}
+                                                className="[&>span]:bg-indigo-600"
+                                            />
+                                            <p className="text-xs text-muted-foreground">Lower values produce better quality but larger files</p>
+                                        </div>
 
-                        <Separator className="bg-border/50" />
-
-                        {/* Audio Settings */}
-                        <div className="space-y-6">
-                            <div className="flex items-center gap-2">
-                                <h3 className="font-medium text-lg text-foreground/90">Audio Settings</h3>
-                                <Badge variant="outline" className="font-normal">For Converted Tracks</Badge>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="space-y-4">
-                                    <div className="space-y-2">
-                                        <Label className="text-sm">Codec</Label>
-                                        <Select value={audioCodecConvert} onValueChange={(value: AudioCodecConvert) => setAudioCodecConvert(value)} disabled={isEncoding}>
-                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>{AUDIO_CODECS_CONVERT.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                                        </Select>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label className="text-sm">Bitrate</Label>
-                                        <Select value={audioBitrate} onValueChange={setAudioBitrate} disabled={isEncoding}>
-                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>
-                                                {audioCodecConvert === 'eac3' ? (
-                                                    // Higher bitrates for EAC3
-                                                    ['192k', '256k', '384k', '448k', '640k'].map(r => (
-                                                        <SelectItem key={r} value={r}>{r}</SelectItem>
-                                                    ))
-                                                ) : (
-                                                    // Standard bitrates for other codecs
-                                                    ['64k', '96k', '128k', '192k', '256k'].map(r => (
-                                                        <SelectItem key={r} value={r}>{r}</SelectItem>
-                                                    ))
-                                                )}
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                </div>
-
-                                <div className="space-y-4">
-                                    <div className="space-y-2">
-                                        <Label className="text-sm">Channel Layout</Label>
-                                        <Select value={selectedAudioLayout} onValueChange={(value: AudioLayout) => setSelectedAudioLayout(value)} disabled={isEncoding}>
-                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="stereo">Stereo (Downmix)</SelectItem>
-                                                <SelectItem value="mono">Mono (Downmix)</SelectItem>
-                                                <SelectItem value="surround5_1">5.1 Surround (Remap)</SelectItem>
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label className="text-sm">Subtitle Format</Label>
-                                        <Select value={subtitleCodecConvert} onValueChange={(value: SubtitleCodecConvert) => setSubtitleCodecConvert(value)} disabled={isEncoding}>
-                                            <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                            <SelectContent>{SUBTITLE_CODECS_CONVERT.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                                        </Select>
+                                        <div className="space-y-2">
+                                            <Label className="text-sm">Hardware Acceleration</Label>
+                                            <Select value={hwAccel} onValueChange={(value: HwAccel) => setHwAccel(value)} disabled={isEncoding}>
+                                                <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                                <SelectContent>{HW_ACCEL_OPTIONS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
+                                            </Select>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                    </CardContent>
-                </Card>
 
-                {/* Track Selection Card */}
-                {probeData && (
+                            <Separator className="bg-border/50" />
+
+                            {/* Audio Settings */}
+                            <div className="space-y-6">
+                                <div className="flex items-center gap-2">
+                                    <h3 className="font-medium text-lg text-foreground/90">Audio Settings</h3>
+                                    <Badge variant="outline" className="font-normal">For Converted Tracks</Badge>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="space-y-4">
+                                        <div className="space-y-2">
+                                            <Label className="text-sm">Codec</Label>
+                                            <Select value={audioCodecConvert} onValueChange={(value: AudioCodecConvert) => setAudioCodecConvert(value)} disabled={isEncoding}>
+                                                <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                                <SelectContent>{AUDIO_CODECS_CONVERT.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                                            </Select>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <Label className="text-sm">Bitrate</Label>
+                                            <Select value={audioBitrate} onValueChange={setAudioBitrate} disabled={isEncoding}>
+                                                <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {audioCodecConvert === 'eac3' ? (
+                                                        ['192k', '256k', '384k', '448k', '640k'].map(r => (
+                                                            <SelectItem key={r} value={r}>{r}</SelectItem>
+                                                        ))
+                                                    ) : (
+                                                        ['64k', '96k', '128k', '192k', '256k'].map(r => (
+                                                            <SelectItem key={r} value={r}>{r}</SelectItem>
+                                                        ))
+                                                    )}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-4">
+                                        <div className="space-y-2">
+                                            <Label className="text-sm">Channel Layout</Label>
+                                            <Select value={selectedAudioLayout} onValueChange={(value: AudioLayout) => setSelectedAudioLayout(value)} disabled={isEncoding}>
+                                                <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="stereo">Stereo (Downmix)</SelectItem>
+                                                    <SelectItem value="mono">Mono (Downmix)</SelectItem>
+                                                    <SelectItem value="surround5_1">5.1 Surround (Remap)</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+
+                                        <div className="space-y-2">
+                                            <Label className="text-sm">Subtitle Format</Label>
+                                            <Select value={subtitleCodecConvert} onValueChange={(value: SubtitleCodecConvert) => setSubtitleCodecConvert(value)} disabled={isEncoding}>
+                                                <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                                <SelectContent>{SUBTITLE_CODECS_CONVERT.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+                )} 
+                {/* --- End Conditional Render --- */}
+
+                {/* Track Selection Card - Conditionally render */}
+                {selectedPresetId === 'custom' && probeData && (
                     <Card className="border-none shadow-sm bg-card/50">
                         <CardHeader>
                             <CardTitle className="text-xl">Track Selection</CardTitle>
@@ -1038,7 +1339,7 @@ const ManualEncode: React.FC = () => { // Renamed component
                                     <Label className="text-sm font-medium">Subtitle Tracks</Label>
                                     <Popover>
                                         <PopoverTrigger asChild>
-                                            <Button
+                                             <Button
                                                 variant="outline"
                                                 role="combobox"
                                                 className="w-full justify-between bg-background/50 h-auto py-4"
@@ -1069,7 +1370,7 @@ const ManualEncode: React.FC = () => { // Renamed component
                                                 <span className="text-xs text-muted-foreground ml-2">Click to modify</span>
                                             </Button>
                                         </PopoverTrigger>
-                                        <PopoverContent className="w-[400px] p-0" side="bottom" align="start">
+                                         <PopoverContent className="w-[400px] p-0" side="bottom" align="start">
                                             <Command>
                                                 <CommandInput placeholder="Search subtitle tracks..." />
                                                 <CommandEmpty>No subtitle tracks found.</CommandEmpty>

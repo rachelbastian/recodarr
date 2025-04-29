@@ -1116,7 +1116,7 @@ app.on("ready", async () => {
         // Create encoding_presets table
         db.exec(`
             CREATE TABLE IF NOT EXISTS encoding_presets (
-                id TEXT PRIMARY KEY, -- Using TEXT for potential UUIDs later, keep consistent with UI
+                id TEXT PRIMARY KEY, 
                 name TEXT NOT NULL UNIQUE,
                 videoCodec TEXT,
                 videoPreset TEXT,
@@ -1126,14 +1126,20 @@ app.on("ready", async () => {
                 audioCodecConvert TEXT,
                 audioBitrate TEXT,
                 selectedAudioLayout TEXT,
+                preferredAudioLanguages TEXT, -- Old field, keep for migration
+                keepOriginalAudio INTEGER, -- Old field, keep for migration
+                defaultAudioLanguage TEXT, -- Old field, keep for migration
+                audioLanguageOrder TEXT, -- New field: Stored as JSON string array
                 subtitleCodecConvert TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
-        // Migration: Add new columns if they don't exist
-        // We need to check each column separately as SQLite doesn't support ADD COLUMN IF NOT EXISTS
+        // --- End Initialize Database ---
+
+        // --- Database Migrations ---
+        // Define interface for PRAGMA table_info results
         interface TableColumn {
             cid: number;
             name: string;
@@ -1142,70 +1148,74 @@ app.on("ready", async () => {
             dflt_value: string | null;
             pk: number;
         }
-        
+
+        // Migration for `media` table
         console.log("Checking existing columns for 'media' table...");
-        const tableInfo = db.prepare('PRAGMA table_info(media)').all() as TableColumn[];
-        const columns = tableInfo.map(col => col.name);
-        console.log(`Found columns: ${columns.join(', ')}`);
+        const mediaTableInfo = db.prepare('PRAGMA table_info(media)').all() as TableColumn[];
+        const mediaColumns = mediaTableInfo.map(col => col.name);
+        console.log(`Media table columns: ${mediaColumns.join(', ')}`);
 
-        const migrations = [];
-        
-        if (!columns.includes('currentSize')) {
-            migrations.push(`
-                ALTER TABLE media 
-                ADD COLUMN currentSize INTEGER NOT NULL 
-                DEFAULT 0 
-            `);
-        }
+        const mediaMigrations = [];
+        if (!mediaColumns.includes('currentSize')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN currentSize INTEGER NOT NULL DEFAULT 0`);
+        if (!mediaColumns.includes('lastSizeCheckAt')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN lastSizeCheckAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`);
+        if (!mediaColumns.includes('resolutionWidth')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN resolutionWidth INTEGER`);
+        if (!mediaColumns.includes('resolutionHeight')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN resolutionHeight INTEGER`);
+        if (!mediaColumns.includes('audioChannels')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN audioChannels INTEGER`);
 
-        if (!columns.includes('lastSizeCheckAt')) {
-            migrations.push(`
-                ALTER TABLE media 
-                ADD COLUMN lastSizeCheckAt DATETIME NOT NULL 
-                DEFAULT CURRENT_TIMESTAMP
-            `);
-        }
-
-        if (!columns.includes('resolutionWidth')) {
-            migrations.push(`ALTER TABLE media ADD COLUMN resolutionWidth INTEGER`);
-        }
-
-        if (!columns.includes('resolutionHeight')) {
-            migrations.push(`ALTER TABLE media ADD COLUMN resolutionHeight INTEGER`);
-        }
-
-        if (!columns.includes('audioChannels')) {
-            migrations.push(`ALTER TABLE media ADD COLUMN audioChannels INTEGER`);
-        }
-
-        // Execute migrations in a transaction
-        if (migrations.length > 0) {
-            console.log('Starting database migration transaction...');
-            db.exec('BEGIN TRANSACTION;');
-            try {
+        if (mediaMigrations.length > 0) {
+            console.log('Starting database migration transaction for media table...');
+            db.transaction((migrations: string[]) => {
                 migrations.forEach((migration, index) => {
-                    console.log(`Executing migration ${index + 1}/${migrations.length}: ${migration.trim().substring(0, 100)}...`);
+                    console.log(`Executing media migration ${index + 1}/${migrations.length}: ${migration.trim().substring(0, 100)}...`);
                     db.exec(migration);
                 });
-                // If the currentSize column was just added in this transaction,
-                // populate it from originalSize for all existing rows.
-                if (!columns.includes('currentSize')) {
+                if (!mediaColumns.includes('currentSize')) {
                     console.log("Executing UPDATE to populate 'currentSize' from 'originalSize'...");
-                    const updateInfo = db.exec(`
-                        UPDATE media SET currentSize = COALESCE(originalSize, 0)
-                    `);
-                    console.log(`'currentSize' update executed.`); // Rows affected might not be easily available with db.exec
+                    db.exec(`UPDATE media SET currentSize = COALESCE(originalSize, 0)`);
                 }
-                db.exec('COMMIT;');
-                console.log('Database migration transaction committed successfully.');
-            } catch (error) {
-                db.exec('ROLLBACK;');
-                console.error('Error during database migration, transaction rolled back:', error);
-                throw error; // Re-throw to prevent using partially migrated DB
-            }
+            })(mediaMigrations);
+            console.log('Media table migration transaction committed successfully.');
         } else {
-            console.log('No database migrations needed.');
+            console.log('No database migrations needed for media table.');
         }
+
+        // Migration for `encoding_presets` table
+        console.log("Checking existing columns for 'encoding_presets' table...");
+        try {
+            const presetsTableInfo = db.prepare('PRAGMA table_info(encoding_presets)').all() as TableColumn[];
+            const presetsColumns = presetsTableInfo.map(col => col.name);
+            console.log(`Encoding_presets table columns: ${presetsColumns.join(', ')}`);
+
+            const presetMigrations = [];
+            // Keep old column migrations for robustness if needed
+            if (!presetsColumns.includes('preferredAudioLanguages')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN preferredAudioLanguages TEXT`);
+            if (!presetsColumns.includes('keepOriginalAudio')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN keepOriginalAudio INTEGER`);
+            if (!presetsColumns.includes('defaultAudioLanguage')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN defaultAudioLanguage TEXT`);
+            // Add migration for the new column
+            if (!presetsColumns.includes('audioLanguageOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN audioLanguageOrder TEXT`);
+
+            if (presetMigrations.length > 0) {
+                console.log('Starting database migration transaction for encoding_presets table...');
+                db.transaction((migrations: string[]) => {
+                    migrations.forEach((migration, index) => {
+                        console.log(`Executing preset migration ${index + 1}/${migrations.length}: ${migration.trim().substring(0, 100)}...`);
+                        db.exec(migration);
+                    });
+                })(presetMigrations);
+                console.log('Encoding_presets table migration transaction committed successfully.');
+            } else {
+                console.log('No database migrations needed for encoding_presets table.');
+            }
+        } catch (error) {
+            // Handle case where encoding_presets table might not exist yet (e.g., very first run)
+            if (error instanceof Error && error.message.includes('no such table: encoding_presets')) {
+                console.log('Encoding_presets table does not exist yet, skipping migration check (will be created by CREATE TABLE).');
+            } else {
+                console.error('Error checking/migrating encoding_presets table:', error);
+                throw error; // Re-throw other errors
+            }
+        }
+        // --- End Database Migrations ---
 
         // Create FTS table and triggers as before
         db.exec(`
@@ -1855,7 +1865,55 @@ app.on("ready", async () => {
         if (!db) throw new Error("Database not initialized");
         try {
             const stmt = db.prepare('SELECT * FROM encoding_presets ORDER BY name');
-            return stmt.all();
+            const presets = stmt.all();
+            
+            // Process the results to handle serialized data and backward compatibility
+            return presets.map((preset: any) => {
+                const result = { ...preset };
+
+                // Deserialize or construct audioLanguageOrder
+                if (typeof result.audioLanguageOrder === 'string') {
+                    try {
+                        result.audioLanguageOrder = JSON.parse(result.audioLanguageOrder);
+                    } catch (e) {
+                        console.error(`Error parsing audioLanguageOrder for preset ${preset.id}:`, e);
+                        result.audioLanguageOrder = null; // Fallback on error
+                    }
+                } else if (result.audioLanguageOrder === null || result.audioLanguageOrder === undefined) {
+                    // Backward compatibility: Construct order from old fields if new field is missing
+                    console.warn(`Preset ${preset.id} missing audioLanguageOrder, attempting fallback from old fields.`);
+                    let order: string[] = [];
+                    const preferredLangs = typeof preset.preferredAudioLanguages === 'string' ? JSON.parse(preset.preferredAudioLanguages || '[]') : (preset.preferredAudioLanguages || []);
+                    const keepOriginal = Boolean(preset.keepOriginalAudio ?? true); // Default true
+                    const defaultLang = preset.defaultAudioLanguage || 'original';
+
+                    if (defaultLang !== 'original' && preferredLangs.includes(defaultLang)) {
+                        order.push(defaultLang);
+                    }
+                    if (keepOriginal) {
+                        order.push('original');
+                    }
+                    preferredLangs.forEach((lang: string) => {
+                        if (!order.includes(lang)) {
+                            order.push(lang);
+                        }
+                    });
+                    // Ensure 'original' is present if keepOriginal was true but wasn't the default
+                    if (keepOriginal && defaultLang !== 'original' && !order.includes('original')){
+                        order.push('original');
+                    }
+                    // Remove duplicates just in case
+                    result.audioLanguageOrder = [...new Set(order)];
+                    console.log(`Constructed fallback order for ${preset.id}:`, result.audioLanguageOrder);
+                }
+
+                // Clean up old fields from the result sent to UI
+                delete result.preferredAudioLanguages;
+                delete result.keepOriginalAudio;
+                delete result.defaultAudioLanguage;
+                
+                return result;
+            });
         } catch (error) {
             console.error("Error fetching encoding presets:", error);
             throw error;
@@ -1864,32 +1922,67 @@ app.on("ready", async () => {
 
     ipcMain.handle('save-preset', async (_event, preset: any) => {
         if (!db) throw new Error("Database not initialized");
-        const { id, name, ...settings } = preset; // Separate id and name from other settings
+        // Destructure known fields, including the new one
+        const { id, name, audioLanguageOrder, ...settings } = preset;
         console.log(`Received save request for preset ID: ${id}, Name: ${name}`);
 
+        // Process settings for storage
+        const processedSettings = { ...settings };
+        let serializedAudioOrder: string | null = null;
+        
+        // Serialize the new audioLanguageOrder field
+        if (Array.isArray(audioLanguageOrder)) {
+            serializedAudioOrder = JSON.stringify(audioLanguageOrder);
+        } else if (audioLanguageOrder === undefined || audioLanguageOrder === null) {
+            serializedAudioOrder = null; // Explicitly null if missing or null
+        }
+        
+        // Remove potentially interfering old audio fields from settings if they exist
+        delete processedSettings.preferredAudioLanguages;
+        delete processedSettings.keepOriginalAudio;
+        delete processedSettings.defaultAudioLanguage;
+        
+        // Ensure other optional fields are null if undefined before saving
+        Object.keys(processedSettings).forEach(key => {
+            if (processedSettings[key] === undefined) {
+                processedSettings[key] = null;
+            }
+        });
+
         try {
-            // Check if a preset with this ID exists
             const existingPreset = db.prepare('SELECT id FROM encoding_presets WHERE id = ?').get(id) as { id: string } | undefined;
 
             if (existingPreset) {
                  console.log(`Updating existing preset ID: ${id}`);
-                // Update existing preset
-                const setClauses = Object.keys(settings).map(key => `${key} = @${key}`).join(', ');
+                const updateFields = Object.keys(processedSettings);
+                // Add the new field explicitly
+                const setClauses = ['audioLanguageOrder = @audioLanguageOrder', ...updateFields.map(key => `${key} = @${key}`)].join(', ');
                 const sql = `UPDATE encoding_presets SET name = @name, ${setClauses}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`;
                 const stmt = db.prepare(sql);
-                const info = stmt.run({ id, name, ...settings });
+                // Include the serialized audioLanguageOrder in params
+                const params = { id, name, audioLanguageOrder: serializedAudioOrder, ...processedSettings };
+                console.log("Update Params:", params);
+                const info = stmt.run(params);
                 console.log(`Update result: Changes=${info.changes}`);
-                return { ...preset }; // Return the updated preset data
+                // Return the original preset structure received from UI
+                return { id, name, audioLanguageOrder, ...settings }; 
             } else {
                  console.log(`Inserting new preset with ID: ${id}, Name: ${name}`);
-                // Insert new preset
-                const columns = ['id', 'name', ...Object.keys(settings)];
+                const insertFields = Object.keys(processedSettings).filter(key => processedSettings[key] !== null);
+                // Add the new field explicitly if it's not null
+                const columns = ['id', 'name', ...(serializedAudioOrder !== null ? ['audioLanguageOrder'] : []), ...insertFields];
                 const placeholders = columns.map(key => `@${key}`).join(', ');
                 const sql = `INSERT INTO encoding_presets (${columns.join(', ')}) VALUES (${placeholders})`;
                 const stmt = db.prepare(sql);
-                const info = stmt.run({ id, name, ...settings });
+                // Define params with a more flexible type signature
+                const params: { [key: string]: any } = { id, name };
+                if (serializedAudioOrder !== null) params['audioLanguageOrder'] = serializedAudioOrder;
+                insertFields.forEach(key => params[key] = processedSettings[key]);
+                console.log("Insert Params:", params);
+                const info = stmt.run(params);
                  console.log(`Insert result: Changes=${info.changes}, LastInsertRowid=${info.lastInsertRowid}`);
-                return { id, name, ...settings }; // Return the newly inserted preset data
+                 // Return the original preset structure received from UI
+                return { id, name, audioLanguageOrder, ...settings };
             }
         } catch (error) {
             console.error(`Error saving preset (ID: ${id}, Name: ${name}):`, error);

@@ -292,5 +292,6 @@ interface EncodingPreset {
     audioBitrate?: string;
     selectedAudioLayout?: AudioLayout;
     subtitleCodecConvert?: SubtitleCodecConvert;
+    audioLanguageOrder?: string[];
 }
 // --- End EncodingPreset local type definition ---
