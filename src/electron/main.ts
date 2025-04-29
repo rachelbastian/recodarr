@@ -18,8 +18,7 @@ import ffmpegStatic from 'ffmpeg-static';
 import { startEncodingProcess } from './ffmpegUtils.js';
 import crypto from 'crypto';
 import { setMainWindow, captureConsoleLogs, getLogBuffer } from './logger.js'; // Import logger functions
-// Remove problematic type import
-// import type { ... } from '../../types.js';
+import { initQueueHandlers } from './queueHandler.js'; // Import queue handlers
 
 // --- Define Types Locally within main.ts ---
 // (Copied from src/types.d.ts)
@@ -984,6 +983,9 @@ app.on("ready", async () => {
 
     // Set the main window instance in the logger
     setMainWindow(mainWindow);
+    
+    // Initialize queue handlers
+    initQueueHandlers(ipcMain, mainWindow);
 
     // --- Create Encoding Log Directory ---
     const logDir = path.join(app.getPath('userData'), 'encoding_logs');

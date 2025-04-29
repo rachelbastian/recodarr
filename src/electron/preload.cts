@@ -159,25 +159,32 @@ type LocalElectronApi = {
     deleteWorkflow: (id: number) => Promise<{ changes: number }>;
 
     // --- Encoding Presets --- 
-    getPresets: () => Promise<EncodingPreset[]>; // Use EncodingPreset type from UI
-    savePreset: (preset: EncodingPreset) => Promise<EncodingPreset>; // Preset object as arg
-    deletePreset: (id: string) => Promise<{ changes: number }>; // Return info
-
-    // Add the new methods with locally defined types
-    probeFile: (filePath: string) => Promise<ProbeData | null>;
-    startEncodingProcess: (options: EncodingOptions) => Promise<EncodingResult>;
+    getPresets: () => Promise<EncodingPreset[]>;
+    savePreset: (preset: EncodingPreset) => Promise<string>;
+    deletePreset: (id: string) => Promise<void>;
+    
+    // --- Encoding Methods --- 
+    probeFile: (filePath: string) => Promise<any>;
+    startEncodingProcess: (options: EncodingOptions) => Promise<any>;
     getEncodingLog: (jobId: string) => Promise<string | null>;
-    subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number }) => void) => UnsubscribeFunction;
-    unsubscribeEncodingProgress: () => void; 
-    showOpenDialog: (options: DialogOptions) => Promise<DialogResult>; 
-    showSaveDialog: (options: SaveDialogOptions) => Promise<SaveDialogResult>; 
-
-    // Logger methods
+    subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number, jobId?: string }) => void) => UnsubscribeFunction;
+    unsubscribeEncodingProgress: () => void;
+    
+    // --- Dialog Methods ---
+    showOpenDialog: (options: DialogOptions) => Promise<{ canceled: boolean; filePaths: string[] }>;
+    showSaveDialog: (options: SaveDialogOptions) => Promise<{ canceled: boolean; filePath?: string }>;
+    
+    // --- Logger Methods ---
     subscribeToLogs: (callback: (logEntry: LocalLogEntry) => void) => UnsubscribeFunction;
     getInitialLogs: () => Promise<LocalLogEntry[]>;
-
-    // Add function to show confirmation dialog
     showConfirmationDialog: (options: DialogOptions) => Promise<DialogResult>;
+
+    // --- Queue Methods ---
+    loadQueueData: () => Promise<any>;
+    saveQueueData: (data: any) => Promise<{ success: boolean }>;
+    getFileSize: (filePath: string) => Promise<number | undefined>;
+    startEncoding: (options: any) => Promise<any>;
+    openEncodingLog: (jobId: string) => Promise<{ success: boolean; error?: string }>;
 };
 
 // Expose methods using the locally defined types
@@ -243,6 +250,13 @@ electron.contextBridge.exposeInMainWorld("electron", {
 
     // Add function to show confirmation dialog
     showConfirmationDialog: (options: DialogOptions) => ipcInvoke('show-confirmation-dialog', options),
+
+    // --- Queue Methods ---
+    loadQueueData: () => ipcInvoke('loadQueueData'),
+    saveQueueData: (data: any) => ipcInvoke('saveQueueData', data),
+    getFileSize: (filePath: string) => ipcInvoke('getFileSize', filePath),
+    startEncoding: (options: any) => ipcInvoke('startEncoding', options),
+    openEncodingLog: (jobId: string) => ipcInvoke('openEncodingLog', jobId),
 
 } satisfies LocalElectronApi); // Satisfy against the local type
 
