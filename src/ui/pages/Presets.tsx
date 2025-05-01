@@ -15,7 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { defaultPresetValues, getPresetSummary, loadPresets as loadPresetsUtil } from '@/utils/presetUtil';
+import { defaultPresetValues, getPresetSummary, loadPresets as loadPresetsUtil } from '@/utils/presetUtil.js';
 
 // --- Constants from ManualEncode (adjust as needed) ---
 const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;

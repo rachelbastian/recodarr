@@ -11,7 +11,7 @@ import { WorkflowsPage } from './pages/workflows/components/WorkflowsPage'; // C
 import Settings from './pages/Settings';
 import ManualEncode from './pages/ManualEncode'; // Import ManualEncode
 import Presets from './pages/Presets'; // Import the new Presets page
-import Queue from './pages/Queue'; // Import Queue page
+import Queue from './pages/Queue'; // Import the Queue page
 import './App.css';
 import { useEffect, useState } from 'react';
 

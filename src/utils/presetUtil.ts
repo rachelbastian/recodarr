@@ -1,4 +1,4 @@
-import { IElectronAPI, EncodingPreset, StreamInfo } from '../types';
+import { IElectronAPI, EncodingPreset, StreamInfo } from '../types.js';
 
 // Constants from ManualEncode/Presets
 const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
@@ -49,7 +49,7 @@ export const loadPresets = async (electronAPI: IElectronAPI): Promise<EncodingPr
     try {
         const presets = await electronAPI.getPresets();
         // Ensure audioLanguageOrder is always an array, even if null from DB
-        return presets.map(p => ({ 
+        return presets.map((p: EncodingPreset) => ({ 
             ...p, 
             audioLanguageOrder: p.audioLanguageOrder ?? [],
             subtitleLanguageOrder: p.subtitleLanguageOrder ?? [],
@@ -105,7 +105,7 @@ export const getAudioTrackActions = (
     if (!preset || !Array.isArray(preset.audioLanguageOrder) || preset.audioLanguageOrder.length === 0) {
         // Default selection for custom mode (or invalid preset): convert first audio track, discard others
         let firstAudioFound = false;
-        audioStreams.forEach(stream => {
+        audioStreams.forEach((stream: StreamInfo) => {
             audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
             firstAudioFound = true;
         });
@@ -113,7 +113,7 @@ export const getAudioTrackActions = (
     }
 
     // Apply preset-based audio track selection
-    const presetLangsLower = preset.audioLanguageOrder.map(lang => lang.toLowerCase());
+    const presetLangsLower = preset.audioLanguageOrder.map((lang: string) => lang.toLowerCase());
     const selectedIndices: number[] = [];
     
     // Track which preset languages have been matched
@@ -139,7 +139,7 @@ export const getAudioTrackActions = (
 
         if (foundStreams.length > 0) {
             console.log(`[Preset Track Select] Found ${foundStreams.length} match(es) for "${langCode}".`);
-            foundStreams.forEach(streamToSelect => {
+            foundStreams.forEach((streamToSelect: StreamInfo) => {
                 if (!selectedIndices.includes(streamToSelect.index)) {
                     selectedIndices.push(streamToSelect.index);
                     console.log(`  - Adding Index ${streamToSelect.index}`);
@@ -150,7 +150,7 @@ export const getAudioTrackActions = (
     }
 
     // Set track actions based on the found indices
-    audioStreams.forEach(stream => {
+    audioStreams.forEach((stream: StreamInfo) => {
         // Mark tracks in selectedIndices for conversion, others for discard
         audioDefaults[stream.index] = selectedIndices.includes(stream.index) ? 'convert' : 'discard';
     });
@@ -170,16 +170,16 @@ export const getSubtitleTrackActions = (
 
     if (!preset || !Array.isArray(preset.subtitleLanguageOrder) || preset.subtitleLanguageOrder.length === 0) {
         // Default selection for custom mode (or invalid preset): keep English subtitles
-        subtitleStreams.forEach(stream => {
+        subtitleStreams.forEach((stream: StreamInfo) => {
             subtitleDefaults[stream.index] = (stream.tags?.language?.toLowerCase() === 'eng') ? 'keep' : 'discard';
         });
         return subtitleDefaults;
     }
 
     // Apply preset-based subtitle track selection
-    const presetSubLangsLower = preset.subtitleLanguageOrder.map(lang => lang.toLowerCase());
+    const presetSubLangsLower = preset.subtitleLanguageOrder.map((lang: string) => lang.toLowerCase());
     
-    subtitleStreams.forEach(stream => {
+    subtitleStreams.forEach((stream: StreamInfo) => {
         const langLower = stream.tags?.language?.toLowerCase() || 'unknown';
         
         // Keep subtitles whose language is in the preset's order
@@ -253,8 +253,8 @@ export const orderSubtitlesByPreset = <T extends { language: string; type: strin
         const langB = b.language.toLowerCase();
         
         // Get index in the language order (or a high number if not found)
-        const langIndexA = preset.subtitleLanguageOrder?.findIndex(l => l.toLowerCase() === langA) ?? 999;
-        const langIndexB = preset.subtitleLanguageOrder?.findIndex(l => l.toLowerCase() === langB) ?? 999;
+        const langIndexA = preset.subtitleLanguageOrder?.findIndex((l: string) => l.toLowerCase() === langA) ?? 999;
+        const langIndexB = preset.subtitleLanguageOrder?.findIndex((l: string) => l.toLowerCase() === langB) ?? 999;
         
         // Compare language priority first
         if (langIndexA !== langIndexB) {
@@ -265,8 +265,8 @@ export const orderSubtitlesByPreset = <T extends { language: string; type: strin
         const typeA = a.type;
         const typeB = b.type;
         
-        const typeIndexA = preset.subtitleTypeOrder?.findIndex(t => t === typeA) ?? 999;
-        const typeIndexB = preset.subtitleTypeOrder?.findIndex(t => t === typeB) ?? 999;
+        const typeIndexA = preset.subtitleTypeOrder?.findIndex((t: string) => t === typeA) ?? 999;
+        const typeIndexB = preset.subtitleTypeOrder?.findIndex((t: string) => t === typeB) ?? 999;
         
         return typeIndexA - typeIndexB;
     });

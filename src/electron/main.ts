@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, IpcMainInvokeEvent, clipboard, systemPreferences, nativeTheme } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, IpcMainInvokeEvent, clipboard, systemPreferences, nativeTheme, shell } from 'electron';
 import { isDev } from "./util.js";
 import { getPreloadPath, getUIPath } from "./pathResolver.js";
 import { getStaticData, pollResources, stopPolling } from "./test.js";
@@ -18,7 +18,6 @@ import ffmpegStatic from 'ffmpeg-static';
 import { startEncodingProcess } from './ffmpegUtils.js';
 import crypto from 'crypto';
 import { setMainWindow, captureConsoleLogs, getLogBuffer } from './logger.js'; // Import logger functions
-import { initQueueHandlers } from './queueHandler.js'; // Import queue handlers
 
 // --- Define Types Locally within main.ts ---
 // (Copied from src/types.d.ts)
@@ -985,7 +984,7 @@ app.on("ready", async () => {
     setMainWindow(mainWindow);
     
     // Initialize queue handlers
-    initQueueHandlers(ipcMain, mainWindow);
+    // initQueueHandlers(ipcMain, mainWindow); // REMOVED
 
     // --- Create Encoding Log Directory ---
     const logDir = path.join(app.getPath('userData'), 'encoding_logs');
@@ -2083,6 +2082,102 @@ app.on("ready", async () => {
         }
     });
     // --- End Encoding Preset Handlers ---
+
+    // --- Queue Handlers ---
+    // Path for storing queue data
+    const queueDataPath = path.join(app.getPath('userData'), 'queue.json');
+
+    // Handler to load saved queue data
+    ipcMain.handle('loadQueueData', async () => {
+        console.log(`[Main Process] Request to load queue data from: ${queueDataPath}`);
+        try {
+            // Check if the file exists
+            try {
+                await fs.access(queueDataPath, fs.constants.R_OK);
+            } catch (error) {
+                console.log(`[Main Process] Queue data file not found, returning empty array`);
+                return { jobs: [] };
+            }
+
+            // Read and parse the file
+            const data = await fs.readFile(queueDataPath, 'utf-8');
+            const queueData = JSON.parse(data);
+            console.log(`[Main Process] Successfully loaded queue data with ${queueData.jobs?.length || 0} jobs`);
+            return queueData;
+        } catch (error) {
+            console.error(`[Main Process] Error loading queue data:`, error);
+            return { jobs: [], error: String(error) };
+        }
+    });
+
+    // Handler to save queue data
+    ipcMain.handle('saveQueueData', async (_event, data) => {
+        console.log(`[Main Process] Request to save queue data with ${data.jobs?.length || 0} jobs`);
+        try {
+            // Serialize and save the data
+            await fs.writeFile(queueDataPath, JSON.stringify(data, null, 2), 'utf-8');
+            console.log(`[Main Process] Successfully saved queue data to: ${queueDataPath}`);
+            return { success: true };
+        } catch (error) {
+            console.error(`[Main Process] Error saving queue data:`, error);
+            return { success: false, error: String(error) };
+        }
+    });
+
+    // Handler to get file size
+    ipcMain.handle('getFileSize', async (_event, filePath) => {
+        console.log(`[Main Process] Request to get file size for: ${filePath}`);
+        try {
+            const stats = await fs.stat(filePath);
+            const sizeInBytes = stats.size;
+            console.log(`[Main Process] File size for ${filePath}: ${sizeInBytes} bytes`);
+            return sizeInBytes;
+        } catch (error) {
+            console.error(`[Main Process] Error getting file size:`, error);
+            return undefined;
+        }
+    });
+
+    // Handler to start an encoding job
+    ipcMain.handle('startEncoding', async (_event, options) => {
+        console.log(`[Main Process] Request to start encoding for: ${options.inputPath}`);
+        try {
+            // This reuses the existing startEncodingProcess handler
+            return await startEncodingProcess(options);
+        } catch (error) {
+            console.error(`[Main Process] Error starting encoding:`, error);
+            return { 
+                success: false, 
+                error: String(error),
+                jobId: options.jobId 
+            };
+        }
+    });
+
+    // Handler to open an encoding log
+    ipcMain.handle('openEncodingLog', async (_event, jobId) => {
+        console.log(`[Main Process] Request to open encoding log for job: ${jobId}`);
+        try {
+            const logFilePath = path.join(logDir, `${jobId}.log`);
+            
+            // Check if file exists
+            try {
+                await fs.access(logFilePath, fs.constants.R_OK);
+            } catch (error) {
+                console.error(`[Main Process] Log file not found: ${logFilePath}`);
+                return { success: false, error: `Log file not found for job ${jobId}` };
+            }
+            
+            // Open the file with the default text editor
+            await shell.openPath(logFilePath);
+            console.log(`[Main Process] Successfully opened log file: ${logFilePath}`);
+            return { success: true };
+        } catch (error) {
+            console.error(`[Main Process] Error opening log file:`, error);
+            return { success: false, error: String(error) };
+        }
+    });
+    // --- End Queue Handlers ---
 })
 
 // Quit when all windows are closed, except on macOS.

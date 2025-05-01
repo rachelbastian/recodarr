@@ -55,6 +55,7 @@ export interface EncodingProgress {
 export interface EncodingOptions {
     inputPath: string;
     outputPath: string;
+    overwriteInput?: boolean; // Flag for overwriting input
     // Video options
     videoCodec?: string; 
     videoPreset?: string; 
@@ -62,22 +63,25 @@ export interface EncodingOptions {
     lookAhead?: number; 
     pixelFormat?: string; 
     mapVideo?: string; 
+    videoFilter?: string; // For resolution/scaling
+    resolution?: string; // For explicit resolution
     // Audio options
     audioCodec?: string; 
     audioBitrate?: string; 
     audioFilter?: string; 
     mapAudio?: string; 
+    audioOptions?: string[]; // For additional audio codec options
     // Subtitle options
     subtitleCodec?: string; 
-    mapSubtitle?: string[];
+    mapSubtitle?: string[]; // Array for multiple subtitle tracks
     // General options
     hwAccel?: 'auto' | 'qsv' | 'nvenc' | 'cuda' | 'vaapi' | 'videotoolbox' | 'none';
-    duration?: number; 
-    // Removed outputOptions
-    // outputOptions: string[]; 
-    // Removed progressCallback - main process only
-    // Add getEncodingLog method
-    getEncodingLog: (jobId: string) => Promise<string | null>; 
+    duration?: number;
+    // --- For logging ---
+    jobId?: string;
+    logDirectoryPath?: string;
+    // Internal callback
+    progressCallback?: (progress: EncodingProgress) => void;
 }
 
 export interface EncodingResult {
@@ -219,6 +223,13 @@ export interface IElectronAPI {
     subscribeEncodingProgress: (callback: (data: { jobId?: string; progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number }) => void) => UnsubscribeFunction;
     unsubscribeEncodingProgress: () => void;
     getEncodingLog: (jobId: string) => Promise<string | null>; // Added from preload
+
+    // Queue Methods
+    loadQueueData: () => Promise<any>;
+    saveQueueData: (data: any) => Promise<{ success: boolean }>;
+    getFileSize: (filePath: string) => Promise<number | undefined>;
+    startEncoding: (options: any) => Promise<any>;
+    openEncodingLog: (jobId: string) => Promise<{ success: boolean; error?: string }>;
 
     // --- Include other existing API methods (Copied/Verified from root & preload) --- 
     subscribeStatistics: (callback: (data: StatisticsData) => void) => UnsubscribeFunction;
