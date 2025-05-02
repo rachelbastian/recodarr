@@ -7,7 +7,7 @@
     "extraResources": [
         "dist-electron/preload.cjs"
     ],
-    "icon": "./templateIcon.png",
+    "icon": "./src/ui/assets/icon_logo_recodarr.png",
     "mac": {
         "target": "dmg"
     },

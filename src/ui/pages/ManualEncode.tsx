@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Loader2, Plus, CheckCircle } from 'lucide-react';
+import { Loader2, Plus, CheckCircle, Folder } from 'lucide-react';
 import type { 
     IElectronAPI, 
     ProbeData,
@@ -111,6 +111,7 @@ const ManualEncode: React.FC = () => {
     const [isProbing, setIsProbing] = useState(false);
     const [probeData, setProbeData] = useState<ProbeData | null>(null);
     const [probeError, setProbeError] = useState<string | null>(null);
+    const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
     
     // Preset State
     const [availablePresets, setAvailablePresets] = useState<EncodingPreset[]>([]);
@@ -148,6 +149,11 @@ const ManualEncode: React.FC = () => {
     const [showSuccess, setShowSuccess] = useState(false);
     const [successMessage, setSuccessMessage] = useState("");
 
+    // Form data state
+    const [formData, setFormData] = useState({
+        selectedFiles: [] as string[]
+    });
+
     // Reset form function 
     const resetForm = useCallback(() => {
         setInputPath('');
@@ -162,11 +168,113 @@ const ManualEncode: React.FC = () => {
         setFps(null);
         setCurrentFrame(null);
         setTotalFrames(null);
-        // Don't reset encoding parameters or preset - maintain those settings
+        setSelectedFolderPath(null);
+        setFormData({ selectedFiles: [] });
     }, []);
 
     // Queue-related functions
     const addToQueue = useCallback(async () => {
+        // --- Handle Multiple Files Addition ---
+        if (formData.selectedFiles && formData.selectedFiles.length > 0) {
+            setIsAddingToQueue(true);
+            setStatus(`Processing ${formData.selectedFiles.length} files...`);
+            
+            try {
+                const preset = selectedPresetId !== 'custom' 
+                    ? getPresetById(availablePresets, selectedPresetId)
+                    : undefined;
+                
+                let addedCount = 0;
+                let errorCount = 0;
+                
+                // Process each selected file
+                for (const filePath of formData.selectedFiles) {
+                    try {
+                        const fileProbeData = await electronAPI.probeFile(filePath);
+                        if (!fileProbeData || !fileProbeData.streams || !fileProbeData.format) {
+                            console.warn(`Skipping file due to invalid probe data: ${filePath}`);
+                            errorCount++;
+                            continue;
+                        }
+                        
+                        // For multiple files, let's provide similar options as single file mode
+                        let outputFilePath = filePath; // Default to same as input for overwrite
+                        let overwriteInput = !saveAsNew; // Use the same saveAsNew toggle for multiple files
+                        
+                        // If saving as new, generate output path in the same directory with "_encoded" suffix
+                        if (saveAsNew) {
+                            const dirPath = getDirPath(filePath);
+                            const ext = getFileExtension(filePath);
+                            const basename = getFileNameWithoutExt(filePath);
+                            outputFilePath = joinPaths(dirPath, `${basename}_encoded${ext}`);
+                        }
+                        
+                        // Get track selections based on probe and preset
+                        const fileAudioDefaults = getAudioTrackActions(fileProbeData.streams, preset);
+                        const fileSubtitleDefaults = getSubtitleTrackActions(fileProbeData.streams, preset);
+                        const fileTrackSelections = {
+                            audio: fileAudioDefaults,
+                            subtitle: fileSubtitleDefaults
+                        };
+                        
+                        // Add job to queue - use overwriteInput flag to ensure proper naming
+                        queueService.addJob(
+                            filePath,
+                            outputFilePath,
+                            overwriteInput, // Use overwriteInput flag based on saveAsNew setting
+                            preset,
+                            fileProbeData,
+                            fileTrackSelections,
+                            0 // Default priority
+                        );
+                        addedCount++;
+                        
+                        // Update status incrementally
+                        setStatus(`Added ${addedCount}/${formData.selectedFiles.length} files to queue...`);
+                        
+                    } catch (probeError) {
+                        console.error(`Error probing file ${filePath}:`, probeError);
+                        errorCount++;
+                    }
+                }
+                
+                queueService.startProcessing(); // Ensure queue starts/continues
+                queueService.forceProcessQueue();
+                
+                const successMessage = `Added ${addedCount} files to the queue. ${errorCount > 0 ? `${errorCount} files failed to probe.` : ''}`;
+                setSuccessMessage(successMessage);
+                setShowSuccess(true);
+                setStatus(successMessage);
+                
+                toast.success("Files added to queue", {
+                    description: successMessage,
+                    action: {
+                        label: "View Queue",
+                        onClick: () => navigate("/queue")
+                    }
+                });
+                
+                // Reset form after showing success message
+                setTimeout(() => {
+                    resetForm();
+                    setShowSuccess(false);
+                }, 2000);
+                
+            } catch (error) {
+                console.error("Error adding files to queue:", error);
+                const errorMsg = error instanceof Error ? error.message : String(error);
+                setStatus(`Error processing files: ${errorMsg}`);
+                toast.error("Failed to process files", {
+                    description: errorMsg
+                });
+            } finally {
+                setIsAddingToQueue(false);
+            }
+            
+            return; // Stop here if we processed multiple files
+        }
+        
+        // --- Handle Single File Addition (Original Logic) ---
         if (!inputPath) {
             setStatus("Please select an input file first");
             return;
@@ -238,7 +346,7 @@ const ManualEncode: React.FC = () => {
             setIsAddingToQueue(false);
         }
     }, [inputPath, outputPath, saveAsNew, probeData, selectedAudioTracks, selectedSubtitleTracks, 
-        selectedPresetId, availablePresets, resetForm, navigate]);
+        selectedPresetId, availablePresets, resetForm, navigate, selectedFolderPath, formData]);
 
     // Load presets on mount
     useEffect(() => {
@@ -370,6 +478,7 @@ const ManualEncode: React.FC = () => {
         setIsProbing(true);
         setProbeError(null);
         setProbeData(null);
+        setSelectedFolderPath(null);
         
         try {
             // Call the electron API to probe the file
@@ -427,6 +536,7 @@ const ManualEncode: React.FC = () => {
                 setOutputPath(newOutputPath);
                 
                 setStatus(`Selected: ${getFileName(filePath)}`);
+                setSelectedFolderPath(null);
                 
                 // Start probing the selected file
                 probeSelectedFile(filePath);
@@ -436,8 +546,47 @@ const ManualEncode: React.FC = () => {
         }
     }, [probeSelectedFile]);
     
+    // --- NEW: Handler for selecting a folder ---
+    const handleSelectFolder = useCallback(async () => {
+        try {
+            const options = {
+                properties: ['openFile', 'multiSelections'], // Allow selecting multiple files instead of a directory
+                filters: [
+                    { name: 'Video Files', extensions: ['mkv', 'mp4', 'avi', 'mov', 'webm'] }
+                ]
+            } as any;
+            
+            const result = await electronAPI.showOpenDialog(options);
+            
+            if (result && !result.canceled && result.filePaths && result.filePaths.length > 0) {
+                // Store all selected file paths
+                setSelectedFolderPath(getDirPath(result.filePaths[0])); // Just store the directory of the first file for display
+                // Update status to show how many files were selected
+                setStatus(`Selected ${result.filePaths.length} files. Ready to add to queue.`);
+                
+                // Store the file paths for later processing
+                setFormData(prev => ({
+                    ...prev,
+                    selectedFiles: result.filePaths
+                }));
+                
+                // Clear single file path and probe data
+                setInputPath('');
+                setProbeData(null);
+                setProbeError(null);
+            }
+        } catch (error) {
+            setStatus(`Error selecting files: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }, []);
+    
     // --- Handle Direct Encoding ---
     const handleStartEncoding = useCallback(async () => {
+        if (selectedFolderPath) {
+            setStatus("Direct encoding is not available for folders. Use 'Add to Queue' instead.");
+            return;
+        }
+        
         if (!inputPath) {
             setStatus("Please select an input file first");
             return;
@@ -595,7 +744,7 @@ const ManualEncode: React.FC = () => {
         }
     }, [inputPath, outputPath, saveAsNew, probeData, selectedAudioTracks, selectedSubtitleTracks, 
         videoCodec, videoPreset, videoQuality, videoResolution, hwAccel, audioCodecConvert, audioBitrate, selectedAudioLayout,
-        availablePresets, selectedPresetId, audioLanguageOrder, resetForm]);
+        availablePresets, selectedPresetId, audioLanguageOrder, resetForm, selectedFolderPath]);
 
     // --- Track Selection Dialog --- 
     const openTrackSelect = () => {
@@ -620,25 +769,41 @@ const ManualEncode: React.FC = () => {
                     <CardContent className="space-y-6">
                         <div className="space-y-4">
                             <div className="space-y-2">
-                                <Label htmlFor="input-file" className="text-sm font-medium">Input File</Label>
+                                <Label htmlFor="input-file" className="text-sm font-medium">Input File / Folder</Label>
                                 <div className="flex gap-3">
                                     <Input 
                                         id="input-file" 
-                                        value={inputPath} 
+                                        value={formData.selectedFiles?.length > 0 
+                                            ? `${formData.selectedFiles.length} files selected from ${getFileName(selectedFolderPath || '')}` 
+                                            : inputPath} 
                                         readOnly 
-                                        placeholder="Select input file..." 
+                                        placeholder="Select input file or multiple files..." 
                                         className="bg-background/50"
                                     />
                                     <Button 
                                         onClick={handleSelectInputFile} 
                                         variant="outline"
-                                        className="min-w-[100px]"
+                                        className="min-w-[100px] flex items-center justify-center"
                                         disabled={isEncoding || isAddingToQueue}
                                     >
                                         {isProbing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                        Browse
+                                        Browse File
+                                    </Button>
+                                    <Button 
+                                        onClick={handleSelectFolder} 
+                                        variant="outline"
+                                        className="min-w-[150px] w-auto px-4 flex items-center justify-center whitespace-nowrap"
+                                        disabled={isEncoding || isAddingToQueue}
+                                    >
+                                        <Folder className="mr-2 h-4 w-4" />
+                                        Select Multiple
                                     </Button>
                                 </div>
+                                {formData.selectedFiles?.length > 0 && (
+                                    <p className="text-xs text-muted-foreground pt-1">
+                                        {formData.selectedFiles.length} files selected from: {selectedFolderPath}
+                                    </p>
+                                )}
                             </div>
                             
                             {/* Preset Dropdown */}
@@ -680,35 +845,42 @@ const ManualEncode: React.FC = () => {
                                     htmlFor="save-as-new"
                                     className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                                 >
-                                    Save as New File
+                                    Save as New File {formData.selectedFiles?.length > 0 ? `(${formData.selectedFiles.length} files)` : ''}
                                 </Label>
                             </div>
 
-                            {/* Output File Section - Only shown when saveAsNew is true */}
                             {saveAsNew && (
                                 <div className="space-y-2">
-                                    <Label htmlFor="output-file" className="text-sm font-medium">Output File</Label>
-                                    <div className="flex gap-3">
-                                        <Input 
-                                            id="output-file" 
-                                            value={outputPath} 
-                                            onChange={e => setOutputPath(e.target.value)} 
-                                            placeholder="Select or type output file..." 
-                                            disabled={isEncoding || isAddingToQueue}
-                                            className="bg-background/50"
-                                        />
-                                    </div>
+                                    {formData.selectedFiles?.length > 0 ? (
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                            Each file will be saved as [filename]_encoded[extension] in its original folder.
+                                        </p>
+                                    ) : (
+                                        <>
+                                            <Label htmlFor="output-file" className="text-sm font-medium">Output File</Label>
+                                            <div className="flex gap-3">
+                                                <Input 
+                                                    id="output-file" 
+                                                    value={outputPath} 
+                                                    onChange={e => setOutputPath(e.target.value)} 
+                                                    placeholder="Select or type output file..." 
+                                                    disabled={isEncoding || isAddingToQueue}
+                                                    className="bg-background/50"
+                                                />
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             )}
                         </div>
                     </CardContent>
                 </Card>
 
-                {/* Tracks Card - Only shown when we have probe data */}
-                {probeData && (
+                {/* Tracks Card - Only shown when we have probe data (and not folder selected) */}
+                {probeData && !selectedFolderPath && (
                     <Card className="border-none shadow-sm bg-card/50">
                         <CardHeader>
-                            <CardTitle className="text-xl">Track Selection</CardTitle>
+                            <CardTitle className="text-xl">Track Selection (Single File)</CardTitle>
                             <CardDescription>Choose which tracks to keep, convert, or discard</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
@@ -756,7 +928,7 @@ const ManualEncode: React.FC = () => {
                     </Card>
                 )}
 
-                {/* Video Settings Card */}
+                {/* Video Settings Card - Hide if folder selected? Or keep for preset editing? Keep for now */}
                 <Card className="border-none shadow-sm bg-card/50">
                     <CardHeader>
                         <CardTitle className="text-xl">Encoding Settings</CardTitle>
@@ -870,28 +1042,28 @@ const ManualEncode: React.FC = () => {
                     <Button 
                         onClick={addToQueue} 
                         variant="outline"
-                        disabled={!inputPath || isProbing || !probeData || isEncoding || isAddingToQueue} 
+                        disabled={(!inputPath && formData.selectedFiles?.length === 0) || isProbing || (!probeData && formData.selectedFiles?.length === 0) || isEncoding || isAddingToQueue} 
                     >
                         {isAddingToQueue ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-                        Add to Queue
+                        {formData.selectedFiles?.length > 0 ? `Add ${formData.selectedFiles.length} Files to Queue` : 'Add to Queue'}
                     </Button>
                     
                     <Button 
                         onClick={handleStartEncoding} 
-                        disabled={!inputPath || isProbing || !probeData || isEncoding || isAddingToQueue} 
+                        disabled={!!selectedFolderPath || !inputPath || isProbing || !probeData || isEncoding || isAddingToQueue} 
                         className="bg-primary hover:bg-primary/90"
                     >
                         {isEncoding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                        Start Encoding
+                        Start Encoding (Single File)
                     </Button>
                 </div>
 
-                {/* Status Display with Progress Bar */}
+                {/* Status Display with Progress Bar - Only show progress for single file encoding */}
                 <div className="bg-card/50 p-4 rounded-md">
                     <div className="flex flex-col gap-2">
                         <p className="text-sm">Status: {status}</p>
                         
-                        {isEncoding && (
+                        {isEncoding && !selectedFolderPath && (
                             <>
                                 <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
                                     <div 
@@ -921,7 +1093,7 @@ const ManualEncode: React.FC = () => {
                 )}
                 
                 {/* Error alert */}
-                {probeError && (
+                {probeError && !selectedFolderPath && (
                     <Alert variant="destructive" className="bg-destructive/10 border-none">
                         <AlertDescription>{probeError}</AlertDescription>
                     </Alert>
@@ -932,11 +1104,11 @@ const ManualEncode: React.FC = () => {
             <Dialog open={trackSelectOpen} onOpenChange={setTrackSelectOpen}>
                 <DialogContent className="max-w-xl">
                     <DialogHeader>
-                        <DialogTitle>Select Tracks</DialogTitle>
+                        <DialogTitle>Select Tracks (All Available)</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4 max-h-[60vh] overflow-y-auto py-2">
                         {probeData?.streams
-                            .filter(s => s.codec_type === 'audio' || s.codec_type === 'subtitle')
+                            ?.filter(s => s.codec_type === 'audio' || s.codec_type === 'subtitle')
                             .map(stream => {
                                 const streamType = stream.codec_type as 'audio' | 'subtitle';
                                 const currentAction = streamType === 'audio' 
@@ -962,6 +1134,7 @@ const ManualEncode: React.FC = () => {
                                                 };
                                                 handleTrackActionChange(track, value as TrackAction);
                                             }}
+                                            disabled={isEncoding || isAddingToQueue}
                                         >
                                             <SelectTrigger className="w-[110px] h-8 text-xs">
                                                 <SelectValue />
@@ -975,6 +1148,9 @@ const ManualEncode: React.FC = () => {
                                     </div>
                                 );
                             })}
+                        {!probeData?.streams && (
+                            <p className="text-sm text-muted-foreground p-4 text-center">Probe a file to see available tracks.</p>
+                        )}
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setTrackSelectOpen(false)}>

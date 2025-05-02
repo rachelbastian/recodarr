@@ -18,7 +18,9 @@ import { useEffect, useState } from 'react';
 function App() {
     return (
         <Router>
-            <div className="flex h-screen bg-background text-foreground">
+            <div className="flex h-screen bg-background text-foreground bg-stars">
+                <div className="twinkle-layer"></div>
+                
                 <Navbar />
                 <div className="flex flex-1 flex-col overflow-hidden">
                     <Header />

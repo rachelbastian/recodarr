@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, dialog, IpcMainInvokeEvent, clipboard, systemPreferences, nativeTheme, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, IpcMainInvokeEvent, clipboard, systemPreferences, nativeTheme, shell, Tray, Menu } from 'electron';
 import { isDev } from "./util.js";
-import { getPreloadPath, getUIPath } from "./pathResolver.js";
+import { getPreloadPath, getUIPath, getIconPath, getSplashPath } from "./pathResolver.js";
 import { getStaticData, pollResources, stopPolling } from "./test.js";
 import si from 'systeminformation';
 import Store from 'electron-store';
@@ -150,11 +150,70 @@ let db: Database.Database;
 const SUPPORTED_EXTENSIONS = ['.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm'];
 let isScanning = false;
 let watcher: chokidar.FSWatcher | null = null;
+let isWatcherReady = false;
+let splashScreen: BrowserWindow | null = null;
+let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null; // Add tray instance
+const APP_STARTUP_TIMEOUT = 30000; // 30 seconds max wait time for app to load
 // --- End Media Scanner & Watcher Constants & State ---
+
+// --- System Tray Setup Function ---
+function setupTray() {
+    if (process.platform !== 'win32') return; // Only for Windows
+    
+    // Create the tray icon
+    tray = new Tray(getIconPath());
+    tray.setToolTip('Recodarr');
+    
+    // Create the context menu
+    const contextMenu = Menu.buildFromTemplate([
+        { 
+            label: 'Open Recodarr', 
+            click: () => {
+                if (mainWindow) {
+                    if (mainWindow.isMinimized()) mainWindow.restore();
+                    mainWindow.show();
+                    mainWindow.focus();
+                }
+            } 
+        },
+        { type: 'separator' },
+        { 
+            label: 'Restart App', 
+            click: () => {
+                app.relaunch();
+                app.exit();
+            } 
+        },
+        { type: 'separator' },
+        { 
+            label: 'Exit', 
+            click: () => {
+                app.quit();
+            } 
+        }
+    ]);
+    
+    // Set the context menu
+    tray.setContextMenu(contextMenu);
+    
+    // Optional: Add click behavior (single click opens app)
+    tray.on('click', () => {
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+    
+    console.log('[Main Process] System tray icon created');
+}
+// --- End System Tray Setup ---
 
 // --- File System Watcher Functions ---
 
 function startWatching(folders: WatchedFolder[]) {
+    isWatcherReady = false;
     if (watcher) {
         console.log("Closing existing watcher before starting new one.");
         watcher.close();
@@ -163,6 +222,8 @@ function startWatching(folders: WatchedFolder[]) {
     const pathsToWatch = folders.map(f => f.path);
     if (pathsToWatch.length === 0) {
         console.log("No folders configured to watch.");
+        isWatcherReady = true; // Mark as ready since there's nothing to watch
+        closeSplashScreen();
         return;
     }
 
@@ -214,7 +275,34 @@ function startWatching(folders: WatchedFolder[]) {
                  console.error('Watcher error:', error);
              }
          })
-        .on('ready', () => console.log('Initial scan complete. Watcher is ready.'));
+        .on('ready', () => {
+            console.log('Initial scan complete. Watcher is ready.');
+            isWatcherReady = true;
+            closeSplashScreen();
+        });
+}
+
+// Function to close splash screen and show main window
+function closeSplashScreen() {
+    if (splashScreen && !splashScreen.isDestroyed()) {
+        console.log("Closing splash screen and showing main window...");
+        
+        // Make main window visible
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            // Show the main window
+            mainWindow.show();
+            
+            // Bring it to the front
+            if (mainWindow.isMinimized()) {
+                mainWindow.restore();
+            }
+            mainWindow.focus();
+        }
+        
+        // Close the splash screen
+        splashScreen.close();
+        splashScreen = null;
+    }
 }
 
 function stopWatching() {
@@ -971,10 +1059,41 @@ app.on("ready", async () => {
         console.log("dialog API is available and properly initialized");
     }
 
-    const mainWindow = new BrowserWindow({
+    // Create splash screen
+    splashScreen = new BrowserWindow({
+        width: 400,
+        height: 400,
+        transparent: false,
+        frame: false,
+        resizable: false,
+        center: true,
+        show: true,
+        backgroundColor: '#232836', // Medium grey with slight navy tint
+        icon: getIconPath(),
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true
+        }
+    });
+
+    // Load splash screen HTML
+    console.log(`Loading splash screen from: ${getSplashPath()}`);
+    splashScreen.loadFile(getSplashPath());
+
+    // Create main window but don't show it yet
+    mainWindow = new BrowserWindow({
         // Shouldn't add contextIsolate or nodeIntegration because of security vulnerabilities
         width: 1450,
         height: 750,
+        icon: getIconPath(),
+        show: false, // Don't show initially
+        backgroundColor: '#232836', // Medium grey with slight navy tint to match theme
+        titleBarStyle: 'default',
+        titleBarOverlay: process.platform === 'win32' ? {
+            color: '#686b76', // Light grey title bar 
+            symbolColor: '#ffffff', // White symbols (minimize, maximize, close buttons)
+            height: 32 // Standard height for Windows title bar
+        } : false,
         webPreferences: {
             preload: getPreloadPath(),
         }
@@ -1261,12 +1380,22 @@ app.on("ready", async () => {
     startWatching(initialFolders);
     // --- End Start File Watcher ---
 
+    // Load the main window content
     if (isDev()) mainWindow.loadURL("http://localhost:3524")
     else mainWindow.loadFile(getUIPath());
 
+    // Start other services
     pollResources(mainWindow);
     pollSystemStats(mainWindow); // Start polling system stats
 
+    // Set a timeout in case watcher never gets ready
+    setTimeout(() => {
+        if (!isWatcherReady && splashScreen && !splashScreen.isDestroyed()) {
+            console.log("Timeout reached waiting for watcher. Showing main window...");
+            closeSplashScreen();
+        }
+    }, APP_STARTUP_TIMEOUT);
+    
     ipcMain.handle("getStaticData", () => {
         return getStaticData();
     })
@@ -2178,6 +2307,9 @@ app.on("ready", async () => {
         }
     });
     // --- End Queue Handlers ---
+
+    // Setup system tray
+    setupTray();
 })
 
 // Quit when all windows are closed, except on macOS.
@@ -2210,6 +2342,12 @@ app.on('will-quit', () => {
     
     // Stop resource polling from test.js
     stopPolling();
+    
+    // Destroy tray icon if it exists
+    if (tray) {
+        tray.destroy();
+        tray = null;
+    }
     
     // Close database
     if (db) {
