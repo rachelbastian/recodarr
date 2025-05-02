@@ -19,6 +19,7 @@ const electronAPI = window.electron;
  * @param preset Optional encoding preset to use
  * @param probeData Probe data for the input file
  * @param trackSelections Selected tracks to include
+ * @param jobId Optional job ID for tracking progress updates
  * @returns Promise with encoding result
  */
 export async function createEncodingJob(
@@ -30,7 +31,8 @@ export async function createEncodingJob(
   trackSelections: {
     audio: { [index: number]: TrackAction },
     subtitle: { [index: number]: TrackAction }
-  }
+  },
+  jobId?: string
 ): Promise<EncodingResult> {
   try {
     // Build encoding options using the utility function
@@ -44,17 +46,40 @@ export async function createEncodingJob(
       trackSelections.subtitle
     );
     
-    console.log('EncodingService: Starting encoding job with options:', options);
+    // IMPORTANT: Always add job ID for tracking progress
+    if (jobId) {
+      options.jobId = jobId;
+      console.log(`EncodingService: Starting job ${jobId} for ${inputPath}`);
+    } else {
+      console.warn(`EncodingService: No job ID provided for encoding ${inputPath} -> ${outputPath}`);
+      // Create a fallback ID - though this might cause tracking issues
+      options.jobId = `fallback_${Date.now()}`;
+    }
+    
+    console.log('EncodingService: Starting encoding job with options:', {
+      ...options,
+      inputPath: options.inputPath, // Log important properties directly
+      outputPath: options.outputPath,
+      jobId: options.jobId,
+      overwriteInput: options.overwriteInput
+    });
     
     // Start the encoding process
     const result = await electronAPI.startEncodingProcess(options);
+    
+    // Ensure result contains job ID for consistent tracking
+    if (options.jobId && !result.jobId) {
+      result.jobId = options.jobId;
+    }
+    
     return result;
   } catch (error) {
     console.error('EncodingService: Error creating encoding job:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     return {
       success: false,
-      error: `Failed to create encoding job: ${errorMessage}`
+      error: `Failed to create encoding job: ${errorMessage}`,
+      jobId // Return the original job ID even on failure
     };
   }
 }
@@ -98,20 +123,31 @@ export interface ProgressCallbacks {
  * Create a reusable progress handler that processes encoding progress updates
  * 
  * @param callbacks Object containing callback functions for different progress events
+ * @param jobId Optional job ID to associate with progress updates
  * @param logPrefix Optional prefix for console logs (for debugging)
  * @returns Handler function to process progress updates
  */
-export function createProgressHandler(callbacks: ProgressCallbacks, logPrefix = 'Progress') {
+export function createProgressHandler(
+  callbacks: ProgressCallbacks, 
+  jobId?: string,
+  logPrefix = 'Progress'
+) {
   return (data: EncodingProgressUpdate) => {
-    console.log(`[${logPrefix}] Received progress update:`, data);
+    // Ensure all progress updates include the job ID
+    const updatedData = { ...data };
+    if (jobId && !updatedData.jobId) {
+      updatedData.jobId = jobId;
+    }
+    
+    console.log(`[${logPrefix}] Received progress update for job ${updatedData.jobId || 'unknown'}:`, updatedData);
     
     // Update status always
-    if (data.status && callbacks.onStatus) {
-      console.log(`[${logPrefix}] Status update: ${data.status}`);
-      callbacks.onStatus(data.status);
+    if (updatedData.status && callbacks.onStatus) {
+      console.log(`[${logPrefix}] Status update: ${updatedData.status}`);
+      callbacks.onStatus(updatedData.status);
       
       // Handle completion
-      if (data.status.toLowerCase().includes('complete')) {
+      if (updatedData.status.toLowerCase().includes('complete')) {
         console.log(`[${logPrefix}] Encoding complete, setting progress to 100%`);
         if (callbacks.onPercent) callbacks.onPercent(100);
         if (callbacks.onComplete) callbacks.onComplete();
@@ -120,30 +156,30 @@ export function createProgressHandler(callbacks: ProgressCallbacks, logPrefix = 
     }
 
     // Update frame and totalFrames
-    if (data.frame !== undefined && callbacks.onFrame) {
-      console.log(`[${logPrefix}] Frame update: ${data.frame}`);
-      callbacks.onFrame(data.frame);
+    if (updatedData.frame !== undefined && callbacks.onFrame) {
+      console.log(`[${logPrefix}] Frame update: ${updatedData.frame}`);
+      callbacks.onFrame(updatedData.frame);
     }
     
-    if (data.totalFrames !== undefined && callbacks.onTotalFrames) {
-      console.log(`[${logPrefix}] Total frames update: ${data.totalFrames}`);
-      callbacks.onTotalFrames(data.totalFrames);
+    if (updatedData.totalFrames !== undefined && callbacks.onTotalFrames) {
+      console.log(`[${logPrefix}] Total frames update: ${updatedData.totalFrames}`);
+      callbacks.onTotalFrames(updatedData.totalFrames);
     }
 
     // Calculate percentage if possible and not complete
-    if (data.frame !== undefined && data.totalFrames !== undefined && data.totalFrames > 0 && callbacks.onPercent) {
-      const calculatedPercent = Math.min(100, Math.max(0, (data.frame / data.totalFrames) * 100));
-      console.log(`[${logPrefix}] Calculated percent: ${calculatedPercent.toFixed(1)}% (from ${data.frame}/${data.totalFrames})`);
+    if (updatedData.frame !== undefined && updatedData.totalFrames !== undefined && updatedData.totalFrames > 0 && callbacks.onPercent) {
+      const calculatedPercent = Math.min(100, Math.max(0, (updatedData.frame / updatedData.totalFrames) * 100));
+      console.log(`[${logPrefix}] Calculated percent: ${calculatedPercent.toFixed(1)}% (from ${updatedData.frame}/${updatedData.totalFrames})`);
       callbacks.onPercent(calculatedPercent);
-    } else if (data.percent !== undefined && callbacks.onPercent) { 
+    } else if (updatedData.percent !== undefined && callbacks.onPercent) { 
       // Use backend percent as fallback
-      console.log(`[${logPrefix}] Using backend percent fallback: ${data.percent.toFixed(1)}%`);
-      callbacks.onPercent(data.percent);
+      console.log(`[${logPrefix}] Using backend percent fallback: ${updatedData.percent.toFixed(1)}%`);
+      callbacks.onPercent(updatedData.percent);
     }
     
-    if (data.fps !== undefined && callbacks.onFps) {
-      console.log(`[${logPrefix}] FPS update: ${data.fps}`);
-      callbacks.onFps(data.fps);
+    if (updatedData.fps !== undefined && callbacks.onFps) {
+      console.log(`[${logPrefix}] FPS update: ${updatedData.fps}`);
+      callbacks.onFps(updatedData.fps);
     }
   };
 }

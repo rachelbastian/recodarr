@@ -64,29 +64,65 @@ const StatusBadge: React.FC<{ status: JobStatus }> = ({ status }) => {
 
 // Job details component
 const JobDetails: React.FC<{ job: EncodingJob }> = ({ job }) => {
+  // Force refresh on job progress changes
+  const [localProgress, setLocalProgress] = useState(job.progress);
+  const [lastUpdate, setLastUpdate] = useState(Date.now());
+
+  // Update local state when job progress changes
+  useEffect(() => {
+    if (Math.abs(job.progress - localProgress) > 0.5) {
+      console.log(`JobDetails: Updating progress for job ${job.id} from ${localProgress.toFixed(1)}% to ${job.progress.toFixed(1)}%`);
+      setLocalProgress(job.progress);
+      setLastUpdate(Date.now());
+    }
+  }, [job.progress, localProgress, job.id]);
+
+  // Extract filename from path, handling both forward and backslashes
+  const getFilename = (path: string) => {
+    return path.split(/[\/\\]/).pop() || path;
+  };
+
   return (
     <Card className="mb-4">
       <CardHeader className="pb-2">
-        <div className="flex justify-between items-center">
-          <CardTitle className="text-md font-medium">
-            {job.inputPath.split('/').pop() || job.inputPath}
-          </CardTitle>
+        <div className="flex justify-between items-center mb-1">
+          <div className="text-xs text-muted-foreground">
+            ID: {job.id}
+          </div>
           <StatusBadge status={job.status} />
         </div>
-        <CardDescription>
-          ID: {job.id}
-        </CardDescription>
+        <CardTitle className="text-md font-medium truncate">
+          {getFilename(job.outputPath)}
+        </CardTitle>
       </CardHeader>
       <CardContent className="pb-2">
         <div className="grid gap-2">
           <div className="grid grid-cols-2 gap-2">
             <div>
               <div className="text-sm font-medium">Input Path</div>
-              <div className="text-sm text-muted-foreground truncate max-w-[280px]">{job.inputPath}</div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger className="w-full text-left">
+                    <div className="text-sm text-muted-foreground truncate max-w-[280px]">{job.inputPath}</div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>{job.inputPath}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
             <div>
               <div className="text-sm font-medium">Output Path</div>
-              <div className="text-sm text-muted-foreground truncate max-w-[280px]">{job.outputPath}</div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger className="w-full text-left">
+                    <div className="text-sm text-muted-foreground truncate max-w-[280px]">{job.outputPath}</div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>{job.outputPath}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
           </div>
           <div>
@@ -96,9 +132,17 @@ const JobDetails: React.FC<{ job: EncodingJob }> = ({ job }) => {
           <div>
             <div className="text-sm font-medium">Progress</div>
             <div className="flex items-center gap-2">
-              <Progress value={job.progress} className="flex-1" />
+              <Progress 
+                value={Math.max(0, Math.min(100, job.progress))} 
+                className="flex-1" 
+              />
               <span className="text-sm">{job.progress.toFixed(1)}%</span>
             </div>
+            {job.status === 'processing' && (
+              <div className="text-xs text-muted-foreground mt-1">
+                Last updated: {new Date(lastUpdate).toLocaleTimeString()}
+              </div>
+            )}
           </div>
           {job.status === 'processing' && job.fps !== undefined && (
             <div className="text-sm text-muted-foreground">
@@ -170,12 +214,49 @@ const Queue: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [maxParallelJobs, setMaxParallelJobs] = useState(2);
+  const [refreshTimestamp, setRefreshTimestamp] = useState(Date.now());
+  const [statusFilter, setStatusFilter] = useState<JobStatus | 'all'>('all');
   
   // Stats
   const processingCount = jobs.filter(job => job.status === 'processing').length;
   const queuedCount = jobs.filter(job => job.status === 'queued').length;
   const completedCount = jobs.filter(job => job.status === 'completed').length;
   const failedCount = jobs.filter(job => job.status === 'failed' || job.status === 'cancelled').length;
+  
+  // Filter jobs based on selected status
+  const filteredJobs = statusFilter === 'all' 
+    ? jobs 
+    : jobs.filter(job => 
+        statusFilter === 'failed' 
+          ? job.status === 'failed' || job.status === 'cancelled'
+          : job.status === statusFilter
+      );
+  
+  // Periodic refresh for progress updates
+  useEffect(() => {
+    // Set up a refresh interval to poll for updates
+    const refreshInterval = setInterval(() => {
+      if (processingCount > 0) {
+        // Only force refresh if there are processing jobs
+        console.log(`Queue: Polling for updates (${processingCount} jobs processing)`);
+        
+        // Also manually refresh jobs from queue service
+        const currentJobs = queueService.getAllJobs();
+        
+        // Check if there are meaningful progress changes to report
+        const processingJobs = currentJobs.filter(job => job.status === 'processing');
+        if (processingJobs.length > 0) {
+          console.log(`Queue: Processing jobs progress:`, 
+            processingJobs.map(job => `${job.id}: ${job.progress.toFixed(1)}%`).join(', '));
+        }
+        
+        setJobs(currentJobs);
+        setRefreshTimestamp(Date.now());
+      }
+    }, 500); // Check for updates more frequently (every 500ms)
+    
+    return () => clearInterval(refreshInterval);
+  }, [processingCount]);
   
   // Subscribe to queue events
   useEffect(() => {
@@ -189,6 +270,7 @@ const Queue: React.FC = () => {
       },
       onJobProgress: (job) => {
         setJobs(current => current.map(j => j.id === job.id ? job : j));
+        setRefreshTimestamp(Date.now()); // Update refresh timestamp to trigger rerenders
       },
       onJobCompleted: (job) => {
         setJobs(current => current.map(j => j.id === job.id ? job : j));
@@ -251,6 +333,19 @@ const Queue: React.FC = () => {
           <h1 className="text-2xl font-bold">Encoding Queue</h1>
           <p className="text-muted-foreground">
             Manage and monitor encoding jobs
+            {statusFilter !== 'all' && (
+              <span className="ml-2 text-indigo-400">
+                • Filtered by: <span className="capitalize">{statusFilter}</span>
+                <Button 
+                  variant="link" 
+                  size="sm" 
+                  className="ml-1 p-0 h-auto text-indigo-400" 
+                  onClick={() => setStatusFilter('all')}
+                >
+                  (Clear)
+                </Button>
+              </span>
+            )}
           </p>
         </div>
         <div className="flex gap-2">
@@ -277,22 +372,30 @@ const Queue: React.FC = () => {
             </DialogContent>
           </Dialog>
           
-          {isProcessing ? (
-            <Button onClick={pauseQueue}>
-              <Pause className="h-4 w-4 mr-2" />
-              Pause Queue
-            </Button>
-          ) : (
-            <Button onClick={startQueue}>
-              <Play className="h-4 w-4 mr-2" />
-              Start Queue
-            </Button>
-          )}
+          <Button 
+            onClick={isProcessing ? pauseQueue : startQueue}
+            variant={isProcessing ? "outline" : "default"}
+          >
+            {isProcessing ? (
+              <>
+                <Pause className="h-4 w-4 mr-2" />
+                Pause Queue
+              </>
+            ) : (
+              <>
+                <Play className="h-4 w-4 mr-2" />
+                Start Queue
+              </>
+            )}
+          </Button>
         </div>
       </div>
       
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <Card>
+        <Card 
+          className={`cursor-pointer transition-colors ${statusFilter === 'processing' ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
+          onClick={() => setStatusFilter(statusFilter === 'processing' ? 'all' : 'processing')}
+        >
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-muted-foreground">Processing</p>
@@ -301,7 +404,10 @@ const Queue: React.FC = () => {
             <PlayCircle className="h-8 w-8 text-indigo-500" />
           </CardContent>
         </Card>
-        <Card>
+        <Card 
+          className={`cursor-pointer transition-colors ${statusFilter === 'queued' ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
+          onClick={() => setStatusFilter(statusFilter === 'queued' ? 'all' : 'queued')}
+        >
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-muted-foreground">Queued</p>
@@ -310,7 +416,10 @@ const Queue: React.FC = () => {
             <Clock className="h-8 w-8 text-slate-400" />
           </CardContent>
         </Card>
-        <Card>
+        <Card 
+          className={`cursor-pointer transition-colors ${statusFilter === 'completed' ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
+          onClick={() => setStatusFilter(statusFilter === 'completed' ? 'all' : 'completed')}
+        >
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-muted-foreground">Completed</p>
@@ -319,7 +428,10 @@ const Queue: React.FC = () => {
             <CheckCircle className="h-8 w-8 text-green-500" />
           </CardContent>
         </Card>
-        <Card>
+        <Card 
+          className={`cursor-pointer transition-colors ${statusFilter === 'failed' ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
+          onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')}
+        >
           <CardContent className="p-4 flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-muted-foreground">Failed</p>
@@ -341,38 +453,48 @@ const Queue: React.FC = () => {
       )}
       
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {jobs.length === 0 ? (
+        {filteredJobs.length === 0 ? (
           <Card className="col-span-full p-8 text-center">
             <CardContent>
               <div className="flex flex-col items-center justify-center space-y-3">
-                <Clock className="h-8 w-8 text-muted-foreground" />
-                <p className="text-lg font-medium">No Encoding Jobs</p>
-                <p className="text-sm text-muted-foreground">
-                  Add files to the queue from the Media or Encoding pages.
-                </p>
+                {statusFilter !== 'all' ? (
+                  <>
+                    <div className="mb-2">
+                      <StatusIcon status={statusFilter as JobStatus} />
+                    </div>
+                    <p className="text-lg font-medium">No {statusFilter} Jobs</p>
+                    <p className="text-sm text-muted-foreground">
+                      {statusFilter === 'processing' && "No jobs are currently processing."}
+                      {statusFilter === 'queued' && "No jobs are currently in the queue."}
+                      {statusFilter === 'completed' && "No jobs have been completed yet."}
+                      {statusFilter === 'failed' && "No jobs have failed."}
+                      <Button 
+                        variant="link" 
+                        className="ml-1 p-0 h-auto"
+                        onClick={() => setStatusFilter('all')}
+                      >
+                        Show all jobs
+                      </Button>
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Clock className="h-8 w-8 text-muted-foreground" />
+                    <p className="text-lg font-medium">No Encoding Jobs</p>
+                    <p className="text-sm text-muted-foreground">
+                      Add files to the queue from the Media or Encoding pages.
+                    </p>
+                  </>
+                )}
               </div>
             </CardContent>
           </Card>
         ) : (
           <>
-            {/* Group by status: processing first, then queued, then others */}
-            {jobs
-              .filter(job => job.status === 'processing')
-              .map(job => (
-                <JobDetails key={job.id} job={job} />
-              ))}
-            
-            {jobs
-              .filter(job => job.status === 'queued')
-              .map(job => (
-                <JobDetails key={job.id} job={job} />
-              ))}
-              
-            {jobs
-              .filter(job => job.status !== 'processing' && job.status !== 'queued')
-              .map(job => (
-                <JobDetails key={job.id} job={job} />
-              ))}
+            {/* Switch to use filteredJobs instead of different status groups */}
+            {filteredJobs.map(job => (
+              <JobDetails key={job.id} job={job} />
+            ))}
           </>
         )}
       </div>

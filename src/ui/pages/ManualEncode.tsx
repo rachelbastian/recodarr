@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Loader2 } from 'lucide-react';
+import { Loader2, Plus, CheckCircle } from 'lucide-react';
 import type { 
     IElectronAPI, 
     ProbeData,
@@ -18,6 +18,9 @@ import type {
 } from '../../types';
 import { loadPresets as loadPresetsUtil, getPresetById, getDefaultEncodingOptions, getAudioTrackActions, getSubtitleTrackActions } from '@/utils/presetUtil.js';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
+import queueService from '../../services/queueService.js';
+import { useNavigate } from 'react-router-dom';
+import { toast } from "sonner";
 
 // Cast window.electron to the imported type
 const electronAPI = window.electron as IElectronAPI;
@@ -96,6 +99,9 @@ const getStreamDescription = (stream: StreamInfo): string => {
 
 // --- Component --- 
 const ManualEncode: React.FC = () => {
+    // Navigate hook for redirecting to Queue page
+    const navigate = useNavigate();
+
     // Input/Output State
     const [inputPath, setInputPath] = useState<string>('');
     const [outputPath, setOutputPath] = useState<string>('');
@@ -127,15 +133,112 @@ const ManualEncode: React.FC = () => {
     const [selectedTracks, setSelectedTracks] = useState<TrackOption[]>([]);
     const [trackSelectOpen, setTrackSelectOpen] = useState(false);
     
-    // Status State
-    const [status, setStatus] = useState<string>('Ready to encode');
+    // Encoding/Queue State
     const [isEncoding, setIsEncoding] = useState(false);
-
+    const [isAddingToQueue, setIsAddingToQueue] = useState(false);
+    const [status, setStatus] = useState<string>('Ready to encode');
+    
     // Progress tracking
     const [progress, setProgress] = useState(0);
     const [fps, setFps] = useState<number | null>(null);
     const [currentFrame, setCurrentFrame] = useState<number | null>(null);
     const [totalFrames, setTotalFrames] = useState<number | null>(null);
+
+    // Success feedback
+    const [showSuccess, setShowSuccess] = useState(false);
+    const [successMessage, setSuccessMessage] = useState("");
+
+    // Reset form function 
+    const resetForm = useCallback(() => {
+        setInputPath('');
+        setOutputPath('');
+        setSaveAsNew(false);
+        setProbeData(null);
+        setSelectedAudioTracks({});
+        setSelectedSubtitleTracks({});
+        setSelectedTracks([]);
+        setStatus('Ready to encode');
+        setProgress(0);
+        setFps(null);
+        setCurrentFrame(null);
+        setTotalFrames(null);
+        // Don't reset encoding parameters or preset - maintain those settings
+    }, []);
+
+    // Queue-related functions
+    const addToQueue = useCallback(async () => {
+        if (!inputPath) {
+            setStatus("Please select an input file first");
+            return;
+        }
+        
+        if (!probeData) {
+            setStatus("Please wait for file analysis to complete");
+            return;
+        }
+        
+        setIsAddingToQueue(true);
+        
+        try {
+            // Get the selected preset if any
+            const preset = selectedPresetId !== 'custom' 
+                ? getPresetById(availablePresets, selectedPresetId)
+                : undefined;
+            
+            // Create track selections object for the queue service
+            const trackSelections = {
+                audio: selectedAudioTracks,
+                subtitle: selectedSubtitleTracks
+            };
+            
+            // Add job to queue
+            const job = queueService.addJob(
+                inputPath,
+                saveAsNew ? outputPath : inputPath,
+                !saveAsNew,
+                preset,
+                probeData,
+                trackSelections,
+                0 // Default priority
+            );
+            
+            // Make sure queue is actively processing - use the more robust method
+            queueService.startProcessing();
+            queueService.forceProcessQueue(); // This addresses any state inconsistencies
+            
+            // Log success for debugging
+            console.log(`ManualEncode: Added job ${job.id} to queue and forced processing`);
+            
+            // Show success message
+            setSuccessMessage(`File "${getFileName(inputPath)}" added to queue`);
+            setShowSuccess(true);
+            
+            // Reset form for next file after 1.5 seconds
+            setTimeout(() => {
+                resetForm();
+                setShowSuccess(false);
+            }, 1500);
+            
+            // Show toast notification
+            toast.success("Job added to queue", {
+                description: `File "${getFileName(inputPath)}" was added to the encoding queue`,
+                action: {
+                    label: "View Queue",
+                    onClick: () => navigate("/queue")
+                }
+            });
+            
+        } catch (error) {
+            console.error("Error adding to queue:", error);
+            setStatus(`Error adding to queue: ${error instanceof Error ? error.message : String(error)}`);
+            toast.error("Failed to add job to queue", {
+                description: error instanceof Error ? error.message : String(error)
+            });
+        } finally {
+            setIsAddingToQueue(false);
+        }
+    }, [inputPath, outputPath, saveAsNew, probeData, selectedAudioTracks, selectedSubtitleTracks, 
+        selectedPresetId, availablePresets, resetForm, navigate]);
 
     // Load presets on mount
     useEffect(() => {
@@ -333,7 +436,7 @@ const ManualEncode: React.FC = () => {
         }
     }, [probeSelectedFile]);
     
-    // Handle start encoding
+    // --- Handle Direct Encoding ---
     const handleStartEncoding = useCallback(async () => {
         if (!inputPath) {
             setStatus("Please select an input file first");
@@ -347,6 +450,10 @@ const ManualEncode: React.FC = () => {
         
         setIsEncoding(true);
         setStatus("Encoding started...");
+        setProgress(0); // Explicitly reset progress to 0
+        setFps(null);
+        setCurrentFrame(null);
+        setTotalFrames(null);
         
         try {
             // Get the selected preset if any
@@ -360,288 +467,135 @@ const ManualEncode: React.FC = () => {
                 subtitle: selectedSubtitleTracks
             };
             
-            // Set up resolution filter based on selected resolution
-            let videoFilter: string | undefined;
-            let resolution: string | undefined;
-            
-            if (videoCodec !== 'copy' && videoResolution !== 'original') {
-                // Define resolution mapping with explicit values for scale filter
-                const resolutionMap: Record<string, string> = {
-                    '480p': 'scale=w=-2:h=480',
-                    '720p': 'scale=w=-2:h=720',
-                    '1080p': 'scale=w=-2:h=1080',
-                    '1440p': 'scale=w=-2:h=1440',
-                    '2160p': 'scale=w=-2:h=2160'
-                };
-                
-                // Define exact resolutions (width x height)
-                const exactResolutions: Record<string, string> = {
-                    '480p': '854x480',    // 16:9 aspect for 480p
-                    '720p': '1280x720',   // 720p HD
-                    '1080p': '1920x1080', // 1080p Full HD
-                    '1440p': '2560x1440', // 1440p QHD
-                    '2160p': '3840x2160'  // 4K UHD
-                };
-                
-                videoFilter = resolutionMap[videoResolution];
-                resolution = exactResolutions[videoResolution];
-            }
-            
-            // Handle audio track ordering according to language preferences
-            const selectedAudioStreams = probeData.streams
-                .filter(stream => stream.codec_type === 'audio' && selectedAudioTracks[stream.index] !== 'discard')
-                .map(stream => ({
-                    stream,
-                    index: stream.index,
-                    language: stream.tags?.language?.toLowerCase() || '',
-                    isOriginalTrack: probeData.streams
-                        .filter(s => s.codec_type === 'audio')
-                        .findIndex(s => s.index === stream.index) === 0,
-                    ffmpegIndex: probeData.streams
-                        .filter(s => s.codec_type === 'audio')
-                        .findIndex(s => s.index === stream.index)
-                }));
-            
-            // Sort audio streams according to language preferences
-            if (preset && Array.isArray(preset.audioLanguageOrder) && preset.audioLanguageOrder.length > 0) {
-                const audioOrder = preset.audioLanguageOrder; // Store in variable to satisfy TypeScript
-                selectedAudioStreams.sort((a, b) => {
-                    const aLang = a.language;
-                    const bLang = b.language;
-                    const aIsOriginal = a.isOriginalTrack;
-                    const bIsOriginal = b.isOriginalTrack;
-                    
-                    // Check if languages are in the preset's order
-                    const aIndex = audioOrder.findIndex(
-                        lang => lang.toLowerCase() === 'original' ? aIsOriginal : lang.toLowerCase() === aLang
-                    );
-                    const bIndex = audioOrder.findIndex(
-                        lang => lang.toLowerCase() === 'original' ? bIsOriginal : lang.toLowerCase() === bLang
-                    );
-                    
-                    // Rest of the comparison logic
-                    if (aIndex >= 0 && bIndex >= 0) {
-                        return aIndex - bIndex;
-                    }
-                    
-                    if (aIndex >= 0) return -1;
-                    if (bIndex >= 0) return 1;
-                    
-                    return a.ffmpegIndex - b.ffmpegIndex;
-                });
-            }
-            
-            // Handle subtitle track ordering according to language and type preferences
-            const selectedSubtitleStreams = probeData.streams
-                .filter(stream => stream.codec_type === 'subtitle' && selectedSubtitleTracks[stream.index] !== 'discard')
-                .map(stream => {
-                    // Get subtitle type from stream
-                    const getSubtitleTypeFromTags = (stream: StreamInfo): string => {
-                        if (stream.disposition?.forced) return 'forced';
-                        
-                        const title = (stream.tags?.title || '').toLowerCase();
-                        if (title.includes('sdh') || title.includes('hearing')) return 'sdh';
-                        if (title.includes('cc') || title.includes('caption')) return 'cc';
-                        if (title.includes('sign') || title.includes('text')) return 'signs';
-                        if (title.includes('song') || title.includes('lyric')) return 'song';
-                        
-                        return 'normal';
-                    };
-                    
-                    return {
-                        stream,
-                        index: stream.index,
-                        language: stream.tags?.language?.toLowerCase() || '',
-                        type: getSubtitleTypeFromTags(stream),
-                        ffmpegIndex: probeData.streams
-                            .filter(s => s.codec_type === 'subtitle')
-                            .findIndex(s => s.index === stream.index)
-                    };
-                });
-            
-            // Sort subtitle streams according to language and type preferences
-            if (preset) {
-                // First prioritize by language
-                if (Array.isArray(preset.subtitleLanguageOrder) && preset.subtitleLanguageOrder.length > 0) {
-                    selectedSubtitleStreams.sort((a, b) => {
-                        const aLang = a.language;
-                        const bLang = b.language;
-                        
-                        const aIndex = preset.subtitleLanguageOrder?.findIndex(
-                            lang => lang.toLowerCase() === aLang
-                        ) ?? -1;
-                        const bIndex = preset.subtitleLanguageOrder?.findIndex(
-                            lang => lang.toLowerCase() === bLang
-                        ) ?? -1;
-                        
-                        // If both languages are in the preset, sort by preset order
-                        if (aIndex >= 0 && bIndex >= 0) {
-                            // If same language, don't change order yet (will sort by type later)
-                            if (aIndex === bIndex) return 0;
-                            return aIndex - bIndex;
-                        }
-                        
-                        // If only one language is in preset, prioritize it
-                        if (aIndex >= 0) return -1;
-                        if (bIndex >= 0) return 1;
-                        
-                        // If neither language is in preset, keep original order
-                        return a.ffmpegIndex - b.ffmpegIndex;
-                    });
-                }
-                
-                // Then sort by subtitle type within each language group
-                if (Array.isArray(preset.subtitleTypeOrder) && preset.subtitleTypeOrder.length > 0) {
-                    // Group by language first
-                    const subtitlesByLanguage: {[lang: string]: typeof selectedSubtitleStreams} = {};
-                    
-                    selectedSubtitleStreams.forEach(sub => {
-                        if (!subtitlesByLanguage[sub.language]) {
-                            subtitlesByLanguage[sub.language] = [];
-                        }
-                        subtitlesByLanguage[sub.language].push(sub);
-                    });
-                    
-                    // Sort each language group by type preference
-                    Object.keys(subtitlesByLanguage).forEach(lang => {
-                        subtitlesByLanguage[lang].sort((a, b) => {
-                            const aType = a.type;
-                            const bType = b.type;
-                            
-                            const aIndex = preset.subtitleTypeOrder?.indexOf(aType as any) ?? -1;
-                            const bIndex = preset.subtitleTypeOrder?.indexOf(bType as any) ?? -1;
-                            
-                            // If both types are in the preset, sort by preset order
-                            if (aIndex >= 0 && bIndex >= 0) {
-                                return aIndex - bIndex;
-                            }
-                            
-                            // If only one type is in preset, prioritize it
-                            if (aIndex >= 0) return -1;
-                            if (bIndex >= 0) return 1;
-                            
-                            // If neither type is in preset, keep original order
-                            return a.ffmpegIndex - b.ffmpegIndex;
-                        });
-                    });
-                    
-                    // Flatten the grouped and sorted subtitles back to a single array
-                    selectedSubtitleStreams.length = 0;
-                    Object.keys(subtitlesByLanguage).forEach(lang => {
-                        selectedSubtitleStreams.push(...subtitlesByLanguage[lang]);
-                    });
-                }
-            }
-            
-            // Use the electronAPI to create and start the encoding job
-            const result = await electronAPI.startEncodingProcess({
+            // Add job to queue with high priority for immediate processing
+            const job = queueService.addJob(
                 inputPath,
-                outputPath: saveAsNew ? outputPath : inputPath,
-                overwriteInput: !saveAsNew,
-                videoCodec,
-                videoPreset: videoCodec !== 'copy' ? videoPreset : undefined,
-                videoQuality: videoCodec !== 'copy' ? videoQuality : undefined,
-                videoFilter,      // Add video filter for resolution scaling
-                resolution,       // Add explicit resolution
-                hwAccel,
-                audioCodec: audioCodecConvert,
-                audioBitrate,
-                audioFilter: (() => {
-                    // Set appropriate audio filter based on codec and layout
-                    if (audioCodecConvert === 'eac3') {
-                        // For EAC3, no remapping
-                        return undefined;
-                    } else if (audioCodecConvert === 'libopus') {
-                        // For Opus, apply appropriate channel layout
-                        if (selectedAudioLayout === 'stereo') {
-                            return 'pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE';
-                        } else if (selectedAudioLayout === 'mono') {
-                            return 'pan=mono|c0=0.5*FC+0.5*FL+0.5*FR+0.5*BL+0.5*BR+0.3*LFE';
-                        } else if (selectedAudioLayout === 'surround5_1') {
-                            return 'channelmap=FL-FL|FR-FR|FC-FC|LFE-LFE|SL-BL|SR-BR:5.1';
+                saveAsNew ? outputPath : inputPath,
+                !saveAsNew,
+                preset,
+                probeData,
+                trackSelections,
+                100 // High priority to process immediately
+            );
+            
+            // Store the job ID for tracking this specific job
+            const trackingJobId = job.id;
+            console.log(`ManualEncode: Queue service created job with ID: ${trackingJobId}`);
+            
+            // Make sure queue is processing - use the more robust method
+            queueService.startProcessing();
+            queueService.forceProcessQueue(); // This addresses any state inconsistencies
+            
+            // Track if component is still mounted (to prevent state updates after unmount)
+            let isMounted = true;
+            
+            // Subscribe to progress through queue events - with job-specific filters
+            queueService.setEventCallbacks({
+                onJobProgress: (updatedJob) => {
+                    // Only update UI for our specific job
+                    if (isMounted && updatedJob.id === trackingJobId) {
+                        console.log(`ManualEncode: Progress update for job ${trackingJobId}:`, 
+                                    updatedJob.progress, updatedJob.fps, 
+                                    updatedJob.frame, updatedJob.totalFrames);
+                        
+                        // Set all state updates at once to reduce renders
+                        setProgress(prevProgress => {
+                            // Only log when progress changes significantly to avoid console spam
+                            if (Math.abs(prevProgress - updatedJob.progress) > 1) {
+                                console.log(`ManualEncode: Updating progress from ${prevProgress}% to ${updatedJob.progress}%`);
+                            }
+                            return updatedJob.progress;
+                        });
+                        
+                        setFps(updatedJob.fps ?? null);
+                        setCurrentFrame(updatedJob.frame ?? null);
+                        setTotalFrames(updatedJob.totalFrames ?? null);
+                        
+                        if (updatedJob.status === 'processing') {
+                            setStatus("Encoding in progress...");
                         }
-                    } else {
-                        // Default audio filters for other codecs
-                        if (selectedAudioLayout === 'stereo') {
-                            return 'pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE';
-                        } else if (selectedAudioLayout === 'mono') {
-                            return 'pan=mono|c0=0.5*FC+0.5*FL+0.5*FR+0.5*BL+0.5*BR+0.3*LFE';
-                        }
+                    } else if (updatedJob.id !== trackingJobId) {
+                        console.log(`ManualEncode: Ignoring progress update for job ${updatedJob.id}, waiting for ${trackingJobId}`);
                     }
-                    return undefined;
-                })(),
-                // Add any additional audio options needed for libopus multichannel
-                audioOptions: audioCodecConvert === 'libopus' && selectedAudioLayout === 'surround5_1' 
-                    ? ['-mapping_family:a', '255', '-application:a', 'audio'] 
-                    : undefined,
-                // Map tracks in the preferred order
-                mapVideo: '0:v:0', // First video stream
-                mapAudio: selectedAudioStreams
-                    .map(stream => `0:a:${stream.ffmpegIndex}`)
-                    .join(';'),
-                mapSubtitle: selectedSubtitleStreams
-                    .map(stream => `0:s:${stream.ffmpegIndex}`),
-                subtitleCodec: (() => {
-                    // Check if any subtitles are marked for conversion
-                    const hasSubtitlesToConvert = Object.values(selectedSubtitleTracks).includes('convert');
-                    // If so, use the preset conversion format, otherwise copy
-                    return hasSubtitlesToConvert ? (preset?.subtitleCodecConvert || 'srt') : 'copy';
-                })(),
+                },
+                onJobCompleted: (updatedJob) => {
+                    // Only respond to our specific job completion
+                    if (isMounted && updatedJob.id === trackingJobId) {
+                        console.log(`ManualEncode: Job ${trackingJobId} completed`);
+                        setStatus(`Encoding completed successfully! File saved to: ${updatedJob.outputPath || updatedJob.inputPath}`);
+                        setProgress(100);
+                        
+                        // Show success with option to encode another
+                        setSuccessMessage("Encoding completed successfully!");
+                        setShowSuccess(true);
+                        
+                        // Reset form after 3 seconds
+                        setTimeout(() => {
+                            if (isMounted) {
+                                resetForm();
+                                setShowSuccess(false);
+                            }
+                        }, 3000);
+                        
+                        // Show toast notification
+                        toast.success("Encoding completed", {
+                            description: `File "${getFileName(inputPath)}" was successfully encoded`
+                        });
+                    }
+                },
+                onJobFailed: (updatedJob) => {
+                    // Only respond to our specific job failure
+                    if (isMounted && updatedJob.id === trackingJobId) {
+                        console.log(`ManualEncode: Job ${trackingJobId} failed:`, updatedJob.error);
+                        setStatus(`Encoding failed: ${updatedJob.error || "Unknown error"}`);
+                        
+                        // Show error toast
+                        toast.error("Encoding failed", {
+                            description: updatedJob.error || "Unknown error occurred during encoding"
+                        });
+                    }
+                }
             });
             
-            if (result.success) {
-                setStatus(`Encoding completed successfully! File saved to: ${result.outputPath}`);
-            } else {
-                setStatus(`Encoding failed: ${result.error}`);
-            }
+            // Wait until job is no longer in the queue (completed or failed)
+            const checkJobStatus = () => {
+                const currentJob = queueService.getJob(trackingJobId);
+                if (currentJob && (currentJob.status === 'processing' || currentJob.status === 'queued')) {
+                    setTimeout(checkJobStatus, 500);
+                } else {
+                    // Job is done, restore original callbacks
+                    if (isMounted) {
+                        queueService.setEventCallbacks({});
+                        setIsEncoding(false);
+                        
+                        // Force process queue one more time to ensure next jobs start
+                        queueService.forceProcessQueue();
+                    }
+                }
+            };
+            
+            // Start checking status
+            checkJobStatus();
+            
+            // Return cleanup function to handle component unmount
+            return () => {
+                isMounted = false;
+                queueService.setEventCallbacks({});
+            };
+            
         } catch (error) {
             console.error("Encoding error:", error);
             setStatus(`Encoding error: ${error instanceof Error ? error.message : String(error)}`);
-        } finally {
             setIsEncoding(false);
+            
+            // Show error toast
+            toast.error("Encoding error", {
+                description: error instanceof Error ? error.message : String(error)
+            });
         }
     }, [inputPath, outputPath, saveAsNew, probeData, selectedAudioTracks, selectedSubtitleTracks, 
         videoCodec, videoPreset, videoQuality, videoResolution, hwAccel, audioCodecConvert, audioBitrate, selectedAudioLayout,
-        availablePresets, selectedPresetId, audioLanguageOrder]);
-
-    // Subscribe to encoding progress
-    useEffect(() => {
-        if (!isEncoding) return;
-        
-        // Clear previous progress
-        setProgress(0);
-        setFps(null);
-        setCurrentFrame(null);
-        setTotalFrames(null);
-        
-        // Subscribe to progress updates
-        const unsubscribe = electronAPI.subscribeEncodingProgress((data: any) => {
-            // Use type assertion to handle API variations
-            if (data.percent !== undefined) {
-                setProgress(data.percent);
-            } else if (data.progress !== undefined) {
-                setProgress(data.progress);
-            }
-            
-            if (data.fps !== undefined) {
-                setFps(data.fps);
-            }
-            if (data.frame !== undefined) {
-                setCurrentFrame(data.frame);
-            }
-            if (data.totalFrames !== undefined) {
-                setTotalFrames(data.totalFrames);
-            }
-            if (data.status) {
-                setStatus(data.status);
-            }
-        });
-        
-        // Cleanup subscription when component unmounts or encoding stops
-        return () => {
-            unsubscribe();
-        };
-    }, [isEncoding]);
+        availablePresets, selectedPresetId, audioLanguageOrder, resetForm]);
 
     // --- Track Selection Dialog --- 
     const openTrackSelect = () => {
@@ -679,7 +633,7 @@ const ManualEncode: React.FC = () => {
                                         onClick={handleSelectInputFile} 
                                         variant="outline"
                                         className="min-w-[100px]"
-                                        disabled={isEncoding}
+                                        disabled={isEncoding || isAddingToQueue}
                                     >
                                         {isProbing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                                         Browse
@@ -693,7 +647,7 @@ const ManualEncode: React.FC = () => {
                                 <Select 
                                     value={selectedPresetId} 
                                     onValueChange={applyPreset}
-                                    disabled={isEncoding || availablePresets.length === 0}
+                                    disabled={isEncoding || isAddingToQueue || availablePresets.length === 0}
                                 >
                                     <SelectTrigger id="preset-select" className="bg-background/50">
                                         <SelectValue placeholder="Select a preset..." />
@@ -720,7 +674,7 @@ const ManualEncode: React.FC = () => {
                                     onCheckedChange={(checked) => {
                                         setSaveAsNew(checked as boolean);
                                     }}
-                                    disabled={isEncoding}
+                                    disabled={isEncoding || isAddingToQueue}
                                 />
                                 <Label
                                     htmlFor="save-as-new"
@@ -740,7 +694,7 @@ const ManualEncode: React.FC = () => {
                                             value={outputPath} 
                                             onChange={e => setOutputPath(e.target.value)} 
                                             placeholder="Select or type output file..." 
-                                            disabled={isEncoding}
+                                            disabled={isEncoding || isAddingToQueue}
                                             className="bg-background/50"
                                         />
                                     </div>
@@ -911,11 +865,20 @@ const ManualEncode: React.FC = () => {
                     </CardContent>
                 </Card>
 
-                {/* Start Encoding Button */}
-                <div className="flex justify-end">
+                {/* Start Encoding Button Section - Updated to include Add to Queue */}
+                <div className="flex justify-end gap-3">
+                    <Button 
+                        onClick={addToQueue} 
+                        variant="outline"
+                        disabled={!inputPath || isProbing || !probeData || isEncoding || isAddingToQueue} 
+                    >
+                        {isAddingToQueue ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                        Add to Queue
+                    </Button>
+                    
                     <Button 
                         onClick={handleStartEncoding} 
-                        disabled={!inputPath || isEncoding || isProbing || !probeData} 
+                        disabled={!inputPath || isProbing || !probeData || isEncoding || isAddingToQueue} 
                         className="bg-primary hover:bg-primary/90"
                     >
                         {isEncoding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -932,8 +895,8 @@ const ManualEncode: React.FC = () => {
                             <>
                                 <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
                                     <div 
-                                        className="bg-indigo-600 h-2.5 rounded-full transition-all duration-300" 
-                                        style={{ width: `${progress}%` }}
+                                        className="bg-indigo-600 h-2.5 rounded-full transition-all duration-300 ease-in-out" 
+                                        style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
                                     ></div>
                                 </div>
                                 
@@ -949,6 +912,15 @@ const ManualEncode: React.FC = () => {
                     </div>
                 </div>
                 
+                {/* Success indicator */}
+                {showSuccess && (
+                    <div className="fixed bottom-4 right-4 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-100 p-4 rounded-md shadow-lg animate-in fade-in duration-300 flex items-center z-50">
+                        <CheckCircle className="h-5 w-5 mr-2" />
+                        {successMessage}
+                    </div>
+                )}
+                
+                {/* Error alert */}
                 {probeError && (
                     <Alert variant="destructive" className="bg-destructive/10 border-none">
                         <AlertDescription>{probeError}</AlertDescription>

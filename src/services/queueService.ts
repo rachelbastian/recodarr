@@ -61,6 +61,7 @@ class EncodingQueueService {
   private eventCallbacks: QueueEventCallbacks = {};
   private unsubscribeFunctions: Map<string, () => void> = new Map();
   private isInitialized: boolean = false;
+  private lastProgressUpdate: Map<string, number> = new Map();
   
   // Constructor with optional config
   constructor(config?: Partial<QueueConfig>) {
@@ -354,8 +355,16 @@ class EncodingQueueService {
    * Process jobs in the queue
    */
   private processQueue(): void {
+    console.log('QueueService: processQueue called', {
+      isProcessing: this.isProcessing,
+      processingSize: this.processing.size,
+      maxJobs: this.config.maxParallelJobs,
+      queuedJobCount: this.queue.filter(job => job.status === 'queued').length
+    });
+    
     // If not processing or reached max parallel jobs, return
     if (!this.isProcessing || this.processing.size >= this.config.maxParallelJobs) {
+      console.log('QueueService: Skipping processQueue - not processing or max jobs reached');
       return;
     }
     
@@ -364,14 +373,19 @@ class EncodingQueueService {
     
     if (!nextJob) {
       // No more jobs to process
+      console.log('QueueService: No more queued jobs found');
+      
       if (this.processing.size === 0) {
         // All jobs are done
+        console.log('QueueService: Queue is empty, no processing jobs');
         if (this.eventCallbacks.onQueueEmpty) {
           this.eventCallbacks.onQueueEmpty();
         }
       }
       return;
     }
+    
+    console.log(`QueueService: Found next job to process - ${nextJob.id}`);
     
     // Mark job as processing
     nextJob.status = 'processing';
@@ -391,94 +405,149 @@ class EncodingQueueService {
     
     // Check if we can process more jobs
     if (this.processing.size < this.config.maxParallelJobs) {
+      console.log('QueueService: Can process more jobs, calling processQueue again');
       this.processQueue();
     }
   }
 
   /**
-   * Start an encoding job with progress tracking
+   * Force process queue - will always check for new jobs regardless of current state
+   * This helps ensure the queue continues processing even if state gets corrupted
    */
-  private async startEncodingJob(job: EncodingJob): Promise<void> {
-    try {
-      // Subscribe to progress updates
-      const unsubscribe = subscribeToEncodingProgress((data: EncodingProgressUpdate) => {
-        this.handleProgressUpdate(job.id, data);
-      });
+  public forceProcessQueue(): void {
+    console.log('QueueService: Force processing queue');
+    
+    // Make sure we're in processing state
+    if (!this.isProcessing) {
+      this.isProcessing = true;
       
-      // Save unsubscribe function
-      this.unsubscribeFunctions.set(job.id, unsubscribe);
-      
-      // Start encoding
-      const result = await createEncodingJob(
-        job.inputPath,
-        job.outputPath,
-        job.overwriteInput,
-        job.preset,
-        job.probeData,
-        job.trackSelections
-      );
-      
-      // Update job with result
-      this.handleJobCompletion(job.id, result);
-      
-      // Clean up
-      unsubscribe();
-      this.unsubscribeFunctions.delete(job.id);
-      
-    } catch (error) {
-      // Handle error
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.handleJobError(job.id, errorMessage);
-      
-      // Clean up
-      const unsubscribe = this.unsubscribeFunctions.get(job.id);
-      if (unsubscribe) {
-        unsubscribe();
-        this.unsubscribeFunctions.delete(job.id);
+      // Notify listeners
+      if (this.eventCallbacks.onQueueStarted) {
+        this.eventCallbacks.onQueueStarted();
       }
     }
+    
+    // Clean up any stuck processing jobs
+    const processingJobs = this.queue.filter(job => job.status === 'processing');
+    const processingJobIds = new Set(processingJobs.map(job => job.id));
+    
+    // Find any processing jobs not in the processing set
+    processingJobs.forEach(job => {
+      if (!this.processing.has(job.id)) {
+        console.log(`QueueService: Adding missing job ${job.id} to processing set`);
+        this.processing.add(job.id);
+      }
+    });
+    
+    // Find any processing set entries not matching a processing job
+    this.processing.forEach(jobId => {
+      if (!processingJobIds.has(jobId)) {
+        console.log(`QueueService: Removing stale job ${jobId} from processing set`);
+        this.processing.delete(jobId);
+      }
+    });
+    
+    // Try to process next job
+    this.processQueue();
   }
 
   /**
    * Handle progress updates for a job
    */
   private handleProgressUpdate(jobId: string, data: EncodingProgressUpdate): void {
+    console.log(`QueueService: Received progress update for job ${jobId}:`, data);
+    
+    // Track the last update time for this job
+    this.lastProgressUpdate.set(jobId, Date.now());
+    
     const job = this.queue.find(j => j.id === jobId);
     
-    if (!job || job.status !== 'processing') {
+    if (!job) {
+      console.warn(`QueueService: Cannot update job ${jobId} - not found in queue`);
       return;
     }
     
-    // Update job progress
-    if (data.percent !== undefined) {
-      job.progress = data.percent;
+    if (job.status !== 'processing') {
+      console.warn(`QueueService: Cannot update job ${jobId} - status is ${job.status}, not processing`);
+      return;
     }
     
+    // Flag to track if any job properties changed
+    let hasChanges = false;
+    let logChanges = [];
+    
+    // Update job progress
+    if (data.percent !== undefined) {
+      const oldProgress = job.progress;
+      job.progress = data.percent;
+      hasChanges = true;
+      logChanges.push(`progress: ${oldProgress.toFixed(1)} -> ${data.percent.toFixed(1)}%`);
+    }
+    
+    // Update other job properties
     if (data.fps !== undefined) {
       job.fps = data.fps;
+      hasChanges = true;
+      logChanges.push(`fps: ${data.fps}`);
     }
     
     if (data.frame !== undefined) {
       job.frame = data.frame;
+      hasChanges = true;
+      logChanges.push(`frame: ${data.frame}`);
     }
     
     if (data.totalFrames !== undefined) {
       job.totalFrames = data.totalFrames;
+      hasChanges = true;
+      logChanges.push(`totalFrames: ${data.totalFrames}`);
     }
     
-    // Notify listeners
-    if (this.eventCallbacks.onJobProgress) {
-      this.eventCallbacks.onJobProgress(job);
+    // Notify listeners if anything changed
+    if (hasChanges) {
+      console.log(`QueueService: Updated job ${jobId} - ${logChanges.join(', ')}`);
+      
+      // Force a deep clone to ensure React detects changes
+      const updatedJob = JSON.parse(JSON.stringify(job));
+      
+      if (this.eventCallbacks.onJobProgress) {
+        console.log(`QueueService: Triggering onJobProgress for job ${jobId} with progress ${updatedJob.progress}%`);
+        this.eventCallbacks.onJobProgress(updatedJob);
+      } else {
+        console.warn(`QueueService: No onJobProgress callback registered despite receiving progress updates`);
+      }
+      
+      // Schedule a state save after a batch of updates (debounced)
+      this.debouncedSaveState();
     }
   }
+
+  // Create a debounced version of saveQueueState to avoid excessive saves
+  private debouncedSaveState = (() => {
+    let timeout: NodeJS.Timeout | null = null;
+    
+    return () => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      
+      timeout = setTimeout(() => {
+        this.saveQueueState();
+        timeout = null;
+      }, 2000); // Save state after 2 seconds of no updates
+    };
+  })();
 
   /**
    * Handle job completion
    */
   private handleJobCompletion(jobId: string, result: EncodingResult): void {
+    console.log(`QueueService: Job ${jobId} completed with result:`, result.success);
+    
     const job = this.queue.find(j => j.id === jobId);
     
     if (!job) {
+      console.warn(`QueueService: Job ${jobId} not found for completion`);
       return;
     }
     
@@ -490,6 +559,7 @@ class EncodingQueueService {
     
     // Remove from processing set
     this.processing.delete(jobId);
+    console.log(`QueueService: Removed job ${jobId} from processing set, remaining:`, this.processing.size);
     
     // Save updated queue
     this.saveQueueState();
@@ -502,7 +572,8 @@ class EncodingQueueService {
     }
     
     // Process next job
-    this.processQueue();
+    console.log('QueueService: Calling processQueue after job completion');
+    setTimeout(() => this.processQueue(), 100); // Small delay to ensure state is updated
   }
 
   /**
@@ -532,6 +603,83 @@ class EncodingQueueService {
     
     // Process next job
     this.processQueue();
+  }
+
+  /**
+   * Start an encoding job with progress tracking
+   */
+  private async startEncodingJob(job: EncodingJob): Promise<void> {
+    try {
+      console.log(`QueueService: Starting encoding for job ${job.id}`);
+      
+      // Update job initial status to ensure UI gets refreshed
+      this.handleProgressUpdate(job.id, { status: 'Starting encoding process...', percent: 0 });
+      
+      // Subscribe to progress updates with a job-specific handler
+      const unsubscribe = subscribeToEncodingProgress((data: EncodingProgressUpdate) => {
+        console.log(`QueueService: Progress event received: ${JSON.stringify({
+          dataJobId: data.jobId,
+          currentJobId: job.id,
+          percent: data.percent
+        })}`);
+        
+        // Only process this update if it belongs to this job or has no jobId
+        if (!data.jobId || data.jobId === job.id) {
+          // If no job ID was provided, add it for consistent tracking
+          if (!data.jobId) {
+            data.jobId = job.id;
+            console.log(`QueueService: Added missing jobId ${job.id} to progress update`);
+          }
+          this.handleProgressUpdate(job.id, data);
+        } else if (data.jobId !== job.id) {
+          // This is a mismatch - log it but try to use it anyway if no other updates are coming
+          console.warn(`QueueService: Job ID mismatch in progress update. Expected: ${job.id}, Received: ${data.jobId}`);
+          
+          // If no other handlers pick this up, we might still want to show some progress
+          // Check if this job has had any progress updates recently
+          const lastUpdate = this.lastProgressUpdate.get(job.id) || 0;
+          const now = Date.now();
+          if (now - lastUpdate > 5000) { // No updates for 5 seconds
+            console.log(`QueueService: No recent updates for job ${job.id}, applying mismatched update anyway`);
+            this.handleProgressUpdate(job.id, data);
+          }
+        }
+      });
+      
+      // Save unsubscribe function
+      this.unsubscribeFunctions.set(job.id, unsubscribe);
+      
+      // Start encoding - CRITICAL: Pass the exact same job ID to ensure progress updates match
+      const result = await createEncodingJob(
+        job.inputPath,
+        job.outputPath,
+        job.overwriteInput,
+        job.preset,
+        job.probeData,
+        job.trackSelections,
+        // Pass the job ID to identify this job's progress updates
+        job.id // This must exactly match the job.id we're using here
+      );
+      
+      // Update job with result
+      this.handleJobCompletion(job.id, result);
+      
+      // Clean up
+      unsubscribe();
+      this.unsubscribeFunctions.delete(job.id);
+      
+    } catch (error) {
+      // Handle error
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.handleJobError(job.id, errorMessage);
+      
+      // Clean up
+      const unsubscribe = this.unsubscribeFunctions.get(job.id);
+      if (unsubscribe) {
+        unsubscribe();
+        this.unsubscribeFunctions.delete(job.id);
+      }
+    }
   }
 }
 
