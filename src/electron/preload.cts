@@ -8,8 +8,8 @@ import type {
     SystemStats, 
     GpuInfo, 
     HardwareInfo, 
-    Workflow, 
-    WorkflowDetails, 
+    // Workflow,  // Removed
+    // WorkflowDetails,  // Removed
     StaticData,
     // LogEntry // Add LogEntry if defined in types.d.ts - Removed
 } from "../types.js" assert { "resolution-mode": "import" }; 
@@ -153,10 +153,12 @@ type LocalElectronApi = {
     updateHardwarePriority: (deviceId: number, priority: number) => Promise<void>;
     updateHardwareEnabled: (deviceId: number, isEnabled: boolean) => Promise<void>;
     refreshHardwareInfo: () => Promise<HardwareInfo[]>;
-    getWorkflows: () => Promise<Workflow[]>;
-    getWorkflowDetails: (id: number) => Promise<WorkflowDetails | null>;
-    saveWorkflow: (workflowData: { id?: number; name: string; description: string; nodes: Node[]; edges: Edge[] }) => Promise<number>;
-    deleteWorkflow: (id: number) => Promise<{ changes: number }>;
+    
+    // Removed workflow-related methods
+    // getWorkflows: () => Promise<Workflow[]>;
+    // getWorkflowDetails: (id: number) => Promise<WorkflowDetails | null>;
+    // saveWorkflow: (workflowData: { id?: number; name: string; description: string; nodes: Node[]; edges: Edge[] }) => Promise<number>;
+    // deleteWorkflow: (id: number) => Promise<{ changes: number }>;
 
     // --- Encoding Presets --- 
     getPresets: () => Promise<EncodingPreset[]>;
@@ -211,10 +213,12 @@ electron.contextBridge.exposeInMainWorld("electron", {
     updateHardwarePriority: (deviceId, priority) => ipcInvoke("update-hardware-priority", deviceId, priority),
     updateHardwareEnabled: (deviceId, isEnabled) => ipcInvoke("update-hardware-enabled", deviceId, isEnabled),
     refreshHardwareInfo: () => ipcInvoke("refresh-hardware-info"),
-    getWorkflows: () => ipcInvoke('get-workflows'),
-    getWorkflowDetails: (id) => ipcInvoke('get-workflow-details', id),
-    saveWorkflow: (workflowData: any) => ipcInvoke('save-workflow', workflowData), // Use any if type causes issues
-    deleteWorkflow: (id) => ipcInvoke('delete-workflow', id),
+    
+    // Remove workflow-related methods
+    // getWorkflows: () => ipcInvoke('get-workflows'),
+    // getWorkflowDetails: (id) => ipcInvoke('get-workflow-details', id),
+    // saveWorkflow: (workflowData: any) => ipcInvoke('save-workflow', workflowData),
+    // deleteWorkflow: (id) => ipcInvoke('delete-workflow', id),
     
     // --- Encoding Preset Implementations ---
     getPresets: () => ipcInvoke('get-presets'),

@@ -30,17 +30,6 @@ interface WatchedFolder {
     libraryType: 'TV' | 'Movies' | 'Anime';
 }
 
-interface Workflow {
-    id: number;
-    name: string;
-    description: string;
-}
-
-interface WorkflowDetails extends Workflow {
-    nodes: Node[]; // Use imported Node/Edge types
-    edges: Edge[];
-}
-
 interface HardwareInfo {
     id?: number; // Assuming it might have an ID from DB
     device_type: string;
@@ -130,6 +119,8 @@ interface WatchedFolder {
 // --- End Define Watched Folder Type ---
 
 // --- Define Workflow Types ---
+// NOTE: Commented out as we're removing workflow functionality
+/*
 interface Workflow {
     id: number;
     name: string;
@@ -140,6 +131,7 @@ interface WorkflowDetails extends Workflow {
     nodes: Node[];
     edges: Edge[];
 }
+*/
 // --- End Workflow Types ---
 
 // --- Database Setup ---
@@ -1563,7 +1555,8 @@ app.on("ready", async () => {
     });
 
     // --- Workflow Management Handlers ---
-
+    // NOTE: These handlers are commented out as we're removing workflow functionality
+    /*
     ipcMain.handle('get-workflows', async (): Promise<Workflow[]> => {
         if (!db) throw new Error("Database not initialized");
         try {
@@ -1691,6 +1684,7 @@ app.on("ready", async () => {
             throw error;
         }
     });
+    */
     // --- End Workflow Management Handlers ---
 
     // --- FFprobe Handler ---

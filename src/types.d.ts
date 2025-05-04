@@ -123,6 +123,9 @@ export interface GpuInfo {
     model: string; 
     memoryTotal: number | null; // Added total memory detected by SI
 };
+
+// Workflow interfaces are disabled but kept for reference
+/*
 export interface Workflow {
     id: number;
     name: string;
@@ -132,6 +135,8 @@ export interface WorkflowDetails extends Workflow {
     nodes: Node[]; // Make sure Node/Edge are imported if needed here
     edges: Edge[];
 };
+*/
+
 export interface HardwareInfo {
     id: number;
     device_type: 'CPU' | 'GPU';
@@ -197,10 +202,13 @@ declare interface EventPayloadMapping {
     "update-hardware-priority": void;
     "update-hardware-enabled": void;
     "refresh-hardware-info": HardwareInfo[];
+    // Workflow methods are disabled but kept for reference
+    /*
     'get-workflows': Workflow[];
     'get-workflow-details': WorkflowDetails | null; 
     'save-workflow': number; 
     'delete-workflow': { changes: number }; 
+    */
     'trigger-folder-scan': { status: string }; 
     // Add mappings for newer methods if needed (probe-file, start-encoding-process, etc.)
 }
@@ -253,10 +261,14 @@ export interface IElectronAPI {
     updateHardwarePriority: (deviceId: string, priority: number) => Promise<void>;
     updateHardwareEnabled: (deviceId: string, isEnabled: boolean) => Promise<void>;
     refreshHardwareInfo: () => Promise<void>;
+    
+    // Workflow methods are disabled but kept for reference
+    /*
     getWorkflows: () => Promise<Workflow[]>;
     getWorkflowDetails: (id: number) => Promise<WorkflowDetails>;
     saveWorkflow: (workflowData: WorkflowDetails) => Promise<void>;
     deleteWorkflow: (id: number) => Promise<void>;
+    */
     // --- End other existing API methods --- 
 
     // --- Logger API --- 
