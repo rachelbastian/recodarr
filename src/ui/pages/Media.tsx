@@ -12,6 +12,9 @@ import {
     getSortedRowModel,
     getPaginationRowModel,
     PaginationState,
+    RowSelectionState,
+    getFilteredRowModel,
+    VisibilityState,
 } from '@tanstack/react-table';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../../../src/components/ui/table";
 import { Badge } from "../../../src/components/ui/badge"; // For displaying library type
@@ -23,7 +26,7 @@ import {
     DropdownMenuTrigger,
 } from "../../../src/components/ui/dropdown-menu";
 import { Columns } from 'lucide-react';
-import { SlidersHorizontal } from 'lucide-react'; // Import icon for advanced search
+import { SlidersHorizontal, Check, PlayCircle } from 'lucide-react'; // Import icon for advanced search and encoding
 import {
     Sheet,
     SheetContent,
@@ -39,6 +42,9 @@ import { Label } from "../../../src/components/ui/label"; // Import Label
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../src/components/ui/select"; // Import Select
 import { ChevronFirst, ChevronLeft, ChevronRight, ChevronLast } from 'lucide-react';
 import { ScrollArea, ScrollBar } from "../../../src/components/ui/scroll-area";
+import { Checkbox } from "../../../src/components/ui/checkbox";
+import useQueue from '../../hooks/useQueue';
+import { EncodingPreset, ProbeData } from '../../types.d';
 
 // Define the type for a media item from the DB
 interface MediaItem {
@@ -69,17 +75,53 @@ function formatBytes(bytes: number | null, decimals = 2): string {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+// Update the selectionColumn to remove the label and make it narrower
+const selectionColumn: ColumnDef<MediaItem> = {
+    id: 'select',
+    header: ({ table }) => (
+        <div className="flex items-center justify-center">
+            <Checkbox
+                checked={
+                    table.getIsAllPageRowsSelected() ||
+                    (table.getIsSomePageRowsSelected() && "indeterminate")
+                }
+                onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
+                aria-label="Select all"
+                className="h-4 w-4 border-white" // Make checkbox smaller
+            />
+        </div>
+    ),
+    cell: ({ row }) => (
+        <div className="flex items-center justify-center h-full">
+            <Checkbox
+                checked={row.getIsSelected()}
+                onCheckedChange={(value) => row.toggleSelected(!!value)}
+                aria-label="Select row"
+                className="h-4 w-4 border-white" // Make checkbox smaller
+            />
+        </div>
+    ),
+    enableSorting: false,
+    enableResizing: false,
+    size: 40, // Return to narrower width
+    minSize: 40,
+    maxSize: 40,
+    enableHiding: false, // Prevent the column from being hidden
+};
+
 // Define Columns using TanStack Table ColumnDef
 const columns: ColumnDef<MediaItem>[] = [
+    selectionColumn, // Add checkbox column first
     {
         accessorKey: 'title',
         header: 'Title',
         cell: info => (
-            <span className="truncate block" title={info.getValue<string>()}>
+            <div className="line-clamp-2 whitespace-normal min-h-[24px] max-h-[48px]" title={info.getValue<string>()}>
                 {info.getValue<string>()}
-            </span>
+            </div>
         ),
-        size: 200,
+        size: 400,
+        minSize: 300,
         enableResizing: true,
     },
     {
@@ -231,10 +273,11 @@ if (audioCodecIndex !== -1) {
 
 // Define initial column order to match the visual hierarchy
 const initialColumnOrder: string[] = [
+    'select', // Add select to initial order FIRST
+    'currentSize',
     'title',
     'libraryName',
     'libraryType',
-    'currentSize',
     'originalSize',
     'encodingJobId',
     'videoCodec',
@@ -252,7 +295,9 @@ const Media: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [searchParams] = useSearchParams();
     const [columnOrder, setColumnOrder] = useState<ColumnOrderState>(initialColumnOrder);
-    const [columnVisibility, setColumnVisibility] = useState({});
+    const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({
+        'select': true, // Explicitly set select column to visible
+    });
     const [sorting, setSorting] = useState<SortingState>([]);
     const [isAdvancedSearchOpen, setIsAdvancedSearchOpen] = useState(false); // State for flyout
     // Add state for filters
@@ -270,6 +315,12 @@ const Media: React.FC = () => {
     });
     // Add total count state for server-side pagination
     const [totalRows, setTotalRows] = useState(0);
+    const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+    const [selectedPreset, setSelectedPreset] = useState<string>('');
+    
+    // Update the types for presets
+    const [presets, setPresets] = useState<EncodingPreset[]>([]);
+    const { addToQueue } = useQueue();
 
     // Fetch distinct values for filters on mount
     useEffect(() => {
@@ -290,6 +341,22 @@ const Media: React.FC = () => {
         };
         fetchFilterOptions();
     }, []); // Empty dependency array ensures this runs only once on mount
+
+    // Update effect to load presets using correct method name
+    useEffect(() => {
+        const loadPresets = async () => {
+            try {
+                const savedPresets = await window.electron.getPresets();
+                setPresets(savedPresets || []);
+                if (savedPresets?.length > 0) {
+                    setSelectedPreset(savedPresets[0].id);
+                }
+            } catch (err) {
+                console.error("Error loading presets:", err);
+            }
+        };
+        loadPresets();
+    }, []);
 
     const fetchMedia = useCallback(async () => {
         setIsLoading(true);
@@ -409,31 +476,127 @@ const Media: React.FC = () => {
         fetchMedia();
     }, [fetchMedia]);
 
-    // Initialize TanStack Table with server-side pagination and sorting
+    // Update media details logic with correct method names
+    const handleEncodeSelected = async () => {
+        console.log('Starting handleEncodeSelected...');
+        // Get selected media IDs
+        const selectedRowKeys = Object.keys(rowSelection);
+        console.log('Selected row keys:', selectedRowKeys);
+        const selectedMediaIds = selectedRowKeys.map(key => table.getRow(key).original.id);
+        console.log('Mapped selected media IDs:', selectedMediaIds);
+        
+        // Get selected preset
+        const preset = presets.find(p => p.id === selectedPreset);
+        console.log('Selected preset ID:', selectedPreset);
+        console.log('Found preset:', preset);
+        
+        if (!preset) {
+            console.error("No preset selected or found");
+            // TODO: Add user feedback (e.g., toast notification)
+            return;
+        }
+        
+        // Queue selected media for encoding
+        let queuedCount = 0;
+        for (const mediaId of selectedMediaIds) {
+            console.log(`Processing media ID: ${mediaId}`);
+            const mediaItem = mediaItems.find(item => item.id === mediaId);
+            console.log(`Found media item for ID ${mediaId}:`, mediaItem);
+            
+            if (mediaItem) {
+                try {
+                    console.log(`Attempting to probe file: ${mediaItem.filePath}`);
+                    const probeData = await window.electron.probeFile(mediaItem.filePath);
+                    console.log(`Probe data for ${mediaId}:`, probeData);
+                    
+                    if (!probeData) {
+                        console.error(`Failed to probe file: ${mediaItem.filePath}`);
+                        // TODO: Add user feedback
+                        continue;
+                    }
+                    
+                    // Create output path
+                    const pathSeparator = window.navigator.platform.indexOf('Win') > -1 ? '\\' : '/';
+                    const fileDir = mediaItem.filePath.split(/[/\\]/).slice(0, -1).join(pathSeparator);
+                    const fileName = mediaItem.filePath.split(/[/\\]/).pop() || '';
+                    const fileNameWithoutExt = fileName.split('.').slice(0, -1).join('.');
+                    // Use preset extension if available, otherwise default to mkv
+                    const outputExtension = probeData.format?.format_name?.includes('mp4') ? 'mp4' : 'mkv'; // Simple default, might need refinement
+                    const outputPath = `${fileDir}${pathSeparator}${fileNameWithoutExt}_encoded.${outputExtension}`;
+                    console.log(`Generated output path for ${mediaId}: ${outputPath}`);
+                    
+                    console.log(`Calling addToQueue for ${mediaId} with preset:`, preset.name);
+                    // Add to encoding queue
+                    const addedJob = addToQueue(
+                        mediaItem.filePath,
+                        outputPath,
+                        false, // don't overwrite input
+                        preset,
+                        probeData,
+                        { audio: {}, subtitle: {} } // Default track selections - TODO: Allow user selection?
+                    );
+                    console.log(`addToQueue result for ${mediaId}:`, addedJob);
+                    queuedCount++;
+                    
+                } catch (err) {
+                    console.error(`Error queuing media item ${mediaId}:`, err);
+                    // TODO: Add user feedback for individual failures
+                }
+            }
+        }
+        
+        console.log(`Finished processing. Queued ${queuedCount} items.`);
+        // Clear selection after queueing
+        setRowSelection({});
+        // TODO: Add feedback indicating queueing is complete (e.g., toast)
+    };
+
+    // Count selected rows
+    const selectedCount = Object.keys(rowSelection).length;
+
+    // Initialize TanStack Table with server-side pagination, sorting, and row selection
     const table = useReactTable({
         data: mediaItems,
         columns,
         getCoreRowModel: getCoreRowModel(),
         getSortedRowModel: getSortedRowModel(),
+        getFilteredRowModel: getFilteredRowModel(),
         enableColumnResizing: true,
         columnResizeMode: 'onChange',
         defaultColumn: {
             minSize: 50,
+            maxSize: 1000,
+        },
+        initialState: {
+            columnOrder: initialColumnOrder,
         },
         state: {
             columnOrder,
             columnVisibility,
             sorting,
             pagination,
+            rowSelection,
         },
         onColumnOrderChange: setColumnOrder,
         onColumnVisibilityChange: setColumnVisibility,
         onSortingChange: setSorting,
         onPaginationChange: setPagination,
+        onRowSelectionChange: setRowSelection,
         manualPagination: true, // Enable manual pagination
         manualSorting: true, // Enable manual sorting
         pageCount: Math.ceil(totalRows / pagination.pageSize), // Calculate total pages
     });
+
+    // Keep the effect to ensure select column visibility, but without debug logging
+    useEffect(() => {
+        // Ensure the selection column is always visible
+        if (table) {
+            const selectColumn = table.getColumn('select');
+            if (selectColumn && !selectColumn.getIsVisible()) {
+                table.setColumnVisibility(prev => ({ ...prev, 'select': true }));
+            }
+        }
+    }, [table]);
 
     return (
         <div className="h-full w-full p-6 flex flex-col overflow-hidden">
@@ -443,6 +606,38 @@ const Media: React.FC = () => {
                 </h1>
 
                 <div className="flex items-center space-x-2">
+                    {selectedCount > 0 ? (
+                        <div className="flex items-center mr-2 px-3 py-1 rounded-md bg-background border border-border">
+                            <span className="text-sm font-medium mr-2 text-primary">
+                                {selectedCount} selected
+                            </span>
+                            <Select
+                                value={selectedPreset}
+                                onValueChange={setSelectedPreset}
+                            >
+                                <SelectTrigger className="w-[180px] bg-background border-border">
+                                    <SelectValue placeholder="Select preset" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {presets.map(preset => (
+                                        <SelectItem key={preset.id} value={preset.id}>
+                                            {preset.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={handleEncodeSelected}
+                                disabled={!selectedPreset}
+                                className="ml-2 bg-white text-black hover:bg-gray-100 hover:text-black"
+                            >
+                                <PlayCircle className="mr-2 h-4 w-4" />
+                                Encode
+                            </Button>
+                        </div>
+                    ) : null}
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <Button variant="outline" size="sm" className="ml-auto">
@@ -574,6 +769,14 @@ const Media: React.FC = () => {
 
             <div className="flex-1 min-h-0 border rounded-lg bg-card text-card-foreground">
                 <div className="h-full flex flex-col">
+                    {/* Add the encode title above the table with less padding and left alignment */}
+                    <div className="border-b px-2 py-1.5 flex items-center">
+                        <span className="text-sm font-medium text-left">Encode</span>
+                        <span className="text-xs text-muted-foreground ml-2">
+                            Select items to encode using the checkboxes
+                        </span>
+                    </div>
+                    
                     <div className="flex-1 min-h-0">
                         <ScrollArea className="h-full">
                             <div className="[&_::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']" style={{ width: table.getCenterTotalSize() }}>
