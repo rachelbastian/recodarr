@@ -25,7 +25,7 @@ import {
     DropdownMenuContent,
     DropdownMenuTrigger,
 } from "../../../src/components/ui/dropdown-menu";
-import { Columns } from 'lucide-react';
+import { Columns, CheckSquare } from 'lucide-react';
 import { SlidersHorizontal, Check, PlayCircle } from 'lucide-react'; // Import icon for advanced search and encoding
 import {
     Sheet,
@@ -46,6 +46,14 @@ import { Checkbox } from "../../../src/components/ui/checkbox";
 import useQueue from '../../hooks/useQueue';
 import { EncodingPreset, ProbeData } from '../../types.d';
 import { saveJobMediaReference } from '../../utils/jobLogUtil';
+import { 
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "../../../src/components/ui/tooltip";
+import { Card, CardContent } from "../../../src/components/ui/card";
+import { Info, Film, Music, Tv2, Maximize2, Volume2, Library, Folder, BookOpen } from 'lucide-react';
 
 // Define the type for a media item from the DB
 interface MediaItem {
@@ -290,6 +298,124 @@ const initialColumnOrder: string[] = [
     'filePath',
 ];
 
+// Add custom resolution icons/components
+const ResolutionIcon: React.FC<{ height: number | null }> = ({ height }) => {
+    if (!height) return null;
+    
+    if (height >= 4320) {
+        return <span className="font-bold text-[8px] bg-purple-500/20 text-purple-500 px-1 rounded">8K</span>;
+    } else if (height >= 2160) {
+        return <span className="font-bold text-[8px] bg-indigo-500/20 text-indigo-500 px-1 rounded">4K</span>;
+    } else if (height >= 1440) {
+        return <span className="font-bold text-[8px] bg-blue-500/20 text-blue-500 px-1 rounded">2K</span>;
+    } else if (height >= 1080) {
+        return <span className="font-bold text-[8px] bg-green-500/20 text-green-500 px-1 rounded">HD</span>;
+    } else if (height >= 720) {
+        return <span className="font-bold text-[8px] bg-yellow-500/20 text-yellow-500 px-1 rounded">HD</span>;
+    } else if (height >= 480) {
+        return <span className="font-bold text-[8px] bg-orange-500/20 text-orange-500 px-1 rounded">SD</span>;
+    } else {
+        return <span className="font-bold text-[8px] bg-red-500/20 text-red-500 px-1 rounded">SD</span>;
+    }
+};
+
+// Add audio codec icon component at the top of the file
+const AudioCodecIcon: React.FC<{ codec: string | null }> = ({ codec }) => {
+    if (!codec) return null;
+    
+    const upperCodec = codec.toUpperCase();
+    
+    // Dolby formats (AC3, EAC3, TrueHD)
+    if (upperCodec.includes('EAC3') || upperCodec.includes('AC3') || upperCodec.includes('TRUEHD') || upperCodec.includes('DOLBY')) {
+        return (
+            <svg className="h-3 w-5 mr-1" viewBox="0 0 640 512" fill="currentColor">
+                <path d="M392 32H248C111 32 0 143 0 280s111 248 248 248h144c137 0 248-111 248-248S529 32 392 32zm0 96c65.3 0 118.7 37.1 146.8 91.2-30 7-59.3 14.7-86.6 23.3-29.8 9.3-58.9 19.9-86.2 32.6-86.8 40.3-180.5 93.7-211.9 197.5C128.5 445.2 109 366.4 109 280c0-91.9 74.1-166 166-166h117zm0 320H248c-79.7 0-146.8-54.4-166-128.1 14.7-33.5 41.3-60.3 76.1-73.7 56.8-21.8 110-37.5 164.3-51.8 29.3-7.7 58.9-15.2 89-23.1 18.4 32 29.6 69.4 29.6 109.7 0 91.9-74.1 166-166 166z"/>
+            </svg>
+        );
+    }
+    
+    // DTS formats
+    if (upperCodec.includes('DTS')) {
+        return (
+            <svg className="h-3 w-5 mr-1" viewBox="0 0 640 512" fill="currentColor">
+                <path d="M106.2 467.8c-13.74 0-24.82-11.34-24.82-25.43V70.47c0-14.09 11.08-25.43 24.82-25.43h427.5c13.74 0 24.82 11.35 24.82 25.43v371.9c0 14.09-11.08 25.43-24.82 25.43H106.2zm208.9-346.6v270.8h100.8c56.35 0 93.33-37.23 93.33-135.4 0-104.4-34.56-135.4-93.33-135.4H315.1zm-83.64 270.8H282.7V121.2h-51.2V391.2h.03zm83.64-217.7h49.72c34.5 0 40.6 35.19 40.6 82.28 0 51.59-6.23 82.28-40.6 82.28H315.1V173.5z"/>
+            </svg>
+        );
+    }
+    
+    // For other codec types, create visual badges with appropriate styling
+    if (upperCodec === 'FLAC' || upperCodec === 'ALAC') {
+        return (
+            <div className="flex items-center justify-center h-3 px-1 mr-1 rounded bg-purple-500/20 text-purple-500">
+                <span className="text-[8px] font-bold">{upperCodec}</span>
+            </div>
+        );
+    }
+    
+    if (upperCodec === 'AAC') {
+        return (
+            <div className="flex items-center justify-center h-3 px-1 mr-1 rounded bg-green-500/20 text-green-500">
+                <span className="text-[8px] font-bold">AAC</span>
+            </div>
+        );
+    }
+    
+    if (upperCodec === 'MP3') {
+        return (
+            <div className="flex items-center justify-center h-3 px-1 mr-1 rounded bg-blue-400/20 text-blue-400">
+                <span className="text-[8px] font-bold">MP3</span>
+            </div>
+        );
+    }
+    
+    if (upperCodec === 'OPUS') {
+        return (
+            <div className="flex items-center justify-center h-3 px-1 mr-1 rounded bg-indigo-500/20 text-indigo-500">
+                <span className="text-[8px] font-bold">OPUS</span>
+            </div>
+        );
+    }
+    
+    // Default for other codecs
+    return (
+        <div className="flex items-center justify-center h-3 px-1 mr-1 rounded bg-gray-500/20 text-gray-500">
+            <span className="text-[8px] font-bold">{upperCodec.slice(0, 4)}</span>
+        </div>
+    );
+};
+
+// Replace the existing AudioCodecDisplay component with this:
+const AudioCodecDisplay: React.FC<{ codec: string | null, channels: number | null }> = ({ codec, channels }) => {
+    if (!codec) return null;
+    
+    // Convert codec to consumer-friendly name
+    const getAudioName = (c: string): string => {
+        const upperCodec = c.toUpperCase();
+        
+        if (upperCodec.includes('EAC3') || upperCodec.includes('EAC-3')) return 'Dolby Digital+';
+        if (upperCodec.includes('AC3') || upperCodec.includes('AC-3')) return 'Dolby Digital';
+        if (upperCodec.includes('TRUEHD')) return 'Dolby TrueHD';
+        if (upperCodec.includes('DTS-HD')) return 'DTS-HD';
+        if (upperCodec.includes('DTS')) return 'DTS';
+        if (upperCodec === 'AAC') return 'AAC';
+        if (upperCodec === 'MP3') return 'MP3';
+        if (upperCodec === 'OPUS') return 'Opus';
+        if (upperCodec === 'FLAC') return 'FLAC';
+        if (upperCodec === 'VORBIS') return 'Vorbis';
+        if (upperCodec === 'PCM') return 'PCM';
+        if (upperCodec === 'ALAC') return 'ALAC';
+        
+        // Return original if no match
+        return c;
+    };
+    
+    return (
+        <div className="flex items-center">
+            <AudioCodecIcon codec={codec} />
+        </div>
+    );
+};
+
 const Media: React.FC = () => {
     const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
     const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -322,6 +448,10 @@ const Media: React.FC = () => {
     // Update the types for presets
     const [presets, setPresets] = useState<EncodingPreset[]>([]);
     const { addToQueue } = useQueue();
+
+    // Add state for view type
+    const [viewType, setViewType] = useState<'table' | 'grid'>('grid');
+    const [selectionMode, setSelectionMode] = useState<boolean>(false);
 
     // Fetch distinct values for filters on mount
     useEffect(() => {
@@ -606,6 +736,15 @@ const Media: React.FC = () => {
         }
     }, [table]);
 
+    // Add a function to toggle selection mode
+    const toggleSelectionMode = () => {
+        // If turning off selection mode, clear all selections
+        if (selectionMode) {
+            setRowSelection({});
+        }
+        setSelectionMode(!selectionMode);
+    };
+
     return (
         <div className="h-full w-full p-6 flex flex-col overflow-hidden">
             <div className="flex justify-between items-center mb-6">
@@ -646,30 +785,62 @@ const Media: React.FC = () => {
                             </Button>
                         </div>
                     ) : null}
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="ml-auto">
-                                <Columns className="mr-2 h-4 w-4" />
-                                Columns
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            {table.getAllColumns()
-                                .filter(column => column.getCanHide())
-                                .map(column => {
-                                    return (
-                                        <DropdownMenuCheckboxItem
-                                            key={column.id}
-                                            className="capitalize"
-                                            checked={column.getIsVisible()}
-                                            onCheckedChange={(value) => column.toggleVisibility(!!value)}
-                                        >
-                                            {column.id}
-                                        </DropdownMenuCheckboxItem>
-                                    )
-                                })}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+                    
+                    <Button
+                        variant={selectionMode ? "default" : "outline"}
+                        size="sm"
+                        onClick={toggleSelectionMode}
+                        className="mr-1"
+                    >
+                        <CheckSquare className="h-4 w-4 mr-2" />
+                        {selectionMode ? "Cancel Selection" : "Select Items"}
+                    </Button>
+                    
+                    <div className="flex items-center space-x-2">
+                        <Button 
+                            variant={viewType === 'table' ? "default" : "outline"} 
+                            size="sm" 
+                            onClick={() => setViewType('table')}
+                            className="px-2"
+                        >
+                            <Columns className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                            variant={viewType === 'grid' ? "default" : "outline"} 
+                            size="sm" 
+                            onClick={() => setViewType('grid')}
+                            className="px-2"
+                        >
+                            <Columns className="h-4 w-4 rotate-90" />
+                        </Button>
+                    </div>
+
+                    {viewType === 'table' && (
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button variant="outline" size="sm" className="ml-auto">
+                                    <Columns className="mr-2 h-4 w-4" />
+                                    Columns
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                                {table.getAllColumns()
+                                    .filter(column => column.getCanHide())
+                                    .map(column => {
+                                        return (
+                                            <DropdownMenuCheckboxItem
+                                                key={column.id}
+                                                className="capitalize"
+                                                checked={column.getIsVisible()}
+                                                onCheckedChange={(value) => column.toggleVisibility(!!value)}
+                                            >
+                                                {column.id}
+                                            </DropdownMenuCheckboxItem>
+                                        )
+                                    })}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    )}
 
                     <Sheet open={isAdvancedSearchOpen} onOpenChange={setIsAdvancedSearchOpen}>
                         <SheetTrigger asChild>
@@ -786,110 +957,343 @@ const Media: React.FC = () => {
                     </div>
                     
                     <div className="flex-1 min-h-0">
-                        <ScrollArea className="h-full">
-                            <div className="[&_::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']" style={{ width: table.getCenterTotalSize() }}>
-                                <Table>
-                                    <TableHeader>
-                                        {table.getHeaderGroups().map(headerGroup => (
-                                            <TableRow key={headerGroup.id}>
-                                                {headerGroup.headers.map(header => (
-                                                    <TableHead 
-                                                        key={header.id} 
-                                                        style={{ width: header.getSize() }}
-                                                        className={`bg-popover overflow-hidden whitespace-nowrap select-none ${header.column.getCanSort() ? 'cursor-pointer' : ''}`}
-                                                        draggable={true}
-                                                        onDragStart={(e) => {
-                                                            e.dataTransfer.setData('text/plain', header.id);
-                                                            e.dataTransfer.effectAllowed = 'move';
-                                                        }}
-                                                        onDragOver={(e) => {
-                                                            e.preventDefault();
-                                                            e.dataTransfer.dropEffect = 'move';
-                                                        }}
-                                                        onDrop={(e) => {
-                                                            e.preventDefault();
-                                                            const fromId = e.dataTransfer.getData('text/plain');
-                                                            const toId = header.id;
-                                                            if (fromId !== toId) {
-                                                                const newOrder = [...columnOrder];
-                                                                const fromIndex = newOrder.indexOf(fromId);
-                                                                const toIndex = newOrder.indexOf(toId);
-                                                                newOrder.splice(fromIndex, 1);
-                                                                newOrder.splice(toIndex, 0, fromId);
-                                                                setColumnOrder(newOrder);
-                                                            }
-                                                        }}
-                                                    >
-                                                        <div 
-                                                            className="flex items-center space-x-1 overflow-hidden text-ellipsis cursor-grab active:cursor-grabbing"
-                                                            onClick={header.column.getCanSort() ? header.column.getToggleSortingHandler() : undefined}
-                                                            title={header.column.getCanSort() ? 'Click to sort' : undefined}
+                        {viewType === 'table' ? (
+                            <ScrollArea className="h-full">
+                                <div className="[&_::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']" style={{ width: table.getCenterTotalSize() }}>
+                                    <Table>
+                                        <TableHeader>
+                                            {table.getHeaderGroups().map(headerGroup => (
+                                                <TableRow key={headerGroup.id}>
+                                                    {headerGroup.headers.map(header => (
+                                                        <TableHead 
+                                                            key={header.id} 
+                                                            style={{ width: header.getSize() }}
+                                                            className={`bg-popover overflow-hidden whitespace-nowrap select-none ${header.column.getCanSort() ? 'cursor-pointer' : ''}`}
+                                                            draggable={true}
+                                                            onDragStart={(e) => {
+                                                                e.dataTransfer.setData('text/plain', header.id);
+                                                                e.dataTransfer.effectAllowed = 'move';
+                                                            }}
+                                                            onDragOver={(e) => {
+                                                                e.preventDefault();
+                                                                e.dataTransfer.dropEffect = 'move';
+                                                            }}
+                                                            onDrop={(e) => {
+                                                                e.preventDefault();
+                                                                const fromId = e.dataTransfer.getData('text/plain');
+                                                                const toId = header.id;
+                                                                if (fromId !== toId) {
+                                                                    const newOrder = [...columnOrder];
+                                                                    const fromIndex = newOrder.indexOf(fromId);
+                                                                    const toIndex = newOrder.indexOf(toId);
+                                                                    newOrder.splice(fromIndex, 1);
+                                                                    newOrder.splice(toIndex, 0, fromId);
+                                                                    setColumnOrder(newOrder);
+                                                                }
+                                                            }}
                                                         >
-                                                            <span>
-                                                                {header.isPlaceholder
-                                                                    ? null
-                                                                    : flexRender(
-                                                                        header.column.columnDef.header,
-                                                                        header.getContext()
-                                                                    )}
-                                                            </span>
-                                                            {{
-                                                                asc: ' ▲',
-                                                                desc: ' ▼',
-                                                            }[header.column.getIsSorted() as string] ?? null}
-                                                        </div>
-                                                        {/* Resize Handle */}
-                                                        {header.column.getCanResize() && (
-                                                            <div
-                                                                onMouseDown={header.getResizeHandler()}
-                                                                onTouchStart={header.getResizeHandler()}
-                                                                className={`absolute top-0 right-0 h-full w-1 bg-blue-500 opacity-0 hover:opacity-100 cursor-col-resize select-none touch-none ${header.column.getIsResizing() ? 'bg-blue-700 opacity-100' : ''}`}
-                                                                style={{ transform: 'translateX(50%)', zIndex: 2 }}
-                                                            />
-                                                        )}
-                                                    </TableHead>
-                                                ))}
-                                            </TableRow>
-                                        ))}
-                                    </TableHeader>
-                                    <TableBody>
-                                        {isLoading ? (
-                                            <TableRow>
-                                                <TableCell 
-                                                    colSpan={table.getAllColumns().length}
-                                                    className="text-center text-muted-foreground h-24"
-                                                >
-                                                    Loading media...
-                                                </TableCell>
-                                            </TableRow>
-                                        ) : table.getRowModel().rows.length === 0 ? (
-                                            <TableRow>
-                                                <TableCell 
-                                                    colSpan={table.getAllColumns().length}
-                                                    className="text-center text-muted-foreground h-24"
-                                                >
-                                                    {searchParams.get('q') ? 'No media found matching your search.' : 'No media discovered yet. Add a library and scan.'}
-                                                </TableCell>
-                                            </TableRow>
-                                        ) : (
-                                            table.getRowModel().rows.map(row => (
-                                                <TableRow key={row.id}>
-                                                    {row.getVisibleCells().map(cell => (
-                                                        <TableCell 
-                                                            key={cell.id} 
-                                                            style={{ width: cell.column.getSize() }}
-                                                        >
-                                                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                                        </TableCell>
+                                                            <div 
+                                                                className="flex items-center space-x-1 overflow-hidden text-ellipsis cursor-grab active:cursor-grabbing"
+                                                                onClick={header.column.getCanSort() ? header.column.getToggleSortingHandler() : undefined}
+                                                                title={header.column.getCanSort() ? 'Click to sort' : undefined}
+                                                            >
+                                                                <span>
+                                                                    {header.isPlaceholder
+                                                                        ? null
+                                                                        : flexRender(
+                                                                            header.column.columnDef.header,
+                                                                            header.getContext()
+                                                                        )}
+                                                                </span>
+                                                                {{
+                                                                    asc: ' ▲',
+                                                                    desc: ' ▼',
+                                                                }[header.column.getIsSorted() as string] ?? null}
+                                                            </div>
+                                                            {/* Resize Handle */}
+                                                            {header.column.getCanResize() && (
+                                                                <div
+                                                                    onMouseDown={header.getResizeHandler()}
+                                                                    onTouchStart={header.getResizeHandler()}
+                                                                    className={`absolute top-0 right-0 h-full w-1 bg-blue-500 opacity-0 hover:opacity-100 cursor-col-resize select-none touch-none ${header.column.getIsResizing() ? 'bg-blue-700 opacity-100' : ''}`}
+                                                                    style={{ transform: 'translateX(50%)', zIndex: 2 }}
+                                                                />
+                                                            )}
+                                                        </TableHead>
                                                     ))}
                                                 </TableRow>
+                                            ))}
+                                        </TableHeader>
+                                        <TableBody>
+                                            {isLoading ? (
+                                                <TableRow>
+                                                    <TableCell 
+                                                        colSpan={table.getAllColumns().length}
+                                                        className="text-center text-muted-foreground h-24"
+                                                    >
+                                                        Loading media...
+                                                    </TableCell>
+                                                </TableRow>
+                                            ) : table.getRowModel().rows.length === 0 ? (
+                                                <TableRow>
+                                                    <TableCell 
+                                                        colSpan={table.getAllColumns().length}
+                                                        className="text-center text-muted-foreground h-24"
+                                                    >
+                                                        {searchParams.get('q') ? 'No media found matching your search.' : 'No media discovered yet. Add a library and scan.'}
+                                                    </TableCell>
+                                                </TableRow>
+                                            ) : (
+                                                table.getRowModel().rows.map(row => (
+                                                    <TableRow key={row.id}>
+                                                        {row.getVisibleCells().map(cell => (
+                                                            <TableCell 
+                                                                key={cell.id} 
+                                                                style={{ width: cell.column.getSize() }}
+                                                            >
+                                                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                                            </TableCell>
+                                                        ))}
+                                                    </TableRow>
+                                                ))
+                                            )}
+                                        </TableBody>
+                                    </Table>
+                                </div>
+                                <ScrollBar orientation="horizontal" className="mt-1" />
+                            </ScrollArea>
+                        ) : (
+                            <ScrollArea className="h-full">
+                                <div className="p-4">
+                                    <div className="flex flex-col space-y-4">
+                                        {isLoading ? (
+                                            Array(8).fill(0).map((_, i) => (
+                                                <div key={i} className="animate-pulse h-24 rounded-md border w-full bg-card"></div>
+                                            ))
+                                        ) : mediaItems.length === 0 ? (
+                                            <div className="flex items-center justify-center h-48 text-muted-foreground">
+                                                {searchParams.get('q') ? 'No media found matching your search.' : 'No media discovered yet. Add a library and scan.'}
+                                            </div>
+                                        ) : (
+                                            mediaItems.map(item => (
+                                                <div key={item.id} className="border rounded-lg hover:border-primary transition-colors bg-card overflow-hidden">
+                                                    <div className="p-4">
+                                                        <div className="grid grid-cols-[auto_1fr_auto] gap-3 items-start w-full">
+                                                            {/* Selection checkbox column */}
+                                                            {selectionMode && (
+                                                                <div className="pt-1">
+                                                                    <div 
+                                                                        className={`flex-shrink-0 h-5 w-5 rounded flex items-center justify-center cursor-pointer transition-colors ${
+                                                                            rowSelection[item.id.toString()] 
+                                                                                ? "bg-primary text-primary-foreground" 
+                                                                                : "border border-muted-foreground/30 hover:border-primary/50 hover:bg-primary/5"
+                                                                        }`}
+                                                                        onClick={() => {
+                                                                            setRowSelection(prev => ({
+                                                                                ...prev,
+                                                                                [item.id.toString()]: !prev[item.id.toString()]
+                                                                            }));
+                                                                        }}
+                                                                    >
+                                                                        {rowSelection[item.id.toString()] && (
+                                                                            <Check className="h-3 w-3" />
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            
+                                                            {/* Middle content column */}
+                                                            <div className={`min-w-0 ${!selectionMode ? 'col-span-2' : ''}`}>
+                                                                <div className="flex items-baseline min-w-0">
+                                                                    <div className="w-10 flex-shrink-0">
+                                                                        <span className="text-xs font-medium text-muted-foreground">Title:</span>
+                                                                    </div>
+                                                                    <h3 className="font-medium text-base truncate flex-1" title={item.title}>
+                                                                        {item.title}
+                                                                    </h3>
+                                                                </div>
+                                                                
+                                                                <div className="flex items-center mt-1.5 min-w-0">
+                                                                    <div className="w-10 flex-shrink-0">
+                                                                        <span className="text-xs font-medium text-muted-foreground">Path:</span>
+                                                                    </div>
+                                                                    <div className="text-[10px] text-muted-foreground/60 truncate flex-1" title={item.filePath}>
+                                                                        {item.filePath}
+                                                                    </div>
+                                                                </div>
+                                                                
+                                                                {/* Tags section at the bottom */}
+                                                                <div className="flex flex-wrap gap-1.5 mt-3 ml-10">
+                                                                    <TooltipProvider delayDuration={200}>
+                                                                        <Tooltip>
+                                                                            <TooltipTrigger asChild>
+                                                                                <Badge variant="secondary" className="text-xs">
+                                                                                    {item.libraryType === "TV" ? <Tv2 className="h-3 w-3 mr-1" /> :
+                                                                                    item.libraryType === "Movies" ? <Film className="h-3 w-3 mr-1" /> :
+                                                                                    null}
+                                                                                    {item.libraryType}
+                                                                                </Badge>
+                                                                            </TooltipTrigger>
+                                                                            <TooltipContent side="top" className="text-xs bg-secondary">
+                                                                                <p>Content Type: {item.libraryType}</p>
+                                                                            </TooltipContent>
+                                                                        </Tooltip>
+                                                                        
+                                                                        <Tooltip>
+                                                                            <TooltipTrigger asChild>
+                                                                                <Badge variant="outline" className="text-xs bg-background/50">
+                                                                                    <BookOpen className="h-2.5 w-2.5 mr-1" />
+                                                                                    {item.libraryName}
+                                                                                </Badge>
+                                                                            </TooltipTrigger>
+                                                                            <TooltipContent side="top" className="text-xs">
+                                                                                <p>Library: {item.libraryName}</p>
+                                                                            </TooltipContent>
+                                                                        </Tooltip>
+                                                                        
+                                                                        {item.videoCodec && (
+                                                                            <Tooltip>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <Badge variant="outline" className="text-xs bg-background/50">
+                                                                                        <Film className="h-2.5 w-2.5 mr-1" />
+                                                                                        {item.videoCodec}
+                                                                                    </Badge>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent side="top" className="text-xs">
+                                                                                    <p>Video Codec: {item.videoCodec}</p>
+                                                                                </TooltipContent>
+                                                                            </Tooltip>
+                                                                        )}
+                                                                        
+                                                                        {item.resolutionWidth && item.resolutionHeight && (
+                                                                            <Tooltip>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <Badge variant="outline" className="text-xs bg-background/50">
+                                                                                        <ResolutionIcon height={item.resolutionHeight} />
+                                                                                        <span className="ml-1">
+                                                                                            {item.resolutionHeight >= 4320 ? '8K' :
+                                                                                             item.resolutionHeight >= 2160 ? '4K' :
+                                                                                             item.resolutionHeight >= 1440 ? '2K' :
+                                                                                             item.resolutionHeight >= 1080 ? '1080P' :
+                                                                                             item.resolutionHeight >= 720 ? '720P' :
+                                                                                             item.resolutionHeight >= 480 ? '480P' : 'SD'}
+                                                                                        </span>
+                                                                                    </Badge>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent side="top" className="text-xs">
+                                                                                    <p>Resolution: {item.resolutionWidth} x {item.resolutionHeight}
+                                                                                    {item.resolutionHeight >= 4320 ? ' (8K)' : 
+                                                                                     item.resolutionHeight >= 2160 ? ' (4K)' : 
+                                                                                     item.resolutionHeight >= 1440 ? ' (2K)' :
+                                                                                     item.resolutionHeight >= 1080 ? ' (1080P)' : 
+                                                                                     item.resolutionHeight >= 720 ? ' (720P)' : 
+                                                                                     item.resolutionHeight >= 480 ? ' (480P)' : ' (SD)'}
+                                                                                    </p>
+                                                                                </TooltipContent>
+                                                                            </Tooltip>
+                                                                        )}
+                                                                        
+                                                                        {item.audioCodec && (
+                                                                            <Tooltip>
+                                                                                <TooltipTrigger asChild>
+                                                                                    <Badge variant="outline" className="text-xs bg-background/50 flex items-center">
+                                                                                        <AudioCodecDisplay codec={item.audioCodec} channels={item.audioChannels} />
+                                                                                        <span>
+                                                                                            {(() => {
+                                                                                                const codec = item.audioCodec.toUpperCase();
+                                                                                                if (codec.includes('EAC3') || codec.includes('EAC-3')) return 'Dolby Digital+';
+                                                                                                if (codec.includes('AC3') || codec.includes('AC-3')) return 'Dolby Digital';
+                                                                                                if (codec.includes('TRUEHD')) return 'Dolby TrueHD';
+                                                                                                if (codec.includes('DTS-HD')) return 'DTS-HD';
+                                                                                                if (codec.includes('DTS')) return 'DTS';
+                                                                                                return item.audioCodec;
+                                                                                            })()}
+                                                                                            {item.audioChannels ? ` (${
+                                                                                                item.audioChannels === 2 ? '2.0' : 
+                                                                                                item.audioChannels === 6 ? '5.1' : 
+                                                                                                item.audioChannels === 8 ? '7.1' : 
+                                                                                                `${item.audioChannels}ch`
+                                                                                            })` : ''}
+                                                                                        </span>
+                                                                                    </Badge>
+                                                                                </TooltipTrigger>
+                                                                                <TooltipContent side="top" className="text-xs">
+                                                                                    <p>Audio Codec: {item.audioCodec} 
+                                                                                    {item.audioChannels ? 
+                                                                                        (item.audioChannels === 2 ? ' (Stereo 2.0)' : 
+                                                                                         item.audioChannels === 6 ? ' (5.1 Surround)' : 
+                                                                                         item.audioChannels === 8 ? ' (7.1 Surround)' : 
+                                                                                         ` (${item.audioChannels} channels)`) : ''}
+                                                                                    </p>
+                                                                                </TooltipContent>
+                                                                            </Tooltip>
+                                                                        )}
+                                                                    </TooltipProvider>
+                                                                </div>
+                                                            </div>
+                                                            
+                                                            {/* Right side column with size and status */}
+                                                            <div className="flex flex-col items-end space-y-2 min-w-[130px]">
+                                                                <div className="flex items-center gap-2">
+                                                                    {item.encodingJobId ? (
+                                                                        <Badge variant="outline" className="text-xs bg-green-500/10 text-green-500 border-green-500/20 hover:bg-green-500/20">
+                                                                            <Check className="h-3 w-3 mr-1" />
+                                                                            Processed
+                                                                        </Badge>
+                                                                    ) : (
+                                                                        <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-500 border-amber-500/20 hover:bg-amber-500/20">
+                                                                            Not Processed
+                                                                        </Badge>
+                                                                    )}
+                                                                </div>
+                                                                
+                                                                <div className="flex gap-1 items-baseline">
+                                                                    <span className="font-medium text-sm">{formatBytes(item.currentSize)}</span>
+                                                                    <span className="text-xs text-muted-foreground">/</span>
+                                                                    <span className="text-xs text-muted-foreground">{formatBytes(item.originalSize)}</span>
+                                                                </div>
+                                                                
+                                                                <TooltipProvider delayDuration={300}>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <Button variant="outline" size="sm" className="h-6 px-2 py-0 rounded-full border-muted-foreground/20 hover:bg-muted">
+                                                                                <Info className="h-3.5 w-3.5 mr-1 text-muted-foreground" />
+                                                                                <span className="text-xs text-muted-foreground">Details</span>
+                                                                            </Button>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent side="left" align="end" className="p-0 w-[280px] overflow-hidden">
+                                                                            <div className="bg-primary/5 p-3 border-b">
+                                                                                <p className="font-medium text-sm">File Details</p>
+                                                                            </div>
+                                                                            <div className="p-3">
+                                                                                <div className="grid grid-cols-[90px_1fr] gap-y-2 text-xs">
+                                                                                    <span className="text-muted-foreground">Path:</span>
+                                                                                    <span className="truncate" title={item.filePath}>{item.filePath}</span>
+                                                                                    <span className="text-muted-foreground">Added:</span>
+                                                                                    <span>{new Date(item.addedAt).toLocaleDateString()}</span>
+                                                                                    <span className="text-muted-foreground">Last Check:</span>
+                                                                                    <span>{new Date(item.lastSizeCheckAt).toLocaleDateString()}</span>
+                                                                                    <span className="text-muted-foreground">Space Saved:</span>
+                                                                                    <span className="font-medium text-green-500">
+                                                                                        {item.originalSize > item.currentSize ? 
+                                                                                            formatBytes(item.originalSize - item.currentSize) : 
+                                                                                            '0 Bytes'}
+                                                                                    </span>
+                                                                                </div>
+                                                                            </div>
+                                                                        </TooltipContent>
+                                                                    </Tooltip>
+                                                                </TooltipProvider>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             ))
                                         )}
-                                    </TableBody>
-                                </Table>
-                            </div>
-                            <ScrollBar orientation="horizontal" className="mt-1" />
-                        </ScrollArea>
+                                    </div>
+                                </div>
+                            </ScrollArea>
+                        )}
                     </div>
                     <div className="flex items-center justify-between px-4 py-4 border-t bg-card">
                         <div className="flex items-center space-x-6 lg:space-x-8">
