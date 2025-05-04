@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
-import { Play, Pause, Trash2, FileX, SkipForward, Settings, AlertCircle, CheckCircle, PlayCircle, Clock } from 'lucide-react';
+import { Play, Pause, Trash2, FileX, SkipForward, Settings, AlertCircle, CheckCircle, PlayCircle, Clock, FileText } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -15,6 +15,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { EncodingJob, JobStatus } from "../../services/queueService";
 import queueService from "../../services/queueService";
+import { getJobLog, openJobLog, formatJobLogForDisplay, associateLogWithJob, getAllLogMappings } from "../../utils/jobLogUtil";
 
 // Status icon mapping
 const StatusIcon: React.FC<{ status: JobStatus }> = ({ status }) => {
@@ -62,11 +63,104 @@ const StatusBadge: React.FC<{ status: JobStatus }> = ({ status }) => {
   );
 };
 
+// Job Log Dialog component
+const JobLogDialog: React.FC<{ job: EncodingJob, isOpen: boolean, onClose: () => void }> = ({ job, isOpen, onClose }) => {
+  const [logContent, setLogContent] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      loadLog();
+    }
+  }, [isOpen, job.id]);
+
+  const loadLog = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const log = await getJobLog(job.id);
+      setLogContent(log);
+    } catch (err) {
+      setError('Failed to load log: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleOpenExternalLog = async () => {
+    try {
+      const result = await openJobLog(job.id);
+      if (!result.success) {
+        setError(result.error || 'Failed to open log file');
+      }
+    } catch (err) {
+      setError('Error opening log: ' + (err instanceof Error ? err.message : String(err)));
+    }
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>Job Log: {job.id}</DialogTitle>
+        </DialogHeader>
+        
+        <div className="mb-4">
+          <div className="flex justify-between items-center mb-2">
+            <div>
+              <Badge variant="outline" className="mb-2">{job.status}</Badge>
+              <p className="text-sm text-muted-foreground mb-1">Input: {job.inputPath}</p>
+              <p className="text-sm text-muted-foreground">Output: {job.outputPath}</p>
+            </div>
+            <Button onClick={handleOpenExternalLog} variant="outline" size="sm">
+              <FileText className="h-4 w-4 mr-2" />
+              Open in Editor
+            </Button>
+          </div>
+          {job.error && (
+            <Alert variant="destructive" className="mt-2">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Error</AlertTitle>
+              <AlertDescription>{job.error}</AlertDescription>
+            </Alert>
+          )}
+        </div>
+        
+        {isLoading ? (
+          <div className="flex justify-center p-4">
+            <p>Loading log...</p>
+          </div>
+        ) : error ? (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Error loading log</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : (
+          <ScrollArea className="h-[400px] border rounded-md bg-black p-4">
+            <pre className="text-xs font-mono text-white whitespace-pre-wrap">
+              {formatJobLogForDisplay(job, logContent)}
+            </pre>
+          </ScrollArea>
+        )}
+        
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button>Close</Button>
+          </DialogClose>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
 // Job details component
 const JobDetails: React.FC<{ job: EncodingJob }> = ({ job }) => {
   // Force refresh on job progress changes
   const [localProgress, setLocalProgress] = useState(job.progress);
   const [lastUpdate, setLastUpdate] = useState(Date.now());
+  const [isLogDialogOpen, setIsLogDialogOpen] = useState(false);
 
   // Update local state when job progress changes
   useEffect(() => {
@@ -160,8 +254,8 @@ const JobDetails: React.FC<{ job: EncodingJob }> = ({ job }) => {
           )}
         </div>
       </CardContent>
-      {job.status === 'queued' && (
-        <CardFooter className="py-2">
+      <CardFooter className="py-2 flex gap-2">
+        {job.status === 'queued' && (
           <Button 
             variant="outline" 
             size="sm" 
@@ -171,8 +265,30 @@ const JobDetails: React.FC<{ job: EncodingJob }> = ({ job }) => {
             <Trash2 className="h-4 w-4 mr-1" />
             Remove
           </Button>
-        </CardFooter>
-      )}
+        )}
+        
+        {/* Add View Log button for completed, failed, and processing jobs */}
+        {(job.status === 'completed' || job.status === 'failed' || job.status === 'processing') && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => setIsLogDialogOpen(true)}
+          >
+            <FileText className="h-4 w-4 mr-1" />
+            View Log
+          </Button>
+        )}
+        
+        {/* Log Dialog */}
+        {isLogDialogOpen && (
+          <JobLogDialog 
+            job={job} 
+            isOpen={isLogDialogOpen}
+            onClose={() => setIsLogDialogOpen(false)}
+          />
+        )}
+      </CardFooter>
     </Card>
   );
 };

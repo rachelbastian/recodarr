@@ -45,6 +45,7 @@ import { ScrollArea, ScrollBar } from "../../../src/components/ui/scroll-area";
 import { Checkbox } from "../../../src/components/ui/checkbox";
 import useQueue from '../../hooks/useQueue';
 import { EncodingPreset, ProbeData } from '../../types.d';
+import { saveJobMediaReference } from '../../utils/jobLogUtil';
 
 // Define the type for a media item from the DB
 interface MediaItem {
@@ -536,6 +537,13 @@ const Media: React.FC = () => {
                         { audio: {}, subtitle: {} } // Default track selections - TODO: Allow user selection?
                     );
                     console.log(`addToQueue result for ${mediaId}:`, addedJob);
+                    
+                    // Save reference to job ID in media database
+                    if (addedJob && addedJob.id) {
+                        await saveJobMediaReference(addedJob.id, mediaId);
+                        console.log(`Saved job-media reference: Job ${addedJob.id} -> Media ${mediaId}`);
+                    }
+                    
                     queuedCount++;
                     
                 } catch (err) {

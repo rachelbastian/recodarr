@@ -46,15 +46,16 @@ export async function createEncodingJob(
       trackSelections.subtitle
     );
     
-    // IMPORTANT: Always add job ID for tracking progress
-    if (jobId) {
-      options.jobId = jobId;
-      console.log(`EncodingService: Starting job ${jobId} for ${inputPath}`);
-    } else {
-      console.warn(`EncodingService: No job ID provided for encoding ${inputPath} -> ${outputPath}`);
-      // Create a fallback ID - though this might cause tracking issues
-      options.jobId = `fallback_${Date.now()}`;
+    // IMPORTANT: Always ensure a job ID for tracking progress
+    if (!jobId) {
+      // Generate a consistent job ID if not provided
+      jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      console.warn(`EncodingService: Generated fallback job ID ${jobId} for encoding ${inputPath} -> ${outputPath}`);
     }
+    
+    // Always set the job ID in options
+    options.jobId = jobId;
+    console.log(`EncodingService: Starting job ${jobId} for ${inputPath}`);
     
     console.log('EncodingService: Starting encoding job with options:', {
       ...options,
@@ -68,8 +69,36 @@ export async function createEncodingJob(
     const result = await electronAPI.startEncodingProcess(options);
     
     // Ensure result contains job ID for consistent tracking
-    if (options.jobId && !result.jobId) {
-      result.jobId = options.jobId;
+    if (!result.jobId) {
+      result.jobId = jobId;
+    }
+    
+    // If the result contains a different logFileId than our jobId (like a UUID), 
+    // store this mapping for later use
+    const resultWithLogFileId = result as { jobId?: string; logFileId?: string; success: boolean; error?: string };
+    if (resultWithLogFileId.logFileId && resultWithLogFileId.logFileId !== jobId) {
+      console.log(`EncodingService: Log file ID (${resultWithLogFileId.logFileId}) differs from job ID (${jobId})`);
+      
+      // Store this mapping in the DB for future reference
+      try {
+        // Using a special table for job-log mappings
+        await electronAPI.dbQuery(`
+          CREATE TABLE IF NOT EXISTS job_log_mappings (
+            jobId TEXT PRIMARY KEY,
+            logFileId TEXT NOT NULL,
+            createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+        
+        await electronAPI.dbQuery(
+          'INSERT OR REPLACE INTO job_log_mappings (jobId, logFileId) VALUES (?, ?)',
+          [jobId, resultWithLogFileId.logFileId]
+        );
+        
+        console.log(`EncodingService: Saved job-log mapping for ${jobId} -> ${resultWithLogFileId.logFileId}`);
+      } catch (dbError) {
+        console.error('EncodingService: Error saving job-log mapping:', dbError);
+      }
     }
     
     return result;
@@ -79,7 +108,7 @@ export async function createEncodingJob(
     return {
       success: false,
       error: `Failed to create encoding job: ${errorMessage}`,
-      jobId // Return the original job ID even on failure
+      jobId: jobId // Return the job ID even on failure for tracking
     };
   }
 }
@@ -107,6 +136,7 @@ export interface EncodingProgressUpdate {
   fps?: number;
   frame?: number;
   totalFrames?: number;
+  logFileId?: string;
 }
 
 // Interface for progress callbacks
@@ -117,6 +147,7 @@ export interface ProgressCallbacks {
   onTotalFrames?: (totalFrames: number) => void;
   onFps?: (fps: number) => void;
   onComplete?: () => void;
+  onLogFileId?: (logFileId: string) => void;
 }
 
 /**
@@ -140,6 +171,20 @@ export function createProgressHandler(
     }
     
     console.log(`[${logPrefix}] Received progress update for job ${updatedData.jobId || 'unknown'}:`, updatedData);
+    
+    // If this contains a log file ID that's different than the job ID, store the mapping
+    if (updatedData.logFileId && updatedData.jobId && updatedData.logFileId !== updatedData.jobId) {
+      console.log(`[${logPrefix}] Detected different log file ID: ${updatedData.logFileId} for job: ${updatedData.jobId}`);
+      
+      // Store this mapping for future reference
+      mapLogFileToJobId(updatedData.jobId, updatedData.logFileId)
+        .catch(err => console.error(`[${logPrefix}] Failed to map log file ID:`, err));
+      
+      // Call the log file ID callback if provided
+      if (callbacks.onLogFileId) {
+        callbacks.onLogFileId(updatedData.logFileId);
+      }
+    }
     
     // Update status always
     if (updatedData.status && callbacks.onStatus) {
@@ -194,4 +239,44 @@ export function subscribeToEncodingProgress(
   callback: (data: EncodingProgressUpdate) => void
 ): () => void {
   return electronAPI.subscribeEncodingProgress(callback);
+}
+
+/**
+ * Map the backend log file ID to our job ID
+ * This handles the case where the backend uses different ID (e.g., UUID) than our job ID format
+ * 
+ * @param jobId Our application job ID
+ * @param backendLogId The actual log file ID used by the encoding process
+ * @returns Promise resolving to true if mapping was saved
+ */
+export async function mapLogFileToJobId(jobId: string, backendLogId: string): Promise<boolean> {
+  if (!jobId || !backendLogId) {
+    console.error('EncodingService: Cannot map log file - missing job ID or backend log ID');
+    return false;
+  }
+  
+  try {
+    console.log(`EncodingService: Mapping backend log ID ${backendLogId} to job ID ${jobId}`);
+    
+    // Create the mapping table if it doesn't exist
+    await electronAPI.dbQuery(`
+      CREATE TABLE IF NOT EXISTS job_log_mappings (
+        jobId TEXT PRIMARY KEY,
+        logFileId TEXT NOT NULL,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Save the mapping
+    await electronAPI.dbQuery(
+      'INSERT OR REPLACE INTO job_log_mappings (jobId, logFileId) VALUES (?, ?)',
+      [jobId, backendLogId]
+    );
+    
+    console.log(`EncodingService: Saved mapping from job ${jobId} to log file ${backendLogId}`);
+    return true;
+  } catch (error) {
+    console.error('EncodingService: Error mapping log file to job:', error);
+    return false;
+  }
 } 

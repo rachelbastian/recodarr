@@ -1749,8 +1749,9 @@ app.on("ready", async () => {
                 console.log(`[Main Process] File has not been processed before or no processing metadata found`);
             }
 
-            const jobId = crypto.randomUUID(); // Generate Job ID
-            console.log(`[Main Process] Generated Job ID: ${jobId}`);
+            // Use the job ID from options if provided, otherwise generate one
+            const jobId = options.jobId || crypto.randomUUID(); 
+            console.log(`[Main Process] Using Job ID: ${jobId} ${options.jobId ? '(provided in options)' : '(newly generated)'}`);
 
             // Rest of the encoding process...
             const isOverwrite = options.overwriteInput ?? (options.inputPath === options.outputPath);

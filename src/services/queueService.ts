@@ -661,6 +661,24 @@ class EncodingQueueService {
         job.id // This must exactly match the job.id we're using here
       );
       
+      // Check if we got a different log file ID from the result
+      // This happens when the encoding process uses a different ID (like UUID) than our job ID
+      const resultWithLogId = result as { logFileId?: string; jobId?: string; success: boolean; error?: string };
+      if (resultWithLogId.logFileId && resultWithLogId.logFileId !== job.id) {
+        console.log(`QueueService: Detected different log file ID (${resultWithLogId.logFileId}) than job ID (${job.id})`);
+        
+        try {
+          // Import the function to associate log with job
+          const { associateLogWithJob } = await import('../utils/jobLogUtil.js');
+          
+          // Associate the actual log file ID with our job ID
+          await associateLogWithJob(job.id, resultWithLogId.logFileId);
+          console.log(`QueueService: Associated log file ${resultWithLogId.logFileId} with job ${job.id}`);
+        } catch (error) {
+          console.error('QueueService: Failed to associate log with job:', error);
+        }
+      }
+      
       // Update job with result
       this.handleJobCompletion(job.id, result);
       
