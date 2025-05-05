@@ -19,6 +19,7 @@ import { probeFile } from './ffprobeUtils.js';
 import { SUPPORTED_EXTENSIONS, WatchedFolder, addMediaToDb, processDirectory, scanMediaFolders, scanSingleFolder } from './scannerUtils.js';
 import crypto from 'crypto';
 import { setMainWindow, captureConsoleLogs, getLogBuffer } from './logger.js'; // Import logger functions
+import { initializeDatabase, updateMediaAfterEncoding, storeHardwareInfo } from './dbUtils.js';
 
 // --- Define Types Locally within main.ts ---
 // (Copied from src/types.d.ts)
@@ -372,65 +373,8 @@ async function gatherAndStoreHardwareInfo(): Promise<void> {
             si.graphics()
         ]);
 
-        // Process CPU information
-        // For multi-CPU systems, we'll create an entry for each physical CPU package
-        const physicalCPUs = new Set(Array.isArray(cpuData.processors) ? cpuData.processors : [0]); // Default to single CPU if no processor info
-        
-        for (const processor of physicalCPUs) {
-            const cpuEntry = {
-                device_type: 'CPU',
-                vendor: sanitizeHardwareString(cpuData.manufacturer),
-                model: sanitizeHardwareString(cpuData.brand),
-                device_id: `cpu${processor}`,
-                cores_threads: Math.floor(cpuData.cores / physicalCPUs.size), // Divide cores among physical CPUs
-                base_clock_mhz: cpuData.speed,
-                memory_mb: Math.round((cpuData.cache?.l3 || 0) / 1024),
-            };
-
-            const cpuStmt = db.prepare(`
-                INSERT INTO hardware_info 
-                (device_type, vendor, model, device_id, cores_threads, base_clock_mhz, memory_mb, last_updated)
-                VALUES (@device_type, @vendor, @model, @device_id, @cores_threads, @base_clock_mhz, @memory_mb, CURRENT_TIMESTAMP)
-                ON CONFLICT(device_type, model, vendor, device_id) 
-                DO UPDATE SET 
-                    cores_threads=excluded.cores_threads,
-                    base_clock_mhz=excluded.base_clock_mhz,
-                    memory_mb=excluded.memory_mb,
-                    last_updated=CURRENT_TIMESTAMP
-            `);
-
-            cpuStmt.run(cpuEntry);
-        }
-
-        // Process each GPU with sanitized strings
-        for (const gpu of gpuData.controllers) {
-            // Skip Microsoft Basic Display Adapter and similar
-            if (gpu.vendor?.includes('Microsoft')) continue;
-
-            const gpuInfo = {
-                device_type: 'GPU',
-                vendor: sanitizeHardwareString(gpu.vendor || 'Unknown'),
-                model: sanitizeHardwareString(gpu.model || 'Unknown'),
-                device_id: gpu.deviceId || gpu.busAddress || String(Math.random()), // Use PCI ID or bus address if available
-                cores_threads: null,
-                base_clock_mhz: null,
-                memory_mb: gpu.memoryTotal || null,
-            };
-
-            const gpuStmt = db.prepare(`
-                INSERT INTO hardware_info 
-                (device_type, vendor, model, device_id, memory_mb, last_updated)
-                VALUES (@device_type, @vendor, @model, @device_id, @memory_mb, CURRENT_TIMESTAMP)
-                ON CONFLICT(device_type, model, vendor, device_id) 
-                DO UPDATE SET 
-                    memory_mb=excluded.memory_mb,
-                    last_updated=CURRENT_TIMESTAMP
-            `);
-
-            gpuStmt.run(gpuInfo);
-        }
-
-        console.log("Hardware information updated successfully");
+        // Use the utility function to store hardware info
+        await storeHardwareInfo(db, cpuData, gpuData);
     } catch (error) {
         console.error("Error gathering hardware information:", error);
     }
@@ -664,260 +608,10 @@ app.on("ready", async () => {
     // --- End Create Log Directory ---
 
     // --- Initialize Database ---
-    let dbPath: string | undefined;
     try {
-        dbPath = path.join(app.getPath('userData'), 'media_database.db');
-        console.log(`Attempting to initialize database at: ${dbPath}`);
-        db = new Database(dbPath, { verbose: console.log });
-
-        // Create media table if it doesn't exist
-        db.exec(`
-            CREATE TABLE IF NOT EXISTS media (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                filePath TEXT UNIQUE NOT NULL,
-                addedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-                originalSize INTEGER NOT NULL,          -- Size when first discovered (immutable)
-                currentSize INTEGER NOT NULL,           -- Size as of latest scan
-                lastSizeCheckAt DATETIME DEFAULT CURRENT_TIMESTAMP,  -- When currentSize was last updated
-                videoCodec TEXT,
-                audioCodec TEXT,
-                libraryName TEXT,
-                libraryType TEXT CHECK( libraryType IN ('TV','Movies','Anime') ),
-                resolutionWidth INTEGER,   -- Add resolution width
-                resolutionHeight INTEGER,  -- Add resolution height
-                audioChannels INTEGER,     -- Add audio channel count
-                -- Placeholders for future encoding features
-                encodingJobId TEXT,
-                encodingNodeId TEXT,
-                -- Ensure filePath is unique
-                UNIQUE(filePath)
-            );
-        `);
-
-        // Create workflow related tables
-        db.exec(`
-            -- Main workflow table
-            CREATE TABLE IF NOT EXISTS workflows (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                description TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT 1,
-                last_triggered_at DATETIME,
-                UNIQUE(name)
-            );
-
-            -- Workflow nodes table
-            CREATE TABLE IF NOT EXISTS workflow_nodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workflow_id INTEGER NOT NULL,
-                node_id TEXT NOT NULL,          -- ReactFlow node ID
-                node_type TEXT NOT NULL,        -- 'trigger' or 'action'
-                label TEXT NOT NULL,
-                description TEXT,
-                position_x REAL NOT NULL,
-                position_y REAL NOT NULL,
-                data JSON,                      -- Store additional node data as JSON
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
-                UNIQUE(workflow_id, node_id)
-            );
-
-            -- Workflow edges table
-            CREATE TABLE IF NOT EXISTS workflow_edges (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workflow_id INTEGER NOT NULL,
-                edge_id TEXT NOT NULL,          -- ReactFlow edge ID
-                source_node_id TEXT NOT NULL,   -- Source node ID
-                target_node_id TEXT NOT NULL,   -- Target node ID
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
-                UNIQUE(workflow_id, edge_id)
-            );
-
-            -- Workflow execution history
-            CREATE TABLE IF NOT EXISTS workflow_executions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workflow_id INTEGER NOT NULL,
-                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                completed_at DATETIME,
-                status TEXT CHECK( status IN ('running', 'completed', 'failed', 'cancelled') ),
-                error_message TEXT,
-                trigger_node_id TEXT NOT NULL,
-                execution_data JSON,            -- Store execution context/variables
-                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
-            );
-        `);
-
-        // Create triggers to update workflows.updated_at
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS update_workflow_timestamp 
-            AFTER UPDATE ON workflows
-            BEGIN
-                UPDATE workflows 
-                SET updated_at = CURRENT_TIMESTAMP 
-                WHERE id = NEW.id;
-            END;
-        `);
-
-        // Create hardware_info table
-        db.exec(`
-            CREATE TABLE IF NOT EXISTS hardware_info (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                device_type TEXT NOT NULL CHECK(device_type IN ('CPU', 'GPU')),
-                vendor TEXT,
-                model TEXT NOT NULL,
-                device_id TEXT,                  -- Unique identifier for the device (e.g., CPU socket ID or GPU PCI ID)
-                cores_threads INTEGER,           -- For CPUs: physical_cores * threads_per_core
-                base_clock_mhz REAL,            -- Base clock speed in MHz
-                memory_mb INTEGER,              -- For GPUs: VRAM in MB, For CPUs: Cache size in MB
-                is_enabled BOOLEAN DEFAULT 1,    -- Whether this device should be used for transcoding
-                priority INTEGER DEFAULT 0,      -- Higher number = higher priority
-                added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(device_type, model, vendor, device_id) -- Unique combination including device_id
-            );
-        `);
-
-        // Create encoding_presets table
-        db.exec(`
-            CREATE TABLE IF NOT EXISTS encoding_presets (
-                id TEXT PRIMARY KEY, 
-                name TEXT NOT NULL UNIQUE,
-                videoCodec TEXT,
-                videoPreset TEXT,
-                videoQuality INTEGER,
-                videoResolution TEXT,
-                hwAccel TEXT,
-                audioCodecConvert TEXT,
-                audioBitrate TEXT,
-                selectedAudioLayout TEXT,
-                preferredAudioLanguages TEXT, -- Old field, keep for migration
-                keepOriginalAudio INTEGER, -- Old field, keep for migration
-                defaultAudioLanguage TEXT, -- Old field, keep for migration
-                audioLanguageOrder TEXT, -- New field: Stored as JSON string array
-                subtitleCodecConvert TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        // --- End Initialize Database ---
-
-        // --- Database Migrations ---
-        // Define interface for PRAGMA table_info results
-        interface TableColumn {
-            cid: number;
-            name: string;
-            type: string;
-            notnull: number;
-            dflt_value: string | null;
-            pk: number;
-        }
-
-        // Migration for `media` table
-        console.log("Checking existing columns for 'media' table...");
-        const mediaTableInfo = db.prepare('PRAGMA table_info(media)').all() as TableColumn[];
-        const mediaColumns = mediaTableInfo.map(col => col.name);
-        console.log(`Media table columns: ${mediaColumns.join(', ')}`);
-
-        const mediaMigrations = [];
-        if (!mediaColumns.includes('currentSize')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN currentSize INTEGER NOT NULL DEFAULT 0`);
-        if (!mediaColumns.includes('lastSizeCheckAt')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN lastSizeCheckAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`);
-        if (!mediaColumns.includes('resolutionWidth')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN resolutionWidth INTEGER`);
-        if (!mediaColumns.includes('resolutionHeight')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN resolutionHeight INTEGER`);
-        if (!mediaColumns.includes('audioChannels')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN audioChannels INTEGER`);
-
-        if (mediaMigrations.length > 0) {
-            console.log('Starting database migration transaction for media table...');
-            db.transaction((migrations: string[]) => {
-                migrations.forEach((migration, index) => {
-                    console.log(`Executing media migration ${index + 1}/${migrations.length}: ${migration.trim().substring(0, 100)}...`);
-                    db.exec(migration);
-                });
-                if (!mediaColumns.includes('currentSize')) {
-                    console.log("Executing UPDATE to populate 'currentSize' from 'originalSize'...");
-                    db.exec(`UPDATE media SET currentSize = COALESCE(originalSize, 0)`);
-                }
-            })(mediaMigrations);
-            console.log('Media table migration transaction committed successfully.');
-        } else {
-            console.log('No database migrations needed for media table.');
-        }
-
-        // Migration for `encoding_presets` table
-        console.log("Checking existing columns for 'encoding_presets' table...");
-        try {
-            const presetsTableInfo = db.prepare('PRAGMA table_info(encoding_presets)').all() as TableColumn[];
-            const presetsColumns = presetsTableInfo.map(col => col.name);
-            console.log(`Encoding_presets table columns: ${presetsColumns.join(', ')}`);
-
-            const presetMigrations = [];
-            // Keep old column migrations for robustness if needed
-            if (!presetsColumns.includes('preferredAudioLanguages')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN preferredAudioLanguages TEXT`);
-            if (!presetsColumns.includes('keepOriginalAudio')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN keepOriginalAudio INTEGER`);
-            if (!presetsColumns.includes('defaultAudioLanguage')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN defaultAudioLanguage TEXT`);
-            // Add migration for the new column
-            if (!presetsColumns.includes('audioLanguageOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN audioLanguageOrder TEXT`);
-            // Add migrations for the new subtitle order columns
-            if (!presetsColumns.includes('subtitleLanguageOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN subtitleLanguageOrder TEXT`);
-            if (!presetsColumns.includes('subtitleTypeOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN subtitleTypeOrder TEXT`);
-
-            if (presetMigrations.length > 0) {
-                console.log('Starting database migration transaction for encoding_presets table...');
-                db.transaction((migrations: string[]) => {
-                    migrations.forEach((migration, index) => {
-                        console.log(`Executing preset migration ${index + 1}/${migrations.length}: ${migration.trim().substring(0, 100)}...`);
-                        db.exec(migration);
-                    });
-                })(presetMigrations);
-                console.log('Encoding_presets table migration transaction committed successfully.');
-            } else {
-                console.log('No database migrations needed for encoding_presets table.');
-            }
-        } catch (error) {
-            // Handle case where encoding_presets table might not exist yet (e.g., very first run)
-            if (error instanceof Error && error.message.includes('no such table: encoding_presets')) {
-                console.log('Encoding_presets table does not exist yet, skipping migration check (will be created by CREATE TABLE).');
-            } else {
-                console.error('Error checking/migrating encoding_presets table:', error);
-                throw error; // Re-throw other errors
-            }
-        }
-        // --- End Database Migrations ---
-
-        // Create FTS table and triggers as before
-        db.exec(`
-            CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts5(
-                title,
-                filePath,
-                content='media',
-                content_rowid='id'
-            );
-        `);
-         // Trigger to keep FTS table in sync with media table
-         // Update triggers if newly added columns should be indexed by FTS
-         db.exec(`
-            CREATE TRIGGER IF NOT EXISTS media_ai AFTER INSERT ON media BEGIN
-                INSERT INTO media_fts (rowid, title, filePath) VALUES (new.rowid, new.title, new.filePath);
-            END;
-        `);
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS media_ad AFTER DELETE ON media BEGIN
-                DELETE FROM media_fts WHERE rowid=old.rowid;
-            END;
-        `);
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS media_au AFTER UPDATE ON media BEGIN
-                UPDATE media_fts SET title=new.title, filePath=new.filePath WHERE rowid=old.rowid;
-            END;
-        `);
-         console.log("FTS5 table and triggers checked/created.");
-
+        db = initializeDatabase();
     } catch (err) {
-        console.error(`Failed to initialize database at path: ${dbPath || 'Unknown'}:`, err);
+        console.error("Failed to initialize database:", err);
         // Handle error appropriately - maybe show an error dialog to the user
         // For now, we'll let the app continue but DB functionality will be broken
     }
@@ -2189,9 +1883,9 @@ app.on("ready", async () => {
                 const dbPath = params.originalFilePath || params.finalFilePath;
                 
                 try {
-                    // Add metadata for the encoded file
+                    // Use the utility function to update the database
                     console.log(`[Main Process] Updating database for: ${dbPath}`);
-                    await updateMediaAfterEncoding(probeData, params.jobId, dbPath);
+                    await updateMediaAfterEncoding(db, probeData, params.jobId, dbPath);
                     console.log(`[Main Process] Database updated successfully`);
                 } catch (dbError) {
                     console.error(`[Main Process] Database update failed:`, dbError);
