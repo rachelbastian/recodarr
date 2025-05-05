@@ -1790,41 +1790,41 @@ app.on("ready", async () => {
             // --- Post-Encoding Update (Conditional) --- 
             if (result.success && result.outputPath) {
                 try {
-                    console.log(`[Main Process] Encoding/Rename successful for Job ID ${jobId}. Final path: ${result.outputPath}`);
-                    const probeData = await probeFile(result.outputPath); // Probe the final file
+                    console.log(`[Main Process] Encoding successful for Job ID ${jobId}. Temporary output at: ${result.outputPath}`);
                     
-                    if (probeData) {
-                        if (isOverwrite) {
-                            console.log(`[Main Process] Overwrite mode: Updating database record for original input path: ${options.inputPath}`);
-                            // Pass original input path for DB update when overwriting
-                            await updateMediaAfterEncoding(probeData, jobId, options.inputPath);
-                            console.log(`[Main Process] Database updated successfully for Job ID ${jobId}.`);
+                    if (isOverwrite) {
+                        console.log(`[Main Process] Overwrite mode: Original file will be replaced through Queue Service's replaceFile`);
+                        // Don't try to rename here - let the queue service handle it with its robust replaceFile
+                        
+                        // Just probe the temporary file
+                        const probeData = await probeFile(result.outputPath);
+                        if (probeData) {
+                            console.log(`[Main Process] Temporary file successfully probed: ${result.outputPath}`);
                             mainWindow?.webContents.send('encodingProgress', {
                                 jobId,
-                                status: `Overwrite complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. DB Updated. File: ${result.outputPath}`
+                                status: `Encoding completed with ${result.reductionPercent?.toFixed(1) ?? 'N/A'}% reduction. File replacement will be handled by queue service.`
                             });
                         } else {
-                            // Saved as new file, don't update original DB record
-                            console.log(`[Main Process] Save As New mode: Database record for original file not updated. New file at: ${result.outputPath}`);
+                            console.warn(`[Main Process] Probe failed for temp file ${result.outputPath}. Will still attempt replacement.`);
+                        }
+                    } else {
+                        // Non-overwrite mode (save as new) - we should still probe
+                        const probeData = await probeFile(result.outputPath);
+                        if (probeData) {
+                            console.log(`[Main Process] New file successfully probed: ${result.outputPath}`);
                             mainWindow?.webContents.send('encodingProgress', {
                                 jobId,
                                 status: `Save As New complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. File: ${result.outputPath}`
                             });
+                        } else {
+                            console.warn(`[Main Process] Probe failed for new file ${result.outputPath}.`);
                         }
-                    } else {
-                        console.warn(`[Main Process] Probe failed for final file ${result.outputPath}. Database not updated.`);
-                        mainWindow?.webContents.send('encodingProgress', {
-                            jobId,
-                            status: `Encoding complete but probe failed. Output: ${result.outputPath}`
-                        });
                     }
                 } catch (updateError) {
-                    console.error(`[Main Process] Error during post-encoding probe/update for Job ID ${jobId}:`, updateError);
+                    console.error(`[Main Process] Error during post-encoding probe for Job ID ${jobId}:`, updateError);
                     mainWindow?.webContents.send('encodingProgress', {
                         jobId,
-                        status: isOverwrite 
-                            ? `Overwrite complete but DB update failed. File: ${result.outputPath}`
-                            : `Save As New complete but post-encode step failed. File: ${result.outputPath}`
+                        status: `Encoding succeeded but probe failed. Output: ${result.outputPath}`
                     });
                 }
             } else if (!result.success) {
@@ -2212,7 +2212,7 @@ app.on("ready", async () => {
     const queueDataPath = path.join(app.getPath('userData'), 'queue.json');
 
     // Handler to load saved queue data
-    ipcMain.handle('loadQueueData', async () => {
+    ipcMain.handle('load-queue-data', async () => {
         console.log(`[Main Process] Request to load queue data from: ${queueDataPath}`);
         try {
             // Check if the file exists
@@ -2235,8 +2235,20 @@ app.on("ready", async () => {
     });
 
     // Handler to save queue data
-    ipcMain.handle('saveQueueData', async (_event, data) => {
-        console.log(`[Main Process] Request to save queue data with ${data.jobs?.length || 0} jobs`);
+    ipcMain.handle('save-queue-data', async (_event, data) => {
+        // Validate data structure
+        if (!data || typeof data !== 'object') {
+            console.error(`[Main Process] Invalid data provided to save-queue-data: ${data}`);
+            return { success: false, error: 'Invalid data structure provided' };
+        }
+        
+        // Ensure jobs array exists, create empty array if missing
+        if (!data.jobs || !Array.isArray(data.jobs)) {
+            console.warn(`[Main Process] Missing or invalid jobs array in queue data, creating empty array`);
+            data.jobs = [];
+        }
+        
+        console.log(`[Main Process] Request to save queue data with ${data.jobs.length || 0} jobs`);
         try {
             // Serialize and save the data
             await fs.writeFile(queueDataPath, JSON.stringify(data, null, 2), 'utf-8');
@@ -2249,21 +2261,40 @@ app.on("ready", async () => {
     });
 
     // Handler to get file size
-    ipcMain.handle('getFileSize', async (_event, filePath) => {
+    ipcMain.handle('get-file-size', async (_event, filePath) => {
+        // Add validation for undefined or empty paths
+        if (!filePath) {
+            console.error(`[Main Process] Invalid file path provided to get-file-size: ${filePath}`);
+            return undefined;
+        }
+        
         console.log(`[Main Process] Request to get file size for: ${filePath}`);
         try {
+            // Check if the file exists first
+            try {
+                await fs.access(filePath, fs.constants.R_OK);
+            } catch (accessError) {
+                console.error(`[Main Process] File does not exist or is not readable: ${filePath}`);
+                return undefined;
+            }
+            
             const stats = await fs.stat(filePath);
+            if (!stats.isFile()) {
+                console.error(`[Main Process] Path exists but is not a file: ${filePath}`);
+                return undefined;
+            }
+            
             const sizeInBytes = stats.size;
             console.log(`[Main Process] File size for ${filePath}: ${sizeInBytes} bytes`);
             return sizeInBytes;
         } catch (error) {
-            console.error(`[Main Process] Error getting file size:`, error);
+            console.error(`[Main Process] Error getting file size for ${filePath}:`, error);
             return undefined;
         }
     });
 
     // Handler to start an encoding job
-    ipcMain.handle('startEncoding', async (_event, options) => {
+    ipcMain.handle('start-encoding', async (_event, options) => {
         console.log(`[Main Process] Request to start encoding for: ${options.inputPath}`);
         try {
             // This reuses the existing startEncodingProcess handler
@@ -2279,7 +2310,7 @@ app.on("ready", async () => {
     });
 
     // Handler to open an encoding log
-    ipcMain.handle('openEncodingLog', async (_event, jobId) => {
+    ipcMain.handle('open-encoding-log', async (_event, jobId) => {
         console.log(`[Main Process] Request to open encoding log for job: ${jobId}`);
         try {
             const logFilePath = path.join(logDir, `${jobId}.log`);
@@ -2305,6 +2336,313 @@ app.on("ready", async () => {
 
     // Setup system tray
     setupTray();
+
+    // --- End IPC Handler Registration ---
+
+    // Add the replaceFile handler
+    ipcMain.handle('replace-file', async (_event: IpcMainInvokeEvent, sourcePath: string, destinationPath: string): Promise<boolean> => {
+        try {
+            console.log(`[Main Process] Replacing file: ${destinationPath} with ${sourcePath}`);
+            
+            // Verify paths are not empty or the same
+            if (!sourcePath || !destinationPath) {
+                console.error(`[Main Process] Invalid paths: source=${sourcePath}, destination=${destinationPath}`);
+                return false;
+            }
+            
+            if (sourcePath === destinationPath) {
+                console.log(`[Main Process] Source and destination are the same, no replacement needed`);
+                return true;
+            }
+            
+            // Check if source file exists and is readable
+            try {
+                const sourceStats = await fs.stat(sourcePath);
+                if (!sourceStats.isFile() || sourceStats.size === 0) {
+                    console.error(`[Main Process] Source file is not valid: ${sourcePath}, size: ${sourceStats.size}`);
+                    return false;
+                }
+                console.log(`[Main Process] Source file verified: ${sourcePath}, size: ${sourceStats.size} bytes`);
+            } catch (error) {
+                console.error(`[Main Process] Error accessing source file: ${sourcePath}`, error);
+                return false;
+            }
+            
+            // Create a unique backup path with timestamp
+            const timestamp = new Date().getTime();
+            const backupPath = `${destinationPath}.backup-${timestamp}`;
+            let backupCreated = false;
+            
+            // Check if destination exists
+            if (fsSync.existsSync(destinationPath)) {
+                try {
+                    // Create backup with retry logic
+                    for (let attempt = 1; attempt <= 3; attempt++) {
+                        try {
+                            await fs.rename(destinationPath, backupPath);
+                            backupCreated = true;
+                            console.log(`[Main Process] Created backup of original file at: ${backupPath} (attempt ${attempt})`);
+                            break;
+                        } catch (backupError) {
+                            if (attempt < 3) {
+                                console.log(`[Main Process] Backup attempt ${attempt} failed, retrying in 500ms...`);
+                                // Wait before retry to handle potential file locks
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                            } else {
+                                throw backupError;
+                            }
+                        }
+                    }
+                } catch (backupError) {
+                    console.error(`[Main Process] Failed to create backup:`, backupError);
+                    // Try direct replacement if backup fails
+                    console.log(`[Main Process] Attempting direct replacement without backup...`);
+                }
+            }
+            
+            // Replace file with retry logic
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    await fs.copyFile(sourcePath, destinationPath);
+                    
+                    // Verify the copy succeeded by comparing file sizes
+                    const sourceSize = (await fs.stat(sourcePath)).size;
+                    const destSize = (await fs.stat(destinationPath)).size;
+                    
+                    if (sourceSize !== destSize) {
+                        console.error(`[Main Process] File size mismatch after copy: Source=${sourceSize}, Dest=${destSize}`);
+                        if (attempt < 3) {
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            continue;
+                        }
+                        throw new Error(`File size mismatch after copy: Source=${sourceSize}, Dest=${destSize}`);
+                    }
+                    
+                    console.log(`[Main Process] Successfully replaced file (attempt ${attempt})`);
+                    
+                    // Delete source file after successful copy
+                    try {
+                        await fs.unlink(sourcePath);
+                        console.log(`[Main Process] Removed source file: ${sourcePath}`);
+                    } catch (cleanupError) {
+                        console.warn(`[Main Process] Could not remove source file, but replacement was successful:`, cleanupError);
+                    }
+                    
+                    // Remove the backup file if it was created and replacement was successful
+                    if (backupCreated && fsSync.existsSync(backupPath)) {
+                        try {
+                            await fs.unlink(backupPath);
+                            console.log(`[Main Process] Removed backup file: ${backupPath}`);
+                        } catch (cleanupError) {
+                            console.warn(`[Main Process] Could not remove backup file:`, cleanupError);
+                        }
+                    }
+                    
+                    return true;
+                } catch (copyError) {
+                    if (attempt < 3) {
+                        console.log(`[Main Process] Replace attempt ${attempt} failed, retrying in 500ms...`, copyError);
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    } else {
+                        console.error(`[Main Process] All replacement attempts failed:`, copyError);
+                        
+                        // Restore from backup if it exists and final attempt failed
+                        if (backupCreated && fsSync.existsSync(backupPath)) {
+                            try {
+                                await fs.rename(backupPath, destinationPath);
+                                console.log(`[Main Process] Restored original file from backup`);
+                            } catch (restoreError) {
+                                console.error(`[Main Process] Failed to restore from backup:`, restoreError);
+                            }
+                        }
+                        
+                        throw copyError;
+                    }
+                }
+            }
+            
+            // This should never be reached due to the logic above
+            return false;
+        } catch (error) {
+            console.error(`[Main Process] Fatal error in replaceFile:`, error);
+            return false;
+        }
+    });
+
+    // Add handler for deleting files
+    ipcMain.handle('delete-file', async (_event: IpcMainInvokeEvent, filePath: string): Promise<boolean> => {
+        try {
+            console.log(`[Main Process] Deleting file: ${filePath}`);
+            
+            // Check if file exists before attempting to delete
+            if (fsSync.existsSync(filePath)) {
+                await fs.unlink(filePath);
+                console.log(`[Main Process] Successfully deleted file: ${filePath}`);
+                return true;
+            } else {
+                console.log(`[Main Process] File does not exist, skipping deletion: ${filePath}`);
+                return false;
+            }
+        } catch (error) {
+            console.error(`[Main Process] Error deleting file ${filePath}:`, error);
+            return false;
+        }
+    });
+
+    // --- App Event Listeners ---
+
+    // New comprehensive handler to finalize encoded files
+    ipcMain.handle('finalize-encoded-file', async (_event, params: { 
+        tempFilePath: string, 
+        finalFilePath: string, 
+        jobId: string,
+        isOverwrite: boolean,
+        originalFilePath?: string
+    }) => {
+        console.log(`[Main Process] Finalizing encoded file:`);
+        console.log(`[Main Process] - Temp file: ${params.tempFilePath}`);
+        console.log(`[Main Process] - Final destination: ${params.finalFilePath}`);
+        console.log(`[Main Process] - Job ID: ${params.jobId}`);
+        console.log(`[Main Process] - Overwrite: ${params.isOverwrite}`);
+        
+        try {
+            // Step 1: Validate that paths are provided and not undefined
+            if (!params.tempFilePath) {
+                console.error(`[Main Process] Missing temp file path`);
+                return { success: false, error: "Temp file path is missing or undefined" };
+            }
+            
+            if (!params.finalFilePath) {
+                console.error(`[Main Process] Missing final file path`);
+                return { success: false, error: "Final file path is missing or undefined" };
+            }
+            
+            // Step 2: Check if temp file exists
+            try {
+                const tempStats = await fs.stat(params.tempFilePath);
+                if (!tempStats.isFile() || tempStats.size === 0) {
+                    console.error(`[Main Process] Temp file is invalid or empty: ${params.tempFilePath}`);
+                    return { success: false, error: `Temp file is invalid or empty: ${params.tempFilePath}` };
+                }
+                console.log(`[Main Process] Temp file verified: ${params.tempFilePath}, size: ${tempStats.size} bytes`);
+            } catch (error) {
+                console.error(`[Main Process] Couldn't access temp file: ${error instanceof Error ? error.message : String(error)}`);
+                return { success: false, error: `Couldn't access temp file: ${error instanceof Error ? error.message : String(error)}` };
+            }
+            
+            // Step 3: Probe the temp file to get updated metadata
+            console.log(`[Main Process] Probing temp file: ${params.tempFilePath}`);
+            const probeData = await probeFile(params.tempFilePath);
+            if (!probeData) {
+                console.error(`[Main Process] Failed to probe temp file: ${params.tempFilePath}`);
+                return { success: false, error: "Failed to probe temp file" };
+            }
+            
+            // Step 4: Perform the file replacement
+            let success = false;
+            if (params.tempFilePath !== params.finalFilePath) {
+                console.log(`[Main Process] Moving ${params.tempFilePath} to ${params.finalFilePath}`);
+                
+                // Create a backup of the destination file if it exists (for safety)
+                let backupPath = "";
+                let backupCreated = false;
+                
+                if (fsSync.existsSync(params.finalFilePath)) {
+                    backupPath = `${params.finalFilePath}.backup-${Date.now()}`;
+                    try {
+                        await fs.rename(params.finalFilePath, backupPath);
+                        backupCreated = true;
+                        console.log(`[Main Process] Created backup at: ${backupPath}`);
+                    } catch (backupError) {
+                        console.error(`[Main Process] Failed to create backup:`, backupError);
+                        // Continue anyway - we'll try a direct replacement
+                    }
+                }
+                
+                // Copy the temp file to the final destination
+                try {
+                    await fs.copyFile(params.tempFilePath, params.finalFilePath);
+                    
+                    // Verify sizes match
+                    const srcSize = (await fs.stat(params.tempFilePath)).size;
+                    const destSize = (await fs.stat(params.finalFilePath)).size;
+                    
+                    if (srcSize !== destSize) {
+                        throw new Error(`File size mismatch after copy: Temp=${srcSize}, Final=${destSize}`);
+                    }
+                    
+                    // Copy succeeded, clean up
+                    success = true;
+                    console.log(`[Main Process] Successfully copied file to destination: ${params.finalFilePath}`);
+                    
+                    // Remove the temp file
+                    try {
+                        await fs.unlink(params.tempFilePath);
+                        console.log(`[Main Process] Removed temp file: ${params.tempFilePath}`);
+                    } catch (cleanupError) {
+                        console.warn(`[Main Process] Could not remove temp file: ${cleanupError}`);
+                        // Non-fatal error, continue
+                    }
+                    
+                    // Remove backup if we created one
+                    if (backupCreated) {
+                        try {
+                            await fs.unlink(backupPath);
+                            console.log(`[Main Process] Removed backup: ${backupPath}`);
+                        } catch (cleanupError) {
+                            console.warn(`[Main Process] Could not remove backup: ${cleanupError}`);
+                            // Non-fatal error, continue
+                        }
+                    }
+                } catch (copyError) {
+                    console.error(`[Main Process] Error copying file:`, copyError);
+                    
+                    // Restore from backup if available
+                    if (backupCreated) {
+                        try {
+                            await fs.rename(backupPath, params.finalFilePath);
+                            console.log(`[Main Process] Restored original from backup`);
+                        } catch (restoreError) {
+                            console.error(`[Main Process] Failed to restore from backup:`, restoreError);
+                        }
+                    }
+                    
+                    return { success: false, error: `File copy failed: ${copyError instanceof Error ? copyError.message : String(copyError)}` };
+                }
+            } else {
+                console.log(`[Main Process] Temp and final paths are the same, no move needed`);
+                success = true;
+            }
+            
+            // Step 5: Update the database with the new file information
+            if (success && params.isOverwrite) {
+                const dbPath = params.originalFilePath || params.finalFilePath;
+                
+                try {
+                    // Add metadata for the encoded file
+                    console.log(`[Main Process] Updating database for: ${dbPath}`);
+                    await updateMediaAfterEncoding(probeData, params.jobId, dbPath);
+                    console.log(`[Main Process] Database updated successfully`);
+                } catch (dbError) {
+                    console.error(`[Main Process] Database update failed:`, dbError);
+                    // Non-fatal error, continue with success
+                }
+            }
+            
+            return { 
+                success: true, 
+                finalPath: params.finalFilePath,
+                probeData: probeData,
+                message: `File successfully finalized at: ${params.finalFilePath}`
+            };
+        } catch (error) {
+            console.error(`[Main Process] Error finalizing encoded file:`, error);
+            return { 
+                success: false, 
+                error: `Error finalizing encoded file: ${error instanceof Error ? error.message : String(error)}`
+            };
+        }
+    });
 })
 
 // Quit when all windows are closed, except on macOS.

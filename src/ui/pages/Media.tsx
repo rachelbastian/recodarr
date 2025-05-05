@@ -25,7 +25,7 @@ import {
     DropdownMenuContent,
     DropdownMenuTrigger,
 } from "../../../src/components/ui/dropdown-menu";
-import { Columns, CheckSquare } from 'lucide-react';
+import { Columns, CheckSquare, FileText } from 'lucide-react';
 import { SlidersHorizontal, Check, PlayCircle } from 'lucide-react'; // Import icon for advanced search and encoding
 import {
     Sheet,
@@ -54,6 +54,10 @@ import {
 } from "../../../src/components/ui/tooltip";
 import { Card, CardContent } from "../../../src/components/ui/card";
 import { Info, Film, Music, Tv2, Maximize2, Volume2, Library, Folder, BookOpen } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import queueService, { EncodingJob } from '../../services/queueService';
+import { EncodingResult } from '../../types.d';
+import { getAudioTrackActions, getSubtitleTrackActions } from '../../utils/presetUtil';
 
 // Define the type for a media item from the DB
 interface MediaItem {
@@ -613,7 +617,9 @@ const Media: React.FC = () => {
         // Get selected media IDs
         const selectedRowKeys = Object.keys(rowSelection);
         console.log('Selected row keys:', selectedRowKeys);
-        const selectedMediaIds = selectedRowKeys.map(key => table.getRow(key).original.id);
+        
+        // Modified to work with the direct item IDs instead of using table rows
+        const selectedMediaIds = selectedRowKeys.map(key => Number(key));
         console.log('Mapped selected media IDs:', selectedMediaIds);
         
         // Get selected preset
@@ -646,32 +652,90 @@ const Media: React.FC = () => {
                         continue;
                     }
                     
-                    // Create output path
+                    // Calculate track selections based on preset
+                    const audioTrackSelections = getAudioTrackActions(probeData.streams, preset);
+                    const subtitleTrackSelections = getSubtitleTrackActions(probeData.streams, preset);
+                    
+                    console.log(`Track selections for ${mediaId}:`, {
+                        audio: audioTrackSelections,
+                        subtitle: subtitleTrackSelections
+                    });
+                    
+                    // Create output path with a temporary file name so we don't overwrite the original yet
                     const pathSeparator = window.navigator.platform.indexOf('Win') > -1 ? '\\' : '/';
                     const fileDir = mediaItem.filePath.split(/[/\\]/).slice(0, -1).join(pathSeparator);
                     const fileName = mediaItem.filePath.split(/[/\\]/).pop() || '';
                     const fileNameWithoutExt = fileName.split('.').slice(0, -1).join('.');
-                    // Use preset extension if available, otherwise default to mkv
-                    const outputExtension = probeData.format?.format_name?.includes('mp4') ? 'mp4' : 'mkv'; // Simple default, might need refinement
-                    const outputPath = `${fileDir}${pathSeparator}${fileNameWithoutExt}_encoded.${outputExtension}`;
-                    console.log(`Generated output path for ${mediaId}: ${outputPath}`);
+                    const fileExt = fileName.split('.').pop() || '';
+                    // Generate a clean temp file name without risk of double suffixes
+                    const outputPath = `${fileDir}${pathSeparator}${fileNameWithoutExt}.tmp.${fileExt}`;
+                    console.log(`Generated temporary output path for ${mediaId}: ${outputPath}`);
                     
                     console.log(`Calling addToQueue for ${mediaId} with preset:`, preset.name);
-                    // Add to encoding queue
+                    // Add to encoding queue with proper track selections
                     const addedJob = addToQueue(
                         mediaItem.filePath,
                         outputPath,
-                        false, // don't overwrite input
+                        true, // Set overwriteInput=true to let queueService handle file replacement
                         preset,
                         probeData,
-                        { audio: {}, subtitle: {} } // Default track selections - TODO: Allow user selection?
+                        {
+                            audio: audioTrackSelections,
+                            subtitle: subtitleTrackSelections
+                        }
                     );
                     console.log(`addToQueue result for ${mediaId}:`, addedJob);
                     
-                    // Save reference to job ID in media database
                     if (addedJob && addedJob.id) {
+                        // Save reference to job ID in media database
                         await saveJobMediaReference(addedJob.id, mediaId);
                         console.log(`Saved job-media reference: Job ${addedJob.id} -> Media ${mediaId}`);
+
+                        // Schedule a check for job completion and update after encoding
+                        // This doesn't interfere with the main queue operation
+                        const jobPollingInterval = setInterval(async () => {
+                            try {
+                                // Check if the job is still in the queue
+                                const allJobs = queueService.getAllJobs();
+                                const job = allJobs.find(j => j.id === addedJob.id);
+                                
+                                // If job exists and is completed, update the media record
+                                if (job && job.status === 'completed') {
+                                    console.log(`Job ${addedJob.id} completed, updating media ${mediaId}`);
+                                    
+                                    clearInterval(jobPollingInterval);
+                                    
+                                    try {
+                                        // Get the file size of the original file (which has been replaced)
+                                        const fileSize = await window.electron.getFileSize(mediaItem.filePath);
+                                        
+                                        // Update the media entry in the database
+                                        await window.electron.dbQuery(
+                                            'UPDATE media SET encodingJobId = ?, currentSize = ? WHERE id = ?',
+                                            [
+                                                addedJob.id,
+                                                fileSize, 
+                                                mediaId
+                                            ]
+                                        );
+                                        
+                                        console.log(`Updated media record ${mediaId} in database`);
+                                        // Refresh the media list
+                                        fetchMedia();
+                                    } catch (err) {
+                                        console.error(`Error finalizing encoding for ${mediaId}:`, err);
+                                    }
+                                } 
+                                // If job is failed or doesn't exist anymore, stop polling
+                                else if (!job || job.status === 'failed' || job.status === 'cancelled') {
+                                    console.log(`Job ${addedJob.id} is no longer active, stopping monitor`);
+                                    clearInterval(jobPollingInterval);
+                                }
+                            } catch (err) {
+                                console.error(`Error checking job status for ${addedJob.id}:`, err);
+                                clearInterval(jobPollingInterval);
+                            }
+                        }, 5000); // Check every 5 seconds
                     }
                     
                     queuedCount++;
@@ -684,6 +748,9 @@ const Media: React.FC = () => {
         }
         
         console.log(`Finished processing. Queued ${queuedCount} items.`);
+        // Start queue processing immediately
+        queueService.ensureProcessing();
+        
         // Clear selection after queueing
         setRowSelection({});
         // TODO: Add feedback indicating queueing is complete (e.g., toast)
@@ -796,6 +863,25 @@ const Media: React.FC = () => {
                         {selectionMode ? "Cancel Selection" : "Select Items"}
                     </Button>
                     
+                    {selectionMode && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                                // Create a new selection object with all current items selected
+                                const allSelected = mediaItems.reduce((acc, item) => {
+                                    acc[item.id.toString()] = true;
+                                    return acc;
+                                }, {} as RowSelectionState);
+                                setRowSelection(allSelected);
+                            }}
+                            className="mr-1"
+                        >
+                            <Check className="h-4 w-4 mr-2" />
+                            Select All
+                        </Button>
+                    )}
+                    
                     <div className="flex items-center space-x-2">
                         <Button 
                             variant={viewType === 'table' ? "default" : "outline"} 
@@ -849,23 +935,23 @@ const Media: React.FC = () => {
                                 Filter
                             </Button>
                         </SheetTrigger>
-                        <SheetContent>
-                            <SheetHeader>
-                                <SheetTitle>Advanced Search & Filters</SheetTitle>
-                                <SheetDescription>
+                        <SheetContent className="p-6">
+                            <SheetHeader className="pb-4">
+                                <SheetTitle className="px-1">Advanced Search & Filters</SheetTitle>
+                                <SheetDescription className="px-1">
                                     Refine your media view by applying specific filters.
                                 </SheetDescription>
                             </SheetHeader>
-                            <div className="grid gap-6 py-4">
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label htmlFor="libraryName" className="text-right col-span-1">
+                            <div className="grid gap-8 py-4 px-2">
+                                <div className="grid grid-cols-[120px_1fr] items-center gap-4">
+                                    <Label htmlFor="libraryName" className="text-right">
                                         Library
                                     </Label>
                                     <Select
                                         value={libraryNameFilter || 'All'}
                                         onValueChange={(value) => setLibraryNameFilter(value === 'All' ? '' : value)}
                                     >
-                                        <SelectTrigger className="col-span-3">
+                                        <SelectTrigger>
                                             <SelectValue placeholder="Select library" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -875,15 +961,15 @@ const Media: React.FC = () => {
                                         </SelectContent>
                                     </Select>
                                 </div>
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label htmlFor="libraryType" className="text-right col-span-1">
+                                <div className="grid grid-cols-[120px_1fr] items-center gap-4">
+                                    <Label htmlFor="libraryType" className="text-right">
                                         Type
                                     </Label>
                                     <Select
                                         value={libraryTypeFilter}
                                         onValueChange={(value: 'All' | 'TV' | 'Movies' | 'Anime') => setLibraryTypeFilter(value)}
                                     >
-                                        <SelectTrigger className="col-span-3">
+                                        <SelectTrigger>
                                             <SelectValue placeholder="Select type" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -894,15 +980,15 @@ const Media: React.FC = () => {
                                         </SelectContent>
                                     </Select>
                                 </div>
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label htmlFor="videoCodec" className="text-right col-span-1">
+                                <div className="grid grid-cols-[120px_1fr] items-center gap-4">
+                                    <Label htmlFor="videoCodec" className="text-right">
                                         Video Codec
                                     </Label>
                                     <Select
                                         value={videoCodecFilter || 'All'}
                                         onValueChange={(value) => setVideoCodecFilter(value === 'All' ? '' : value)}
                                     >
-                                        <SelectTrigger className="col-span-3">
+                                        <SelectTrigger>
                                             <SelectValue placeholder="Select video codec" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -912,15 +998,15 @@ const Media: React.FC = () => {
                                         </SelectContent>
                                     </Select>
                                 </div>
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label htmlFor="audioCodec" className="text-right col-span-1">
+                                <div className="grid grid-cols-[120px_1fr] items-center gap-4">
+                                    <Label htmlFor="audioCodec" className="text-right">
                                         Audio Codec
                                     </Label>
                                     <Select
                                         value={audioCodecFilter || 'All'}
                                         onValueChange={(value) => setAudioCodecFilter(value === 'All' ? '' : value)}
                                     >
-                                        <SelectTrigger className="col-span-3">
+                                        <SelectTrigger>
                                             <SelectValue placeholder="Select audio codec" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -931,10 +1017,20 @@ const Media: React.FC = () => {
                                     </Select>
                                 </div>
                             </div>
-                            <SheetFooter>
-                                <SheetClose asChild>
-                                    <Button type="button" variant="outline">Close</Button>
-                                </SheetClose>
+                            <SheetFooter className="pt-6 px-2">
+                                <Button 
+                                    type="button" 
+                                    variant="outline"
+                                    onClick={() => {
+                                        // Reset all filters to default values
+                                        setLibraryNameFilter('');
+                                        setLibraryTypeFilter('All');
+                                        setVideoCodecFilter('');
+                                        setAudioCodecFilter('');
+                                    }}
+                                >
+                                    Reset Filters
+                                </Button>
                                 <SheetClose asChild>
                                     <Button type="button" onClick={() => fetchMedia()}>Apply Filters</Button>
                                 </SheetClose>
@@ -950,7 +1046,7 @@ const Media: React.FC = () => {
                 <div className="h-full flex flex-col">
                     {/* Add the encode title above the table with less padding and left alignment */}
                     <div className="border-b px-2 py-1.5 flex items-center">
-                        <span className="text-sm font-medium text-left">Encode</span>
+                        <span className="text-sm font-medium pl-2">Encode</span>
                         <span className="text-xs text-muted-foreground ml-2">
                             Select items to encode using the checkboxes
                         </span>
@@ -1103,21 +1199,23 @@ const Media: React.FC = () => {
                                                             )}
                                                             
                                                             {/* Middle content column */}
-                                                            <div className={`min-w-0 ${!selectionMode ? 'col-span-2' : ''}`}>
+                                                            <div className={`min-w-0 ${!selectionMode ? 'col-span-2' : ''} pr-6 relative`}>
                                                                 <div className="flex items-baseline min-w-0">
-                                                                    <div className="w-10 flex-shrink-0">
+                                                                    <div className="w-10 flex-shrink-0 relative">
                                                                         <span className="text-xs font-medium text-muted-foreground">Title:</span>
+                                                                        <div className="absolute right-0 top-0 bottom-0 w-px h-full bg-border"></div>
                                                                     </div>
-                                                                    <h3 className="font-medium text-base truncate flex-1" title={item.title}>
+                                                                    <h3 className="font-medium text-base truncate flex-1 pl-2" title={item.title}>
                                                                         {item.title}
                                                                     </h3>
                                                                 </div>
                                                                 
                                                                 <div className="flex items-center mt-1.5 min-w-0">
-                                                                    <div className="w-10 flex-shrink-0">
+                                                                    <div className="w-10 flex-shrink-0 relative">
                                                                         <span className="text-xs font-medium text-muted-foreground">Path:</span>
+                                                                        <div className="absolute right-0 top-0 bottom-0 w-px h-full bg-border"></div>
                                                                     </div>
-                                                                    <div className="text-[10px] text-muted-foreground/60 truncate flex-1" title={item.filePath}>
+                                                                    <div className="text-[10px] text-muted-foreground/60 truncate flex-1 pl-2" title={item.filePath}>
                                                                         {item.filePath}
                                                                     </div>
                                                                 </div>
@@ -1230,10 +1328,13 @@ const Media: React.FC = () => {
                                                                         )}
                                                                     </TooltipProvider>
                                                                 </div>
+                                                                
+                                                                {/* Vertical divider */}
+                                                                <div className="absolute right-3 top-0 bottom-0 w-px bg-border"></div>
                                                             </div>
                                                             
                                                             {/* Right side column with size and status */}
-                                                            <div className="flex flex-col items-end space-y-2 min-w-[130px]">
+                                                            <div className="flex flex-col items-end space-y-2 min-w-[130px] pl-3">
                                                                 <div className="flex items-center gap-2">
                                                                     {item.encodingJobId ? (
                                                                         <Badge variant="outline" className="text-xs bg-green-500/10 text-green-500 border-green-500/20 hover:bg-green-500/20">
@@ -1279,6 +1380,27 @@ const Media: React.FC = () => {
                                                                                             formatBytes(item.originalSize - item.currentSize) : 
                                                                                             '0 Bytes'}
                                                                                     </span>
+                                                                                    
+                                                                                    {item.encodingJobId && (
+                                                                                        <>
+                                                                                            <span className="text-muted-foreground">Job ID:</span>
+                                                                                            <span className="truncate" title={item.encodingJobId}>
+                                                                                                {item.encodingJobId.substring(0, 8)}...
+                                                                                            </span>
+                                                                                            
+                                                                                            <span className="text-muted-foreground">Logs:</span>
+                                                                                            <Link 
+                                                                                                to={`/jobs/logs/${item.encodingJobId}`}
+                                                                                                className="text-primary hover:underline flex items-center"
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                }}
+                                                                                            >
+                                                                                                <FileText className="h-3 w-3 mr-1" />
+                                                                                                View encoding logs
+                                                                                            </Link>
+                                                                                        </>
+                                                                                    )}
                                                                                 </div>
                                                                             </div>
                                                                         </TooltipContent>

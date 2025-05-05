@@ -129,6 +129,24 @@ interface SaveDialogResult {
     filePath?: string;
 }
 
+// Define finalizeParams interface
+interface FinalizeEncodedFileParams {
+    tempFilePath: string;
+    finalFilePath: string;
+    jobId: string;
+    isOverwrite: boolean;
+    originalFilePath?: string;
+}
+
+// Define finalizeResult interface
+interface FinalizeEncodedFileResult {
+    success: boolean;
+    finalPath?: string;
+    probeData?: any;
+    message?: string;
+    error?: string;
+}
+
 // Define the API structure locally using locally defined types
 type LocalElectronApi = {
     // Keep existing working methods
@@ -171,6 +189,7 @@ type LocalElectronApi = {
     getEncodingLog: (jobId: string) => Promise<string | null>;
     subscribeEncodingProgress: (callback: (data: { progress?: number; status?: string; fps?: number; elapsed?: number; frame?: number; totalFrames?: number, jobId?: string }) => void) => UnsubscribeFunction;
     unsubscribeEncodingProgress: () => void;
+    finalizeEncodedFile: (params: FinalizeEncodedFileParams) => Promise<FinalizeEncodedFileResult>;
     
     // --- Dialog Methods ---
     showOpenDialog: (options: DialogOptions) => Promise<{ canceled: boolean; filePaths: string[] }>;
@@ -187,6 +206,8 @@ type LocalElectronApi = {
     getFileSize: (filePath: string) => Promise<number | undefined>;
     startEncoding: (options: any) => Promise<any>;
     openEncodingLog: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    replaceFile: (sourcePath: string, destinationPath: string) => Promise<boolean>;
+    deleteFile: (filePath: string) => Promise<boolean>;
 };
 
 // Expose methods using the locally defined types
@@ -242,6 +263,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
     unsubscribeEncodingProgress: () => {
         electron.ipcRenderer.removeAllListeners('encodingProgress'); 
     },
+    finalizeEncodedFile: (params: FinalizeEncodedFileParams) => ipcInvoke('finalize-encoded-file', params),
     showOpenDialog: (options: DialogOptions) => ipcInvoke('dialog:showOpen', options), 
     showSaveDialog: (options: SaveDialogOptions) => ipcInvoke('dialog:showSave', options), 
 
@@ -256,11 +278,13 @@ electron.contextBridge.exposeInMainWorld("electron", {
     showConfirmationDialog: (options: DialogOptions) => ipcInvoke('show-confirmation-dialog', options),
 
     // --- Queue Methods ---
-    loadQueueData: () => ipcInvoke('loadQueueData'),
-    saveQueueData: (data: any) => ipcInvoke('saveQueueData', data),
-    getFileSize: (filePath: string) => ipcInvoke('getFileSize', filePath),
-    startEncoding: (options: any) => ipcInvoke('startEncoding', options),
-    openEncodingLog: (jobId: string) => ipcInvoke('openEncodingLog', jobId),
+    loadQueueData: () => ipcInvoke('load-queue-data'),
+    saveQueueData: (data) => ipcInvoke('save-queue-data', data),
+    getFileSize: (filePath) => ipcInvoke('get-file-size', filePath),
+    startEncoding: (options) => ipcInvoke('start-encoding', options),
+    openEncodingLog: (jobId) => ipcInvoke('open-encoding-log', jobId),
+    replaceFile: (sourcePath, destinationPath) => ipcInvoke('replace-file', sourcePath, destinationPath),
+    deleteFile: (filePath) => ipcInvoke('delete-file', filePath),
 
 } satisfies LocalElectronApi); // Satisfy against the local type
 

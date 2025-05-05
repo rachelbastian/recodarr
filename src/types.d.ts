@@ -238,6 +238,21 @@ export interface IElectronAPI {
     getFileSize: (filePath: string) => Promise<number | undefined>;
     startEncoding: (options: any) => Promise<any>;
     openEncodingLog: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    replaceFile: (sourcePath: string, destinationPath: string) => Promise<boolean>;
+    deleteFile: (filePath: string) => Promise<boolean>;
+    finalizeEncodedFile: (params: { 
+        tempFilePath: string; 
+        finalFilePath: string; 
+        jobId: string; 
+        isOverwrite: boolean; 
+        originalFilePath?: string 
+    }) => Promise<{ 
+        success: boolean; 
+        finalPath?: string; 
+        probeData?: any; 
+        message?: string; 
+        error?: string 
+    }>;
 
     // --- Include other existing API methods (Copied/Verified from root & preload) --- 
     subscribeStatistics: (callback: (data: StatisticsData) => void) => UnsubscribeFunction;

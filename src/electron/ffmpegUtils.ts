@@ -58,6 +58,7 @@ interface EncodingResult {
     finalSizeMB?: number;
     reductionPercent?: number;
     jobId?: string;
+    logFileId?: string; // Add logFileId field to match the actual result
 }
 // --- End Local Type Definitions --- 
 
@@ -700,15 +701,76 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
                     writeLog(`[stderr on end] ${stderr.trim()}`);
                 }
                 
-                logStream?.end();
-                resolve({ success: true, outputPath: tempOutputPath });
+                // Calculate file size reduction
+                try {
+                    const getFinalStats = async () => {
+                        try {
+                            // Get size of final output file
+                            const finalStats = await fs.stat(tempOutputPath);
+                            const finalSize = finalStats.size;
+                            const initialSizeMB = initialSize / (1024*1024);
+                            const finalSizeMB = finalSize / (1024*1024);
+                            const reductionPercent = initialSize > 0 ? 
+                                ((initialSize - finalSize) / initialSize) * 100 : 0;
+                            
+                            writeLog(`[Info] Encoding stats:`);
+                            writeLog(`[Info] - Initial file size: ${initialSizeMB.toFixed(2)} MB`);
+                            writeLog(`[Info] - Final file size: ${finalSizeMB.toFixed(2)} MB`);
+                            writeLog(`[Info] - Size reduction: ${reductionPercent.toFixed(2)}%`);
+                            
+                            // Add temporary file path to log
+                            writeLog(`[Info] Temporary output file: ${tempOutputPath}`);
+                            writeLog(`[Info] Target final path: ${finalTargetPath}`);
+                            
+                            // Close log stream before resolving
+                            logStream?.end();
+                            
+                            // Return the result with file size information
+                            resolve({
+                                success: true,
+                                outputPath: tempOutputPath,
+                                initialSizeMB: parseFloat(initialSizeMB.toFixed(2)),
+                                finalSizeMB: parseFloat(finalSizeMB.toFixed(2)),
+                                reductionPercent: parseFloat(reductionPercent.toFixed(2)),
+                                jobId: options.jobId,
+                                logFileId: options.jobId // Add logFileId explicitly equal to jobId
+                            });
+                        } catch (statsError) {
+                            writeLog(`[Error] Error getting final file stats: ${statsError instanceof Error ? statsError.message : String(statsError)}`);
+                            logStream?.end();
+                            resolve({ 
+                                success: true, 
+                                outputPath: tempOutputPath,
+                                jobId: options.jobId,
+                                logFileId: options.jobId,
+                                error: `Encoding succeeded but failed to get file statistics: ${statsError instanceof Error ? statsError.message : String(statsError)}`
+                            });
+                        }
+                    };
+                    // Call the async function to get final stats
+                    getFinalStats();
+                } catch (finalError) {
+                    writeLog(`[Error] Error in final processing: ${finalError instanceof Error ? finalError.message : String(finalError)}`);
+                    logStream?.end();
+                    resolve({ 
+                        success: true, 
+                        outputPath: tempOutputPath,
+                        jobId: options.jobId,
+                        logFileId: options.jobId
+                    });
+                }
             });
 
             command.on('error', (err: any) => {
                 console.error(`[Encoding Process] Error during encoding:`, err);
                 writeLog(`[Error] Encoding failed: ${err instanceof Error ? err.message : String(err)}`);
                 logStream?.end();
-                resolve({ success: false, error: err instanceof Error ? err.message : String(err) });
+                resolve({ 
+                    success: false, 
+                    error: err instanceof Error ? err.message : String(err),
+                    jobId: options.jobId,
+                    logFileId: options.jobId
+                });
             });
 
             // Start encoding
@@ -717,7 +779,12 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             console.error(`[Encoding Process] Error starting encoding:`, error);
             writeLog(`[Error] Encoding failed: ${error instanceof Error ? error.message : String(error)}`);
             logStream?.end();
-            resolve({ success: false, error: error instanceof Error ? error.message : String(error) });
+            resolve({ 
+                success: false, 
+                error: error instanceof Error ? error.message : String(error),
+                jobId: options.jobId,
+                logFileId: options.jobId
+            });
         }
     });
 }

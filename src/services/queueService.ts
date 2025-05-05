@@ -6,7 +6,7 @@ import { TrackAction } from '../utils/encodingUtil.js';
 const electronAPI = window.electron;
 
 // Job status types
-export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+export type JobStatus = 'queued' | 'processing' | 'verifying' | 'completed' | 'failed' | 'cancelled';
 
 // Job interface
 export interface EncodingJob {
@@ -29,6 +29,7 @@ export interface EncodingJob {
   result?: EncodingResult;
   priority: number; // Higher numbers = higher priority
   addedAt: Date;
+  processingEndTime?: string;
 }
 
 // Queue configuration
@@ -105,15 +106,25 @@ class EncodingQueueService {
             ...this.config,
             ...savedData.config
           };
-          console.log('QueueService: Restored queue configuration');
+          console.log('QueueService: Restored queue configuration', this.config);
         }
       }
       
       this.isInitialized = true;
       
-      // If autoStart is enabled and there are queued jobs, start processing
-      if (this.config.autoStart && this.queue.some(job => job.status === 'queued')) {
-        this.startProcessing();
+      // Sort the queue to ensure proper processing order
+      this.sortQueue();
+      
+      // If autoStart is enabled and there are queued jobs, always start processing
+      const hasQueuedJobs = this.queue.some(job => job.status === 'queued');
+      if (this.config.autoStart && hasQueuedJobs) {
+        console.log('QueueService: Auto-starting queue with restored jobs');
+        // Short delay to ensure everything else is initialized
+        setTimeout(() => {
+          this.startProcessing();
+          // Force queue processing to ensure jobs start
+          this.forceProcessQueue();
+        }, 500);
       }
     } catch (error) {
       console.error('QueueService: Error loading saved queue data:', error);
@@ -128,12 +139,19 @@ class EncodingQueueService {
     try {
       console.log('QueueService: Saving queue state');
       
-      // Only persist queued jobs, not completed/failed/processing
-      const jobsToSave = this.queue.filter(job => job.status === 'queued');
+      // Validate queue before saving
+      if (!this.queue) {
+        console.error('QueueService: Queue is undefined, initializing empty queue');
+        this.queue = [];
+      }
       
+      // Only persist queued jobs, not completed/failed/processing
+      const jobsToSave = this.queue.filter(job => job && job.status === 'queued');
+      
+      // Prepare valid data structure
       const dataToSave = {
         jobs: jobsToSave,
-        config: this.config,
+        config: this.config || { maxParallelJobs: 2, autoStart: true },
         savedAt: new Date().toISOString()
       };
       
@@ -218,9 +236,19 @@ class EncodingQueueService {
       this.eventCallbacks.onJobAdded(job);
     }
     
-    // Start processing if autoStart is enabled
-    if (this.config.autoStart && !this.isProcessing) {
+    // Always start processing when a job is added, unless autoStart is disabled
+    if (this.config.autoStart) {
+      console.log(`QueueService: Auto-starting queue after adding job ${id}`);
       this.startProcessing();
+      
+      // Ensure the queue processes this job immediately 
+      setTimeout(() => {
+        // Check if the job is still queued and try to process it
+        if (this.queue.some(j => j.id === id && j.status === 'queued')) {
+          console.log(`QueueService: Force processing queue to pick up job ${id}`);
+          this.forceProcessQueue();
+        }
+      }, 100); // Small delay to ensure job is properly added
     }
     
     return job;
@@ -291,9 +319,12 @@ class EncodingQueueService {
    */
   public startProcessing(): void {
     if (this.isProcessing) {
+      // Even if already processing, try to process more jobs
+      this.processQueue();
       return;
     }
     
+    console.log('QueueService: Starting queue processing');
     this.isProcessing = true;
     
     // Notify listeners
@@ -363,17 +394,29 @@ class EncodingQueueService {
     });
     
     // If not processing or reached max parallel jobs, return
-    if (!this.isProcessing || this.processing.size >= this.config.maxParallelJobs) {
-      console.log('QueueService: Skipping processQueue - not processing or max jobs reached');
+    if (!this.isProcessing) {
+      console.log('QueueService: Queue is paused - not processing any jobs');
       return;
     }
     
-    // Find the next queued job
-    const nextJob = this.queue.find(job => job.status === 'queued');
+    // Check if we've reached max parallel jobs
+    if (this.processing.size >= this.config.maxParallelJobs) {
+      console.log(`QueueService: Already processing maximum parallel jobs (${this.processing.size}/${this.config.maxParallelJobs})`);
+      return;
+    }
     
-    if (!nextJob) {
-      // No more jobs to process
-      console.log('QueueService: No more queued jobs found');
+    // Get all queued jobs sorted by priority
+    const queuedJobs = this.queue
+      .filter(job => job.status === 'queued')
+      .sort((a, b) => {
+        // Sort by priority (higher first)
+        if (a.priority !== b.priority) return b.priority - a.priority;
+        // Then by added time (older first)
+        return a.addedAt.getTime() - b.addedAt.getTime();
+      });
+    
+    if (queuedJobs.length === 0) {
+      console.log('QueueService: No queued jobs to process');
       
       if (this.processing.size === 0) {
         // All jobs are done
@@ -385,28 +428,31 @@ class EncodingQueueService {
       return;
     }
     
-    console.log(`QueueService: Found next job to process - ${nextJob.id}`);
+    // Process as many jobs as we can up to the max parallel limit
+    const availableSlots = this.config.maxParallelJobs - this.processing.size;
+    const jobsToProcess = queuedJobs.slice(0, availableSlots);
     
-    // Mark job as processing
-    nextJob.status = 'processing';
-    nextJob.progress = 0;
-    this.processing.add(nextJob.id);
+    console.log(`QueueService: Starting ${jobsToProcess.length} new job(s) with ${this.processing.size} already processing`);
     
-    // Save updated queue
-    this.saveQueueState();
-    
-    // Notify listeners
-    if (this.eventCallbacks.onJobStarted) {
-      this.eventCallbacks.onJobStarted(nextJob);
-    }
-    
-    // Start encoding process
-    this.startEncodingJob(nextJob);
-    
-    // Check if we can process more jobs
-    if (this.processing.size < this.config.maxParallelJobs) {
-      console.log('QueueService: Can process more jobs, calling processQueue again');
-      this.processQueue();
+    // Start each job
+    for (const job of jobsToProcess) {
+      console.log(`QueueService: Starting job ${job.id}`);
+      
+      // Mark job as processing
+      job.status = 'processing';
+      job.progress = 0;
+      this.processing.add(job.id);
+      
+      // Save updated queue
+      this.saveQueueState();
+      
+      // Notify listeners
+      if (this.eventCallbacks.onJobStarted) {
+        this.eventCallbacks.onJobStarted(job);
+      }
+      
+      // Start encoding process
+      this.startEncodingJob(job);
     }
   }
 
@@ -543,37 +589,269 @@ class EncodingQueueService {
    */
   private handleJobCompletion(jobId: string, result: EncodingResult): void {
     console.log(`QueueService: Job ${jobId} completed with result:`, result.success);
-    
+
+    // Find the job in the queue
     const job = this.queue.find(j => j.id === jobId);
-    
     if (!job) {
-      console.warn(`QueueService: Job ${jobId} not found for completion`);
+      console.error(`QueueService: Cannot find job ${jobId} in queue.`);
+      return;
+    }
+
+    // Update job with result details
+    job.result = result;
+    job.progress = 100; // Set to 100% for completed
+    job.processingEndTime = new Date().toISOString();
+    
+    if (!result.success) {
+      // If job failed, set error and status
+      job.status = 'failed';
+      job.error = result.error || 'Unknown error occurred during encoding';
+      console.error(`QueueService: Job ${jobId} failed:`, job.error);
+      
+      // Save updated queue
+      this.saveQueueState();
+      
+      // Notify listeners
+      if (this.eventCallbacks.onJobFailed) {
+        this.eventCallbacks.onJobFailed(job, job.error);
+      }
+      
+      // Process next job
+      console.log('QueueService: Calling processQueue after job failure');
+      setTimeout(() => this.processQueue(), 100); // Small delay to ensure state is updated
       return;
     }
     
-    // Update job status
-    job.status = result.success ? 'completed' : 'failed';
-    job.progress = result.success ? 100 : job.progress;
-    job.error = result.error;
-    job.result = result;
+    // If we get here, job completed successfully
+    // Update file sizes and reduction percentage
+    job.status = 'verifying';
+    job.result.initialSizeMB = result.initialSizeMB;
+    job.result.finalSizeMB = result.finalSizeMB;
+    job.result.reductionPercent = result.reductionPercent;
     
-    // Remove from processing set
-    this.processing.delete(jobId);
-    console.log(`QueueService: Removed job ${jobId} from processing set, remaining:`, this.processing.size);
+    // If job was successful and overwriteInput was set, replace the input file with the output file
+    if (result.success && job.overwriteInput && job.inputPath !== job.outputPath) {
+      console.log(`QueueService: Job ${jobId} needs to replace input file ${job.inputPath} with output file ${job.outputPath}`);
+      
+      // Use our new finalizeEncodedFile function directly here for a cleaner process
+      this.finalizeEncodedFileForJob(job);
+    } else {
+      job.status = 'completed';
+      
+      // Save updated queue
+      this.saveQueueState();
+      
+      // Notify listeners
+      if (result.success && this.eventCallbacks.onJobCompleted) {
+        this.eventCallbacks.onJobCompleted(job, result);
+      }
+      
+      // Process next job
+      console.log('QueueService: Calling processQueue after job completion');
+      setTimeout(() => this.processQueue(), 100); // Small delay to ensure state is updated
+    }
+  }
+  
+  /**
+   * Finalizes an encoded file by using the main process handler
+   */
+  private async finalizeEncodedFileForJob(job: EncodingJob): Promise<void> {
+    if (!job) {
+      console.error(`QueueService: Cannot finalize file - job is undefined`);
+      return;
+    }
+
+    const { id: jobId, inputPath, outputPath } = job;
     
-    // Save updated queue
-    this.saveQueueState();
-    
-    // Notify listeners
-    if (result.success && this.eventCallbacks.onJobCompleted) {
-      this.eventCallbacks.onJobCompleted(job, result);
-    } else if (!result.success && this.eventCallbacks.onJobFailed) {
-      this.eventCallbacks.onJobFailed(job, result.error || 'Unknown error');
+    // Validate required paths
+    if (!inputPath || !outputPath) {
+      console.error(`QueueService: Missing required paths for job ${jobId}. inputPath: ${inputPath}, outputPath: ${outputPath}`);
+      job.error = "Missing required file paths for finalization";
+      job.status = 'failed';
+      this.saveQueueState();
+      
+      if (this.eventCallbacks.onJobFailed) {
+        this.eventCallbacks.onJobFailed(job, job.error);
+      }
+      
+      setTimeout(() => this.processQueue(), 100);
+      return;
     }
     
-    // Process next job
-    console.log('QueueService: Calling processQueue after job completion');
-    setTimeout(() => this.processQueue(), 100); // Small delay to ensure state is updated
+    try {
+      console.log(`QueueService: Finalizing encoded file for job ${jobId}`);
+      
+      // Use the result's outputPath if available, which should be the temporary file
+      let tempFilePath = job.result?.outputPath || '';
+      console.log(`QueueService: Result output path: ${tempFilePath}`);
+      
+      // If there's no outputPath in the result or if it's empty, try to construct temp file path
+      if (!tempFilePath) {
+        // Check if outputPath already has _tmp suffix
+        if (outputPath.toLowerCase().endsWith('_tmp.mkv') || 
+            outputPath.toLowerCase().endsWith('_tmp.mp4')) {
+          tempFilePath = outputPath;
+          console.log(`QueueService: Using output path directly as it appears to be a temp file: ${tempFilePath}`);
+        } else {
+          // Try to construct potential temp path
+          const fileExtension = outputPath.substring(outputPath.lastIndexOf('.'));
+          const baseNameWithoutExt = outputPath.substring(0, outputPath.lastIndexOf('.'));
+          tempFilePath = `${baseNameWithoutExt}_tmp${fileExtension}`;
+          console.log(`QueueService: Constructed potential temp path: ${tempFilePath}`);
+        }
+      }
+      
+      // Log the paths we'll be working with
+      console.log(`QueueService: Temporary file path to check: ${tempFilePath}`);
+      console.log(`QueueService: Final destination path: ${inputPath}`);
+      
+      // Verify the temp file exists and has content
+      const tempSize = await electronAPI.getFileSize(tempFilePath);
+      if (!tempSize || tempSize === 0) {
+        // If the temp file doesn't exist or is empty, try the original output path
+        console.log(`QueueService: Temp file not found or empty, checking original output path: ${outputPath}`);
+        const outputSize = await electronAPI.getFileSize(outputPath);
+        if (!outputSize || outputSize === 0) {
+          throw new Error(`Neither temporary file (${tempFilePath}) nor output file (${outputPath}) exists or they have zero size`);
+        }
+        
+        // Use the output path if it exists and has content
+        tempFilePath = outputPath;
+        console.log(`QueueService: Using output file for finalization: ${outputPath}, size: ${outputSize} bytes`);
+      } else {
+        console.log(`QueueService: Using temporary file for finalization: ${tempFilePath}, size: ${tempSize} bytes`);
+      }
+      
+      // Now finalize the file with the confirmed source path
+      const result = await electronAPI.finalizeEncodedFile({
+        tempFilePath: tempFilePath,
+        finalFilePath: inputPath, // In overwrite mode, we replace the input file
+        jobId: jobId || "", // Ensure jobId is always a string
+        isOverwrite: true,
+        originalFilePath: inputPath
+      });
+      
+      if (result.success) {
+        console.log(`QueueService: Successfully finalized file for job ${jobId}`);
+        console.log(`QueueService: Final path: ${result.finalPath}`);
+        
+        // Update job details
+        job.outputPath = inputPath; // Since we replaced the input file
+        job.status = 'completed';
+        
+        this.saveQueueState();
+        
+        // Notify listeners
+        if (this.eventCallbacks.onJobCompleted) {
+          this.eventCallbacks.onJobCompleted(job, job.result!);
+        }
+      } else {
+        // Handle finalization failure
+        console.error(`QueueService: Failed to finalize file for job ${jobId}: ${result.error}`);
+        job.error = result.error || "Failed to finalize encoded file";
+        job.status = 'failed';
+        
+        this.saveQueueState();
+        
+        if (this.eventCallbacks.onJobFailed) {
+          this.eventCallbacks.onJobFailed(job, job.error);
+        }
+      }
+    } catch (error) {
+      // Handle unexpected errors
+      console.error(`QueueService: Error finalizing file for job ${jobId}:`, error);
+      job.error = `Error finalizing file: ${error instanceof Error ? error.message : String(error)}`;
+      job.status = 'failed';
+      
+      this.saveQueueState();
+      
+      if (this.eventCallbacks.onJobFailed) {
+        this.eventCallbacks.onJobFailed(job, job.error);
+      }
+    } finally {
+      // Process next job regardless of outcome
+      console.log(`QueueService: Processing next job after file finalization for job ${jobId}`);
+      setTimeout(() => this.processQueue(), 100);
+    }
+  }
+  
+  /**
+   * Clean up any temporary files that might be left from the encoding process
+   */
+  private async cleanupTempFiles(originalPath: string): Promise<void> {
+    // Validate the path parameter
+    if (!originalPath) {
+      console.warn(`QueueService: Cannot clean up temporary files - original path is undefined or empty`);
+      return;
+    }
+    
+    try {
+      console.log(`QueueService: Starting cleanup for temporary files related to: ${originalPath}`);
+      
+      // Get parts of the original path
+      const lastDot = originalPath.lastIndexOf('.');
+      const lastSlash = Math.max(originalPath.lastIndexOf('/'), originalPath.lastIndexOf('\\'));
+      
+      if (lastDot === -1 || lastSlash === -1) {
+        console.log(`QueueService: Cannot parse path for cleanup: ${originalPath}`);
+        return;
+      }
+      
+      const basePath = originalPath.substring(0, lastDot);
+      const extension = originalPath.substring(lastDot);
+      const directory = originalPath.substring(0, lastSlash + 1);
+      const fileName = originalPath.substring(lastSlash + 1, lastDot);
+      
+      // Common temp file patterns
+      const tempPatterns = [
+        `${basePath}.tmp${extension}`,
+        `${basePath}_tmp${extension}`,
+        `${basePath}_encoded_tmp${extension}`,
+        `${basePath}_encoded${extension}`,
+        `${directory}${fileName}_tmp${extension}`,
+        `${directory}${fileName}.tmp${extension}`,
+        `${basePath}.backup`,
+        `${originalPath}.backup`,
+        `${originalPath}.backup-*`  // For timestamp-based backups
+      ];
+      
+      console.log(`QueueService: Looking for these temp file patterns:`, tempPatterns);
+      
+      // Try to delete each possible temp file (ignore errors if files don't exist)
+      for (const tempPattern of tempPatterns) {
+        try {
+          // Skip undefined or empty patterns
+          if (!tempPattern) {
+            continue;
+          }
+          
+          // For wildcards, we need to check if the pattern contains a wildcard
+          if (tempPattern.includes('*')) {
+            const wildcardPart = tempPattern.substring(0, tempPattern.indexOf('*'));
+            const fileDir = wildcardPart.substring(0, Math.max(wildcardPart.lastIndexOf('/'), wildcardPart.lastIndexOf('\\')));
+            
+            // This would require a directory listing to find matching files
+            // As a simplification for now, we'll just print a message
+            console.log(`QueueService: Pattern with wildcard not fully supported: ${tempPattern}`);
+            console.log(`QueueService: Consider implementing directory listing in main process for: ${fileDir}`);
+            continue;
+          }
+          
+          await electronAPI.deleteFile(tempPattern);
+          console.log(`QueueService: Deleted temp file: ${tempPattern}`);
+        } catch (e) {
+          // Ignore errors for files that don't exist
+          // But log other errors
+          if (e instanceof Error && !e.message.includes('ENOENT')) {
+            console.warn(`QueueService: Error deleting temp file ${tempPattern}: ${e.message}`);
+          }
+        }
+      }
+      
+      console.log(`QueueService: Completed cleanup for: ${originalPath}`);
+    } catch (err) {
+      console.warn(`QueueService: Error in cleanupTempFiles: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
@@ -610,7 +888,7 @@ class EncodingQueueService {
    */
   private async startEncodingJob(job: EncodingJob): Promise<void> {
     try {
-      console.log(`QueueService: Starting encoding for job ${job.id}`);
+      console.log(`QueueService: Starting encoding job ${job.id}`);
       
       // Update job initial status to ensure UI gets refreshed
       this.handleProgressUpdate(job.id, { status: 'Starting encoding process...', percent: 0 });
@@ -699,9 +977,31 @@ class EncodingQueueService {
       }
     }
   }
+
+  /**
+   * Ensure queue is processing - convenience method that starts processing and forces queue check
+   * This can be called from anywhere in the application to make sure the queue is running
+   */
+  public ensureProcessing(): void {
+    console.log('QueueService: Ensuring queue is processing');
+    
+    // Don't do anything if the queue is explicitly paused
+    if (!this.config.autoStart) {
+      console.log('QueueService: Queue autoStart is disabled, not starting');
+      return;
+    }
+    
+    // Start processing if not already
+    if (!this.isProcessing) {
+      this.startProcessing();
+    }
+    
+    // Force check for queued jobs
+    this.forceProcessQueue();
+  }
 }
 
 // Create a singleton instance
 const queueService = new EncodingQueueService();
 
-export default queueService; 
+export default queueService;
