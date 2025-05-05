@@ -198,15 +198,24 @@ const ManualEncode: React.FC = () => {
                         }
                         
                         // For multiple files, let's provide similar options as single file mode
-                        let outputFilePath = filePath; // Default to same as input for overwrite
+                        let outputFilePath;
                         let overwriteInput = !saveAsNew; // Use the same saveAsNew toggle for multiple files
                         
-                        // If saving as new, generate output path in the same directory with "_encoded" suffix
+                        // Determine the output path based on whether we're overwriting or not
                         if (saveAsNew) {
+                            // If saving as new, generate output path with "_encoded" suffix
                             const dirPath = getDirPath(filePath);
                             const ext = getFileExtension(filePath);
                             const basename = getFileNameWithoutExt(filePath);
                             outputFilePath = joinPaths(dirPath, `${basename}_encoded${ext}`);
+                        } else {
+                            // When overwriting, use a temp path during encoding but set overwriteInput=true
+                            const dirPath = getDirPath(filePath);
+                            const ext = getFileExtension(filePath);
+                            const basename = getFileNameWithoutExt(filePath);
+                            // Generate temp path with _tmp suffix
+                            outputFilePath = joinPaths(dirPath, `${basename}_tmp${ext}`);
+                            console.log(`ManualEncode: Using temp output path for batch overwrite: ${outputFilePath}`);
                         }
                         
                         // Get track selections based on probe and preset
@@ -218,7 +227,7 @@ const ManualEncode: React.FC = () => {
                         };
                         
                         // Add job to queue - use overwriteInput flag to ensure proper naming
-                        queueService.addJob(
+                        const job = queueService.addJob(
                             filePath,
                             outputFilePath,
                             overwriteInput, // Use overwriteInput flag based on saveAsNew setting
@@ -231,6 +240,31 @@ const ManualEncode: React.FC = () => {
                         
                         // Update status incrementally
                         setStatus(`Added ${addedCount}/${formData.selectedFiles.length} files to queue...`);
+
+                        // Check if the file exists in the media database to track it
+                        try {
+                            const dbResult = await electronAPI.dbQuery(
+                                'SELECT id FROM media WHERE filePath = ?',
+                                [filePath]
+                            );
+                            
+                            if (dbResult && dbResult.length > 0) {
+                                const mediaId = dbResult[0].id;
+                                console.log(`ManualEncode: Batch file ${filePath} found in database with ID ${mediaId}, linking job ID ${job.id}`);
+                                
+                                // Update the media record with just the job ID for now
+                                // The final size update will happen when the job completes via queueService's finalize process
+                                await electronAPI.dbQuery(
+                                    'UPDATE media SET encodingJobId = ? WHERE id = ?',
+                                    [job.id, mediaId]
+                                );
+                            } else {
+                                console.log(`ManualEncode: Batch file ${filePath} not found in media database, no record to update`);
+                            }
+                        } catch (dbError) {
+                            console.error(`ManualEncode: Error checking/updating database for ${filePath}:`, dbError);
+                            // Non-fatal error, continue processing files
+                        }
                         
                     } catch (probeError) {
                         console.error(`Error probing file ${filePath}:`, probeError);
@@ -299,11 +333,23 @@ const ManualEncode: React.FC = () => {
                 subtitle: selectedSubtitleTracks
             };
             
+            // Determine the output path
+            let jobOutputPath = outputPath;
+            if (!saveAsNew) {
+                // If overwriting, use a temp path during encoding
+                const dirPath = getDirPath(inputPath);
+                const ext = getFileExtension(inputPath);
+                const basename = getFileNameWithoutExt(inputPath);
+                // Generate temp path with _tmp suffix for overwrite mode
+                jobOutputPath = joinPaths(dirPath, `${basename}_tmp${ext}`);
+                console.log(`ManualEncode: Using temp output path for overwrite: ${jobOutputPath}`);
+            }
+            
             // Add job to queue
             const job = queueService.addJob(
                 inputPath,
-                saveAsNew ? outputPath : inputPath,
-                !saveAsNew,
+                jobOutputPath, // Use the temp output path we just created
+                !saveAsNew,    // Still set overwriteInput flag correctly for proper finalization
                 preset,
                 probeData,
                 trackSelections,
@@ -616,11 +662,24 @@ const ManualEncode: React.FC = () => {
                 subtitle: selectedSubtitleTracks
             };
             
+            // Determine output path based on saveAsNew setting
+            let jobOutputPath = saveAsNew ? outputPath : inputPath;
+            
+            // If we're overwriting, use a temp path during encoding
+            if (!saveAsNew) {
+                const dirPath = getDirPath(inputPath);
+                const ext = getFileExtension(inputPath);
+                const basename = getFileNameWithoutExt(inputPath);
+                // Generate temp path with _tmp suffix for overwrite mode
+                jobOutputPath = joinPaths(dirPath, `${basename}_tmp${ext}`);
+                console.log(`ManualEncode: Using temp output path for overwrite: ${jobOutputPath}`);
+            }
+            
             // Add job to queue with high priority for immediate processing
             const job = queueService.addJob(
                 inputPath,
-                saveAsNew ? outputPath : inputPath,
-                !saveAsNew,
+                jobOutputPath, // Use the temp output path if overwriting
+                !saveAsNew,    // Keep the overwriteInput flag for proper finalization
                 preset,
                 probeData,
                 trackSelections,
@@ -673,6 +732,39 @@ const ManualEncode: React.FC = () => {
                         console.log(`ManualEncode: Job ${trackingJobId} completed`);
                         setStatus(`Encoding completed successfully! File saved to: ${updatedJob.outputPath || updatedJob.inputPath}`);
                         setProgress(100);
+                        
+                        // Check if the encoded file exists in the media database and mark it as processed
+                        // This step is critical for ensuring files encoded through ManualEncode get properly tagged
+                        (async () => {
+                            try {
+                                // Query the database to see if this file exists in the media library
+                                const dbResult = await electronAPI.dbQuery(
+                                    'SELECT id FROM media WHERE filePath = ?',
+                                    [!saveAsNew ? inputPath : updatedJob.outputPath]
+                                );
+                                
+                                if (dbResult && dbResult.length > 0) {
+                                    const mediaId = dbResult[0].id;
+                                    console.log(`ManualEncode: Found file in database with ID ${mediaId}, updating record`);
+                                    
+                                    // Update the media record with the encoding job ID and current size
+                                    const fileSize = await electronAPI.getFileSize(!saveAsNew ? inputPath : updatedJob.outputPath);
+                                    await electronAPI.dbQuery(
+                                        'UPDATE media SET encodingJobId = ?, currentSize = ?, lastSizeCheckAt = CURRENT_TIMESTAMP WHERE id = ?',
+                                        [
+                                            updatedJob.id,
+                                            fileSize,
+                                            mediaId
+                                        ]
+                                    );
+                                    console.log(`ManualEncode: Updated database record for media ID ${mediaId}`);
+                                } else {
+                                    console.log(`ManualEncode: File not found in media database, no record to update`);
+                                }
+                            } catch (error) {
+                                console.error(`ManualEncode: Error updating media database:`, error);
+                            }
+                        })();
                         
                         // Show success with option to encode another
                         setSuccessMessage("Encoding completed successfully!");
