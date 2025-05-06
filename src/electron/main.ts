@@ -19,6 +19,9 @@ import { probeFile } from './ffprobeUtils.js';
 import { SUPPORTED_EXTENSIONS, WatchedFolder, addMediaToDb, processDirectory, scanMediaFolders, scanSingleFolder } from './scannerUtils.js';
 import crypto from 'crypto';
 import { setMainWindow, captureConsoleLogs, getLogBuffer } from './logger.js'; // Import logger functions
+import { getPresets, savePreset, deletePreset, initializePresetTable } from './presetDatabase.js';
+import { FileWatcher } from './fileWatcherUtils.js';
+import TaskScheduler from './schedulerUtils.js';
 
 // --- Define Types Locally within main.ts ---
 // (Copied from src/types.d.ts)
@@ -105,21 +108,6 @@ const ENABLE_PS_GPU_KEY = 'enablePsGpuMonitoring'; // Key for the toggle
 const WATCHED_FOLDERS_KEY = 'watchedFolders'; // Added key for watched folders
 const MANUAL_GPU_VRAM_MB_KEY = 'manualGpuVramMb'; // Key for manual VRAM override
 
-// --- Define Workflow Types ---
-// NOTE: Commented out as we're removing workflow functionality
-/*
-interface Workflow {
-    id: number;
-    name: string;
-    description: string;
-}
-
-interface WorkflowDetails extends Workflow {
-    nodes: Node[];
-    edges: Edge[];
-}
-*/
-// --- End Workflow Types ---
 
 // --- Database Setup ---
 let db: Database.Database;
@@ -127,11 +115,11 @@ let db: Database.Database;
 
 // --- Media Scanner & Watcher Constants & State ---
 let isScanning = false;
-let watcher: chokidar.FSWatcher | null = null;
-let isWatcherReady = false;
+let fileWatcher: FileWatcher | null = null;
 let splashScreen: BrowserWindow | null = null;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null; // Add tray instance
+let taskScheduler: TaskScheduler | null = null; // Add task scheduler instance
 const APP_STARTUP_TIMEOUT = 30000; // 30 seconds max wait time for app to load
 // --- End Media Scanner & Watcher Constants & State ---
 
@@ -189,74 +177,28 @@ function setupTray() {
 // --- End System Tray Setup ---
 
 // --- File System Watcher Functions ---
-
 function startWatching(folders: WatchedFolder[]) {
-    isWatcherReady = false;
-    if (watcher) {
-        console.log("Closing existing watcher before starting new one.");
-        watcher.close();
+    if (!fileWatcher) {
+        console.log("[Main Process] Creating new FileWatcher instance");
+        fileWatcher = new FileWatcher(db, mainWindow);
     }
-
-    const pathsToWatch = folders.map(f => f.path);
-    if (pathsToWatch.length === 0) {
-        console.log("No folders configured to watch.");
-        isWatcherReady = true; // Mark as ready since there's nothing to watch
+    
+    // Keep splash screen visible for a few seconds
+    const SPLASH_SCREEN_DURATION = 3000; // 3 seconds
+    console.log(`[Main Process] Splash screen will be visible for ${SPLASH_SCREEN_DURATION/1000} seconds`);
+    
+    setTimeout(() => {
+        // Close splash screen after the delay
         closeSplashScreen();
-        return;
-    }
-
-    console.log(`Initializing watcher for paths: ${pathsToWatch.join(", ")}`);
-    watcher = chokidar.watch(pathsToWatch, {
-        ignored: [
-            /(^|[\\\/])\../,  // ignore dotfiles
-            /.*_tmp.*\.(?:mkv|mp4|avi|mov|wmv|flv|webm)$/i  // More specific pattern for temp encoding files
-        ],
-        persistent: true,
-        ignoreInitial: true, // Don't fire 'add' events for existing files on startup
-        awaitWriteFinish: {   // Try to wait for files to finish writing
-            stabilityThreshold: 2000,
-            pollInterval: 100
-        }
-    });
-
-    watcher
-        .on('add', async (filePath: string) => {
-            console.log(`Watcher detected new file: ${filePath}`);
-            const ext = path.extname(filePath).toLowerCase();
-            
-            // Skip temporary files created during encoding
-            if (filePath.includes('_tmp')) {
-                console.log(`Skipping temporary encoding file: ${filePath}`);
-                return;
-            }
-            
-            if (SUPPORTED_EXTENSIONS.includes(ext)) {
-                // Find which library this file belongs to
-                const parentFolder = folders.find(f => filePath.startsWith(f.path + path.sep));
-                if (parentFolder) {
-                    const probeData = await probeFile(filePath);
-                    if (probeData) {
-                        await addMediaToDb(db, probeData, parentFolder.libraryName, parentFolder.libraryType);
-                    }
-                } else {
-                     console.warn(`File added in watched parent, but couldn't determine library: ${filePath}`);
-                }
-            }
+    }, SPLASH_SCREEN_DURATION);
+    
+    // Initialize the watcher in the background
+    fileWatcher.startWatching(folders)
+        .then(() => {
+            console.log("[Main Process] FileWatcher initialized and ready");
         })
-        .on('unlink', (filePath: string) => {
-             console.log(`File ${filePath} has been removed`);
-        })
-        .on('error', (error: unknown) => {
-             if (error instanceof Error) {
-                 console.error(`Watcher error: ${error.message}`);
-             } else {
-                 console.error('Watcher error:', error);
-             }
-         })
-        .on('ready', () => {
-            console.log('Initial scan complete. Watcher is ready.');
-            isWatcherReady = true;
-            closeSplashScreen();
+        .catch(error => {
+            console.error("[Main Process] Error initializing FileWatcher:", error);
         });
 }
 
@@ -284,31 +226,26 @@ function closeSplashScreen() {
 }
 
 function stopWatching() {
-    if (watcher) {
+    if (fileWatcher) {
         console.log("Closing file watcher.");
-        watcher.close();
-        watcher = null;
+        fileWatcher.stopWatching();
+        fileWatcher = null;
     }
 }
 
 function watchPath(folderPath: string) {
-    if (watcher) {
-        console.log(`Adding path to watcher: ${folderPath}`);
-        watcher.add(folderPath);
+    if (fileWatcher) {
+        fileWatcher.watchPath(folderPath);
     }
 }
 
 function unwatchPath(folderPath: string) {
-     if (watcher) {
-        console.log(`Removing path from watcher: ${folderPath}`);
-        watcher.unwatch(folderPath);
+    if (fileWatcher) {
+        fileWatcher.unwatchPath(folderPath);
     }
 }
 // --- End File System Watcher Functions ---
 
-// --- Media Scanner Functions ---
-// Removed functions that are now in scannerUtils.ts
-// --- End Media Scanner Functions ---
 
 function runPsCommand(command: string): Promise<string> {
     console.log(`[DEBUG] PowerShell command requested: ${command.substring(0, 50)}${command.length > 50 ? '...' : ''}`);
@@ -436,165 +373,6 @@ async function gatherAndStoreHardwareInfo(): Promise<void> {
     }
 }
 
-// --- FFMPEG Transcoding Test Function ---
-async function runFFMPEGTest() {
-    // Revert to hardcoded paths with double backslashes for Windows
-    const cacheDir = 'Z:\\transcode_cache';
-    const inputFilePath = 'Z:\\transcode_cache\\moonriseSample.mkv';
-    const outputFilePath = 'Z:\\transcode_cache\\output.mkv';
-
-    console.log(`[FFMPEG Test] Using hardcoded input path: "${inputFilePath}"`);
-    console.log(`[FFMPEG Test] Using hardcoded output path: "${outputFilePath}"`);
-
-    try {
-        // Create transcode cache directory if it doesn't exist
-        try {
-            // Use the original cacheDir variable for consistency
-            if (!fsSync.existsSync(cacheDir)) {
-                console.log(`[FFMPEG Test] Creating transcode cache directory: ${cacheDir}`);
-                await fs.mkdir(cacheDir, { recursive: true });
-            }
-        } catch (dirError) {
-            console.error(`[FFMPEG Test] Error creating transcode cache directory: ${dirError}`);
-            return;
-        }
-
-        // Check if input file exists using the hardcoded path
-        if (!fsSync.existsSync(inputFilePath)) {
-            console.error(`[FFMPEG Test] Input file not found: ${inputFilePath}`);
-            console.error(`[FFMPEG Test] Please place a sample video file at ${inputFilePath} to run the test`);
-            return;
-        }
-
-        // Get initial file size
-        const stats = await fs.stat(inputFilePath);
-        const initialSizeMB = stats.size / (1024 * 1024);
-        console.log(`[FFMPEG Test] Starting transcoding test...`);
-        console.log(`[FFMPEG Test] Input file: ${inputFilePath}`);
-        console.log(`[FFMPEG Test] Initial file size: ${initialSizeMB.toFixed(2)} MB`);
-
-        // Create a promise to handle the ffmpeg process
-        return new Promise((resolve, reject) => {
-            try {
-                /*
-                // --- TEMPORARY: Inspect Input File Streams ---
-                console.log(`[FFMPEG Inspect] Running: ffmpeg -i "${inputFilePath}"`);
-                
-                const commandString = `"${ffmpegStatic}" -i "${inputFilePath}"`;
-                
-                exec(commandString, (error, stdout, stderr) => {
-                    console.log('[FFMPEG Inspect] --- STDOUT ---');
-                    console.log(stdout);
-                    console.log('[FFMPEG Inspect] --- STDERR ---');
-                    console.error(stderr); // ffmpeg info often goes to stderr
-                    
-                    if (error) {
-                        console.error(`[FFMPEG Inspect] Error executing ffmpeg -i: ${error.message}`);
-                        reject(error);
-                        return;
-                    }
-                    
-                    console.log('[FFMPEG Inspect] Inspection complete. Please check logs for stream info.');
-                    console.log('[FFMPEG Inspect] Re-enable transcoding logic after inspection.');
-                    resolve(true); // Resolve promise after inspection
-                });
-                // --- END TEMPORARY INSPECTION ---
-                */
-
-                // --- ORIGINAL TRANSCODING LOGIC (Now Active) ---
-                // Create a new ffmpeg command
-                const command = ffmpeg();
-
-                // Add input file using the hardcoded string path (with double backslashes)
-                command.input(inputFilePath);
-
-                // Add input options
-                command.inputOption('-hwaccel auto');
-
-                // Add output options - including stream mapping
-                command.outputOptions([
-                    // --- Stream Mapping ---
-                    '-map 0:v:0',                   // Map video stream 0
-                    '-map 0:a:1',                   // Map audio stream index 1 (second audio track)
-                    '-map 0:s:m:language:eng?',     // Map English subtitle stream (optional)
-
-                    // --- Codecs for Mapped Streams ---
-                    // Video (Output Stream 0)
-                    '-c:v hevc_qsv',
-                    '-preset:v faster',
-                    '-global_quality:v 28',
-                    '-look_ahead 1',
-                    '-pix_fmt p010le',
-
-                    // Audio (Output Stream 1 - the mapped audio track 1)
-                    '-c:a libopus',              // Re-encode audio with Opus
-                    '-b:a 128k',              // Set Opus bitrate
-                    '-af pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE', // Custom pan/downmix filter
-
-                    // Subtitles (Output Stream 2 - the mapped English subs)
-                    '-c:s copy',
-
-                    // --- General Options ---
-                    '-hide_banner',
-                    '-v verbose',
-                    '-y'
-                ]);
-
-                // Set output file using the hardcoded string path (with double backslashes)
-                command.output(outputFilePath);
-
-                // Add event handlers
-                command.on('start', (commandLine: string) => {
-                    console.log(`[FFMPEG Test] Command: ${commandLine}`);
-                });
-
-                command.on('progress', (progress: { percent?: number }) => {
-                    console.log(`[FFMPEG Test] Processing: ${progress.percent ? progress.percent.toFixed(1) : '0'}% done`);
-                });
-
-                command.on('stderr', (stderrLine: string) => {
-                    console.log(`[FFMPEG Test] stderr: ${stderrLine}`);
-                });
-
-                command.on('error', (err: any) => {
-                    console.error(`[FFMPEG Test] Error: ${err.message}`);
-                    console.error(err);
-                    reject(err);
-                });
-
-                command.on('end', async () => {
-                    try {
-                        // Get final file size
-                        const finalStats = await fs.stat(outputFilePath);
-                        const finalSizeMB = finalStats.size / (1024 * 1024);
-                        const reductionPercent = ((1 - (finalStats.size / stats.size)) * 100).toFixed(2);
-
-                        console.log(`[FFMPEG Test] Transcoding complete!`);
-                        console.log(`[FFMPEG Test] Initial file size: ${initialSizeMB.toFixed(2)} MB`);
-                        console.log(`[FFMPEG Test] Final file size: ${finalSizeMB.toFixed(2)} MB`);
-                        console.log(`[FFMPEG Test] Size reduction: ${reductionPercent}%`);
-                        resolve(true);
-                    } catch (error) {
-                        console.error(`[FFMPEG Test] Error getting final file stats: ${error}`);
-                        reject(error);
-                    }
-                });
-
-                // Start the ffmpeg process
-                console.log(`[FFMPEG Test] Running ffmpeg...`);
-                command.run();
-                 // --- END ORIGINAL TRANSCODING LOGIC ---
-                 
-            } catch (err) {
-                console.error(`[FFMPEG Test] Error setting up ffmpeg command: ${err}`);
-                reject(err);
-            }
-        });
-    } catch (error) {
-        console.error(`[FFMPEG Test] Error in FFMPEG test: ${error}`);
-    }
-}
-// --- End FFMPEG Transcoding Test Function ---
 
 app.on("ready", async () => {
     // Capture console logs as early as possible
@@ -781,1455 +559,1109 @@ app.on("ready", async () => {
             );
         `);
 
-        // Create encoding_presets table
-        db.exec(`
-            CREATE TABLE IF NOT EXISTS encoding_presets (
-                id TEXT PRIMARY KEY, 
-                name TEXT NOT NULL UNIQUE,
-                videoCodec TEXT,
-                videoPreset TEXT,
-                videoQuality INTEGER,
-                videoResolution TEXT,
-                hwAccel TEXT,
-                audioCodecConvert TEXT,
-                audioBitrate TEXT,
-                selectedAudioLayout TEXT,
-                preferredAudioLanguages TEXT, -- Old field, keep for migration
-                keepOriginalAudio INTEGER, -- Old field, keep for migration
-                defaultAudioLanguage TEXT, -- Old field, keep for migration
-                audioLanguageOrder TEXT, -- New field: Stored as JSON string array
-                subtitleCodecConvert TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
+        // Initialize preset table and migrations
+        await initializePresetTable(db);
 
         // --- End Initialize Database ---
 
-        // --- Database Migrations ---
-        // Define interface for PRAGMA table_info results
-        interface TableColumn {
-            cid: number;
-            name: string;
-            type: string;
-            notnull: number;
-            dflt_value: string | null;
-            pk: number;
-        }
+        // --- Start File Watcher ---
+        const initialFolders = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
+        startWatching(initialFolders);
+        // --- End Start File Watcher ---
 
-        // Migration for `media` table
-        console.log("Checking existing columns for 'media' table...");
-        const mediaTableInfo = db.prepare('PRAGMA table_info(media)').all() as TableColumn[];
-        const mediaColumns = mediaTableInfo.map(col => col.name);
-        console.log(`Media table columns: ${mediaColumns.join(', ')}`);
+        // Load the main window content
+        if (isDev()) mainWindow.loadURL("http://localhost:3524")
+        else mainWindow.loadFile(getUIPath());
 
-        const mediaMigrations = [];
-        if (!mediaColumns.includes('currentSize')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN currentSize INTEGER NOT NULL DEFAULT 0`);
-        if (!mediaColumns.includes('lastSizeCheckAt')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN lastSizeCheckAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`);
-        if (!mediaColumns.includes('resolutionWidth')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN resolutionWidth INTEGER`);
-        if (!mediaColumns.includes('resolutionHeight')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN resolutionHeight INTEGER`);
-        if (!mediaColumns.includes('audioChannels')) mediaMigrations.push(`ALTER TABLE media ADD COLUMN audioChannels INTEGER`);
+        // Start other services
+        pollResources(mainWindow);
+        pollSystemStats(mainWindow); // Start polling system stats
 
-        if (mediaMigrations.length > 0) {
-            console.log('Starting database migration transaction for media table...');
-            db.transaction((migrations: string[]) => {
-                migrations.forEach((migration, index) => {
-                    console.log(`Executing media migration ${index + 1}/${migrations.length}: ${migration.trim().substring(0, 100)}...`);
-                    db.exec(migration);
-                });
-                if (!mediaColumns.includes('currentSize')) {
-                    console.log("Executing UPDATE to populate 'currentSize' from 'originalSize'...");
-                    db.exec(`UPDATE media SET currentSize = COALESCE(originalSize, 0)`);
+        // Set a timeout in case watcher never gets ready
+        setTimeout(() => {
+            if (!fileWatcher || !fileWatcher.isReady() && splashScreen && !splashScreen.isDestroyed()) {
+                console.log("Timeout reached waiting for watcher. Showing main window...");
+                closeSplashScreen();
+            }
+        }, APP_STARTUP_TIMEOUT);
+        
+        ipcMain.handle("getStaticData", () => {
+            return getStaticData();
+        })
+
+        // --- Database Query Handler ---
+        ipcMain.handle('db-query', async (_event, sql: string, params: any[] = []) => {
+            if (!db) {
+                console.error("Database not initialized. Cannot execute query.");
+                throw new Error("Database not available.");
+            }
+            try {
+                // Basic security: Check if the query is a SELECT statement for 'all'/'get'
+                // More robust validation might be needed depending on requirements
+                const command = sql.trim().split(' ')[0].toUpperCase();
+                const stmt = db.prepare(sql);
+
+                if (command === 'SELECT') {
+                    return params.length > 0 ? stmt.all(params) : stmt.all();
+                } else if (['INSERT', 'UPDATE', 'DELETE'].includes(command)) {
+                    const info = params.length > 0 ? stmt.run(params) : stmt.run();
+                    return info; // Contains changes, lastInsertRowid etc.
+                } else {
+                    console.warn(`Unsupported SQL command attempted: ${command}`);
+                    throw new Error(`Unsupported SQL command: ${command}`);
                 }
-            })(mediaMigrations);
-            console.log('Media table migration transaction committed successfully.');
-        } else {
-            console.log('No database migrations needed for media table.');
-        }
+            } catch (error) {
+                console.error(`Error executing SQL: ${sql}`, params, error);
+                throw error; // Re-throw the error to be caught by the renderer
+            }
+        });
+        // --- End Database Query Handler ---
 
-        // Migration for `encoding_presets` table
-        console.log("Checking existing columns for 'encoding_presets' table...");
-        try {
-            const presetsTableInfo = db.prepare('PRAGMA table_info(encoding_presets)').all() as TableColumn[];
-            const presetsColumns = presetsTableInfo.map(col => col.name);
-            console.log(`Encoding_presets table columns: ${presetsColumns.join(', ')}`);
+        // --- Watched Folder Management Handlers ---
+        ipcMain.handle('get-watched-folders', async (): Promise<WatchedFolder[]> => {
+            return store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
+        });
 
-            const presetMigrations = [];
-            // Keep old column migrations for robustness if needed
-            if (!presetsColumns.includes('preferredAudioLanguages')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN preferredAudioLanguages TEXT`);
-            if (!presetsColumns.includes('keepOriginalAudio')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN keepOriginalAudio INTEGER`);
-            if (!presetsColumns.includes('defaultAudioLanguage')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN defaultAudioLanguage TEXT`);
-            // Add migration for the new column
-            if (!presetsColumns.includes('audioLanguageOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN audioLanguageOrder TEXT`);
-            // Add migrations for the new subtitle order columns
-            if (!presetsColumns.includes('subtitleLanguageOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN subtitleLanguageOrder TEXT`);
-            if (!presetsColumns.includes('subtitleTypeOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN subtitleTypeOrder TEXT`);
+        ipcMain.handle('add-watched-folder', async (_event, folderInfo: Omit<WatchedFolder, 'path'>): Promise<WatchedFolder | null> => {
+            if (!mainWindow) throw new Error("Main window not available");
+            const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+            if (result.canceled || result.filePaths.length === 0) return null;
 
-            if (presetMigrations.length > 0) {
-                console.log('Starting database migration transaction for encoding_presets table...');
-                db.transaction((migrations: string[]) => {
-                    migrations.forEach((migration, index) => {
-                        console.log(`Executing preset migration ${index + 1}/${migrations.length}: ${migration.trim().substring(0, 100)}...`);
-                        db.exec(migration);
+            const folderPath = result.filePaths[0];
+            const currentFolders = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
+            if (currentFolders.some(f => f.path === folderPath)) {
+                 throw new Error(`Folder already being watched: ${folderPath}`);
+            }
+
+            const newFolder: WatchedFolder = { path: folderPath, ...folderInfo };
+            currentFolders.push(newFolder);
+            store.set(WATCHED_FOLDERS_KEY, currentFolders);
+            watchPath(folderPath);
+            console.log(`Added watched folder: ${JSON.stringify(newFolder)}`);
+            return newFolder;
+        });
+
+        ipcMain.handle('remove-watched-folder', async (_event, folderPath: string): Promise<void> => {
+            const currentFolders = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
+            const updatedFolders = currentFolders.filter(f => f.path !== folderPath);
+            if (currentFolders.length === updatedFolders.length) {
+                 console.warn(`Attempted to remove non-existent watched folder: ${folderPath}`);
+                 return; 
+            }
+            store.set(WATCHED_FOLDERS_KEY, updatedFolders);
+            unwatchPath(folderPath);
+            console.log(`Removed watched folder: ${folderPath}`);
+        });
+        // --- End Watched Folder Management Handlers ---
+
+        // --- Use standard ipcMain.handle ---
+        ipcMain.handle("getAvailableGpus", async (): Promise<GpuInfo[]> => {
+            try {
+                const gpus = await si.graphics();
+                // Filter out potential RDP adapter from selection if desired
+                return gpus.controllers
+                    .filter(gpu => !gpu.vendor?.includes('Microsoft')) // Example filter
+                    .map(gpu => ({ 
+                        vendor: gpu.vendor ?? 'Unknown', 
+                        model: gpu.model ?? 'Unknown', 
+                        memoryTotal: gpu.memoryTotal ?? null // Include detected VRAM
+                    }));
+            } catch (error) {
+                console.error("Error fetching available GPUs:", error);
+                return [];
+            }
+        });
+
+        ipcMain.handle("getSelectedGpu", async (): Promise<string | null> => {
+            return store.get(SELECTED_GPU_KEY, null) as string | null;
+        });
+
+        ipcMain.handle("setSelectedGpu", async (_event: Electron.IpcMainInvokeEvent, model: string | null): Promise<void> => {
+            // console.log("Setting selected GPU to:", model); // Comment out confirmation log
+            if (model === null || model === 'default') {
+                store.delete(SELECTED_GPU_KEY);
+            } else {
+                store.set(SELECTED_GPU_KEY, model);
+            }
+        });
+
+        // Added handlers for PowerShell GPU monitoring toggle
+        ipcMain.handle("getPsGpuMonitoringEnabled", async (): Promise<boolean> => {
+            return store.get(ENABLE_PS_GPU_KEY, false) as boolean;
+        });
+
+        ipcMain.handle("setPsGpuMonitoringEnabled", async (_event: Electron.IpcMainInvokeEvent, isEnabled: boolean): Promise<void> => {
+            store.set(ENABLE_PS_GPU_KEY, isEnabled);
+        });
+
+        // --- Added Handlers for Manual VRAM Override ---
+        ipcMain.handle("get-manual-gpu-vram", async (): Promise<number | null> => {
+            return store.get(MANUAL_GPU_VRAM_MB_KEY, null) as number | null;
+        });
+
+        ipcMain.handle("set-manual-gpu-vram", async (_event: Electron.IpcMainInvokeEvent, vramMb: number | null): Promise<void> => {
+            if (vramMb === null || typeof vramMb !== 'number' || vramMb <= 0) {
+                store.delete(MANUAL_GPU_VRAM_MB_KEY);
+                console.log("Cleared manual GPU VRAM override.");
+            } else {
+                store.set(MANUAL_GPU_VRAM_MB_KEY, vramMb);
+                console.log(`Set manual GPU VRAM override to: ${vramMb} MB`);
+            }
+        });
+        // --- End IPC Handlers ---
+
+        // --- Added Scanner Trigger Handler ---
+        ipcMain.handle('trigger-scan', async () => {
+            // Create a reference object for isScanning so it can be updated by the scanner functions
+            const isScanningRef = { value: isScanning };
+            const foldersToScan = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
+            
+            await scanMediaFolders(db, mainWindow, foldersToScan, isScanningRef);
+            // Update the local isScanning variable from the reference
+            isScanning = isScanningRef.value;
+            
+            return { status: 'Manual scan triggered' };
+        });
+
+        // Add handler for scanning a single folder
+        ipcMain.handle('trigger-folder-scan', async (_event, folderPath: string) => {
+            // Create a reference object for isScanning so it can be updated by the scanner functions
+            const isScanningRef = { value: isScanning };
+            const foldersToScan = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
+            
+            await scanSingleFolder(db, folderPath, mainWindow, foldersToScan, isScanningRef);
+            // Update the local isScanning variable from the reference
+            isScanning = isScanningRef.value;
+            
+            return { status: 'Single folder scan triggered' };
+        });
+        
+        // Add new handler for force rescanning all watched folders
+        ipcMain.handle('force-rescan-all', async () => {
+            if (fileWatcher) {
+                await fileWatcher.forceRescan();
+                return { status: 'Force rescan of all watched folders triggered' };
+            }
+            return { status: 'FileWatcher not available, rescan not triggered' };
+        });
+        // --- End Scanner Trigger Handler ---
+
+        // Gather hardware info on startup
+        gatherAndStoreHardwareInfo();
+
+        // Add new IPC handlers for hardware info
+        ipcMain.handle('get-hardware-info', async () => {
+            if (!db) throw new Error("Database not initialized");
+            const stmt = db.prepare('SELECT * FROM hardware_info ORDER BY device_type, priority DESC');
+            return stmt.all();
+        });
+
+        ipcMain.handle('update-hardware-priority', async (_event, deviceId: number, priority: number) => {
+            if (!db) throw new Error("Database not initialized");
+            const stmt = db.prepare('UPDATE hardware_info SET priority = ? WHERE id = ?');
+            return stmt.run(priority, deviceId);
+        });
+
+        ipcMain.handle('update-hardware-enabled', async (_event, deviceId: number, isEnabled: boolean) => {
+            if (!db) throw new Error("Database not initialized");
+            const stmt = db.prepare('UPDATE hardware_info SET is_enabled = ? WHERE id = ?');
+            return stmt.run(isEnabled, deviceId);
+        });
+
+        ipcMain.handle('refresh-hardware-info', async () => {
+            await gatherAndStoreHardwareInfo();
+            const stmt = db.prepare('SELECT * FROM hardware_info ORDER BY device_type, priority DESC');
+            return stmt.all();
+        });
+
+
+        // --- FFprobe Handler ---
+        ipcMain.handle('probe-file', async (_event, filePath: string) => {
+            if (!filePath) {
+                console.warn("Probe request received without a file path.");
+                return null;
+            }
+            console.log(`[Main Process] Received probe request for: ${filePath}`);
+            try {
+                // Ensure the file exists before probing
+                await fs.access(filePath, fs.constants.R_OK);
+                const probeData = await probeFile(filePath); // Use existing probeFile function
+                console.log(`[Main Process] Probe successful for: ${filePath}`);
+                console.log("[Main Process] Full ffprobe result:", JSON.stringify(probeData, null, 2));
+                return probeData;
+            } catch (error) {
+                console.error(`[Main Process] Error probing file ${filePath}:`, error);
+                // Return null or throw an error that the renderer can catch
+                // Returning null might be safer for the UI
+                return null; 
+            }
+        });
+
+        // --- Encoding Handlers ---
+        // Add handlers for file dialogs
+        ipcMain.handle('dialog:showOpen', async (_event, options) => {
+            if (!mainWindow) {
+                throw new Error('Main window not available');
+            }
+            // Ensure options are passed correctly
+            return dialog.showOpenDialog(mainWindow, options);
+        });
+
+        ipcMain.handle('dialog:showSave', async (_event, options) => {
+            if (!mainWindow) {
+                throw new Error('Main window not available');
+            }
+            // Ensure options are passed correctly
+            return dialog.showSaveDialog(mainWindow, options);
+        });
+
+        // Add the new handler that accepts options
+        ipcMain.handle('start-encoding-process', async (event, options: EncodingOptions) => {
+            console.log(`[Main Process] Encoding request received for: ${options.inputPath} → ${options.outputPath}`);
+            console.log(`[Main Process] Options:`, options);
+            
+            try {
+                // Probe the file to get info and check if it was already processed
+                const probeData = await probeFile(options.inputPath);
+                
+                // Note: We don't need to show a dialog here because the UI component in ManualEncode.tsx
+                // already shows a dialog for already processed files before initiating this IPC call.
+                // Just log the status for tracking
+                if (probeData?.processedByRecodarr?.processed) {
+                    console.log(`[Main Process] File has already been processed by Recodarr: ${options.inputPath}`);
+                    console.log(`[Main Process] Previously encoded: ${probeData.processedByRecodarr.date || 'Unknown'}`);
+                    console.log(`[Main Process] Video codec: ${probeData.processedByRecodarr.videoCodec || 'Unknown'}`);
+                    console.log(`[Main Process] Audio codec: ${probeData.processedByRecodarr.audioCodec || 'Unknown'}`);
+                    // Since the UI is handling the dialog, we just continue with encoding here
+                } else {
+                    console.log(`[Main Process] File has not been processed before or no processing metadata found`);
+                }
+
+                // Use the job ID from options if provided, otherwise generate one
+                const jobId = options.jobId || crypto.randomUUID(); 
+                console.log(`[Main Process] Using Job ID: ${jobId} ${options.jobId ? '(provided in options)' : '(newly generated)'}`);
+
+                // Rest of the encoding process...
+                const isOverwrite = options.overwriteInput ?? (options.inputPath === options.outputPath);
+                console.log(`[Main Process] Overwrite mode determined: ${isOverwrite}`);
+
+                // Find the part where encoding progress is forwarded to the renderer
+                const progressCallback = (progress: EncodingProgress) => {
+                    try {
+                        if (mainWindow && !mainWindow.isDestroyed()) {
+                            mainWindow.webContents.send('encodingProgress', { ...progress, jobId }); // Include jobId in progress updates
+                        }
+                    } catch (error) {
+                        console.error(`[Encoding Progress] Error sending progress update:`, error);
+                    }
+                };
+
+                // Merge received options with the progress callback, overwrite flag, jobId, and log path
+                const optionsWithCallback: EncodingOptions = {
+                    ...options,
+                    overwriteInput: isOverwrite, // Pass the determined flag
+                    progressCallback: progressCallback,
+                    jobId: jobId, // Pass jobId
+                    logDirectoryPath: logDir // Pass log directory path
+                };
+
+                console.log('[Main Process] Calling startEncodingProcess with options:', JSON.stringify(optionsWithCallback, null, 2));
+
+                // Call the actual encoding function from ffmpegUtils
+                const result = await startEncodingProcess(optionsWithCallback);
+
+                console.log('[Main Process] Encoding process finished with result:', result);
+
+                // Prepare the result object to send back to UI, always include jobId
+                let finalResult: any = { ...result, jobId: jobId }; // Ensure jobId is always returned
+
+                // --- Post-Encoding Update (Conditional) --- 
+                if (result.success && result.outputPath) {
+                    try {
+                        console.log(`[Main Process] Encoding successful for Job ID ${jobId}. Temporary output at: ${result.outputPath}`);
+                        
+                        if (isOverwrite) {
+                            console.log(`[Main Process] Overwrite mode: Original file will be replaced through Queue Service's replaceFile`);
+                            // Don't try to rename here - let the queue service handle it with its robust replaceFile
+                            
+                            // Just probe the temporary file
+                            const probeData = await probeFile(result.outputPath);
+                            if (probeData) {
+                                console.log(`[Main Process] Temporary file successfully probed: ${result.outputPath}`);
+                                mainWindow?.webContents.send('encodingProgress', {
+                                    jobId,
+                                    status: `Encoding completed with ${result.reductionPercent?.toFixed(1) ?? 'N/A'}% reduction. File replacement will be handled by queue service.`
+                                });
+                            } else {
+                                console.warn(`[Main Process] Probe failed for temp file ${result.outputPath}. Will still attempt replacement.`);
+                            }
+                        } else {
+                            // Non-overwrite mode (save as new) - we should still probe
+                            const probeData = await probeFile(result.outputPath);
+                            if (probeData) {
+                                console.log(`[Main Process] New file successfully probed: ${result.outputPath}`);
+                                mainWindow?.webContents.send('encodingProgress', {
+                                    jobId,
+                                    status: `Save As New complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. File: ${result.outputPath}`
+                                });
+                            } else {
+                                console.warn(`[Main Process] Probe failed for new file ${result.outputPath}.`);
+                            }
+                        }
+                    } catch (updateError) {
+                        console.error(`[Main Process] Error during post-encoding probe for Job ID ${jobId}:`, updateError);
+                        mainWindow?.webContents.send('encodingProgress', {
+                            jobId,
+                            status: `Encoding succeeded but probe failed. Output: ${result.outputPath}`
+                        });
+                    }
+                } else if (!result.success) {
+                    // Send failure status update
+                    mainWindow?.webContents.send('encodingProgress', {
+                        jobId,
+                        status: `Encoding failed: ${result.error}`
                     });
-                })(presetMigrations);
-                console.log('Encoding_presets table migration transaction committed successfully.');
-            } else {
-                console.log('No database migrations needed for encoding_presets table.');
+                }
+                // --- End Post-Encoding Update --- 
+
+                return finalResult; // Return the result including the jobId
+            } catch (error) {
+                console.error('[Main Process] Error in start-encoding-process:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error)
+                };
             }
-        } catch (error) {
-            // Handle case where encoding_presets table might not exist yet (e.g., very first run)
-            if (error instanceof Error && error.message.includes('no such table: encoding_presets')) {
-                console.log('Encoding_presets table does not exist yet, skipping migration check (will be created by CREATE TABLE).');
-            } else {
-                console.error('Error checking/migrating encoding_presets table:', error);
-                throw error; // Re-throw other errors
+        });
+
+        // --- Add New Handler for Reading Logs ---
+        ipcMain.handle('get-encoding-log', async (_event, jobId: string): Promise<string | null> => {
+            if (!jobId) {
+                console.warn("[get-encoding-log] Received request without a Job ID.");
+                return null;
+            }
+            const logFilePath = path.join(logDir, `${jobId}.log`);
+            console.log(`[get-encoding-log] Attempting to read log file: ${logFilePath}`);
+            try {
+                // Ensure file exists before reading
+                await fs.access(logFilePath, fs.constants.R_OK);
+                const logContent = await fs.readFile(logFilePath, 'utf-8');
+                console.log(`[get-encoding-log] Successfully read log file for Job ID: ${jobId}`);
+                return logContent;
+            } catch (error: any) {
+                if (error.code === 'ENOENT') {
+                    console.error(`[get-encoding-log] Log file not found for Job ID ${jobId} at path: ${logFilePath}`);
+                    return `Log file not found for Job ID: ${jobId}`;
+                }
+                console.error(`[get-encoding-log] Error reading log file ${logFilePath}:`, error);
+                return `Error reading log file for Job ID ${jobId}: ${error.message}`;
+            }
+        });
+        // --- End New Handler ---
+
+        // Helper function to update media DB after encoding
+        async function updateMediaAfterEncoding(probeData: any, jobId: string, targetDbFilePath: string): Promise<void> {
+            if (!db) {
+                console.error("Database not initialized, cannot update media after encoding.");
+                return;
+            }
+            // We use targetDbFilePath (original input path in overwrite mode) for WHERE clause,
+            // but probeData still contains info about the *newly created* file (size, codecs).
+            if (!probeData?.format) { // Check format object exists
+                console.warn("Skipping DB update after encoding due to missing format info in probe data.");
+                return;
+            }
+
+            const fileSize = probeData.format.size ? parseInt(probeData.format.size, 10) : null;
+
+            let videoCodec: string | null = null;
+            let audioCodec: string | null = null;
+            let resolutionWidth: number | null = null;
+            let resolutionHeight: number | null = null;
+            let audioChannels: number | null = null;
+
+            if (probeData.streams && Array.isArray(probeData.streams)) {
+                const videoStream = probeData.streams.find((s: any) => s.codec_type === 'video');
+                const audioStream = probeData.streams.find((s: any) => s.codec_type === 'audio');
+                videoCodec = videoStream?.codec_name ?? null;
+                audioCodec = audioStream?.codec_name ?? null;
+                resolutionWidth = videoStream?.width ?? null;
+                resolutionHeight = videoStream?.height ?? null;
+                audioChannels = audioStream?.channels ?? null;
+            }
+                    
+            console.log(`[DB Update] Attempting to update media for file path in DB: ${targetDbFilePath} with Job ID: ${jobId}`);
+            console.log(`[DB Update] New Data: Size=${fileSize}, VideoCodec=${videoCodec}, AudioCodec=${audioCodec}, Resolution=${resolutionWidth}x${resolutionHeight}, Channels=${audioChannels}`);
+
+            // Use a specific UPDATE statement targeting the targetDbFilePath
+            const updateSql = `
+                UPDATE media 
+                SET currentSize = ?, 
+                    videoCodec = ?, 
+                    audioCodec = ?, 
+                    resolutionWidth = ?, 
+                    resolutionHeight = ?, 
+                    audioChannels = ?, 
+                    encodingJobId = ?, 
+                    lastSizeCheckAt = CURRENT_TIMESTAMP 
+                WHERE filePath = ?
+            `;
+            try {
+                const updateStmt = db.prepare(updateSql);
+                // Use new data from probeData, but use targetDbFilePath for the WHERE condition
+                const info = updateStmt.run(fileSize, videoCodec, audioCodec, resolutionWidth, resolutionHeight, audioChannels, jobId, targetDbFilePath);
+
+                if (info.changes > 0) {
+                    console.log(`[DB Update] Successfully updated media record for ${targetDbFilePath} (Job ID: ${jobId}). Changes: ${info.changes}`);
+                } else {
+                    console.warn(`[DB Update] No media record found or updated for filePath: ${targetDbFilePath}. Original file might not be in library.`);
+                }
+            } catch (error) {
+                console.error(`[DB Update] Error updating media record for ${targetDbFilePath} (Job ID: ${jobId}):`, error);
+                throw error; // Re-throw to be caught by the caller
             }
         }
-        // --- End Database Migrations ---
 
-        // Create FTS table and triggers as before
-        db.exec(`
-            CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts5(
-                title,
-                filePath,
-                content='media',
-                content_rowid='id'
-            );
-        `);
-         // Trigger to keep FTS table in sync with media table
-         // Update triggers if newly added columns should be indexed by FTS
-         db.exec(`
-            CREATE TRIGGER IF NOT EXISTS media_ai AFTER INSERT ON media BEGIN
-                INSERT INTO media_fts (rowid, title, filePath) VALUES (new.rowid, new.title, new.filePath);
-            END;
-        `);
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS media_ad AFTER DELETE ON media BEGIN
-                DELETE FROM media_fts WHERE rowid=old.rowid;
-            END;
-        `);
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS media_au AFTER UPDATE ON media BEGIN
-                UPDATE media_fts SET title=new.title, filePath=new.filePath WHERE rowid=old.rowid;
-            END;
-        `);
-         console.log("FTS5 table and triggers checked/created.");
+        // Keep the old subscription handlers (can be removed if subscribeEncodingProgress in preload is robust)
+        let encodingProgressEventSender: Electron.IpcMainEvent['sender'] | null = null;
+        ipcMain.on('subscribeEncodingProgress', (event) => {
+            console.log('[Main Process] Renderer subscribed via ipcMain.on.');
+            encodingProgressEventSender = event.sender; // Store sender
+        });
 
+        ipcMain.on('unsubscribeEncodingProgress', () => {
+            console.log('[Main Process] Renderer unsubscribed via ipcMain.on.');
+            encodingProgressEventSender = null;
+        });
+        // --- End Encoding Handlers ---
+
+        // Add new handler for getting initial logs
+        ipcMain.handle('get-initial-logs', async () => {
+            return getLogBuffer();
+        });
+
+        // Add handler for custom confirmation dialog
+        ipcMain.handle('show-confirmation-dialog', async (_event, options) => {
+            console.log(`[Main Process] Received request to show confirmation dialog:`, options);
+            
+            try {
+                if (!mainWindow || mainWindow.isDestroyed()) {
+                    console.error('[Main Process] Cannot show dialog - main window not available');
+                    return { confirmed: false, error: 'Main window not available' };
+                }
+                
+                // Default options if not provided
+                const dialogOpts = {
+                    type: 'question',
+                    buttons: ['Cancel', 'Confirm'],
+                    defaultId: 0,
+                    title: options.title || 'Confirmation',
+                    message: options.message || 'Please confirm this action',
+                    detail: options.detail || '',
+                    ...options
+                };
+                
+                console.log(`[Main Process] Showing confirmation dialog`);
+                const result = await dialog.showMessageBox(mainWindow, dialogOpts);
+                console.log(`[Main Process] Dialog result:`, result);
+                
+                // User confirmed if they clicked the second button (index 1)
+                return { 
+                    confirmed: result.response === 1,
+                    response: result.response
+                };
+            } catch (error) {
+                console.error(`[Main Process] Error showing confirmation dialog:`, error);
+                return { confirmed: false, error: String(error) };
+            }
+        });
+
+        // --- Encoding Preset Handlers ---
+        ipcMain.handle('get-presets', async () => {
+            if (!db) throw new Error("Database not initialized");
+            return getPresets(db);
+        });
+
+        ipcMain.handle('save-preset', async (_event, preset: any) => {
+            if (!db) throw new Error("Database not initialized");
+            return savePreset(db, preset);
+        });
+
+        ipcMain.handle('delete-preset', async (_event, id: string) => {
+            if (!db) throw new Error("Database not initialized");
+            return deletePreset(db, id);
+        });
+        // --- End Encoding Preset Handlers ---
+
+        // --- Queue Handlers ---
+        // Path for storing queue data
+        const queueDataPath = path.join(app.getPath('userData'), 'queue.json');
+
+        // Handler to load saved queue data
+        ipcMain.handle('load-queue-data', async () => {
+            console.log(`[Main Process] Request to load queue data from: ${queueDataPath}`);
+            try {
+                // Check if the file exists
+                try {
+                    await fs.access(queueDataPath, fs.constants.R_OK);
+                } catch (error) {
+                    console.log(`[Main Process] Queue data file not found, returning empty array`);
+                    return { jobs: [] };
+                }
+
+                // Read and parse the file
+                const data = await fs.readFile(queueDataPath, 'utf-8');
+                const queueData = JSON.parse(data);
+                console.log(`[Main Process] Successfully loaded queue data with ${queueData.jobs?.length || 0} jobs`);
+                return queueData;
+            } catch (error) {
+                console.error(`[Main Process] Error loading queue data:`, error);
+                return { jobs: [], error: String(error) };
+            }
+        });
+
+        // Handler to save queue data
+        ipcMain.handle('save-queue-data', async (_event, data) => {
+            // Validate data structure
+            if (!data || typeof data !== 'object') {
+                console.error(`[Main Process] Invalid data provided to save-queue-data: ${data}`);
+                return { success: false, error: 'Invalid data structure provided' };
+            }
+            
+            // Ensure jobs array exists, create empty array if missing
+            if (!data.jobs || !Array.isArray(data.jobs)) {
+                console.warn(`[Main Process] Missing or invalid jobs array in queue data, creating empty array`);
+                data.jobs = [];
+            }
+            
+            console.log(`[Main Process] Request to save queue data with ${data.jobs.length || 0} jobs`);
+            try {
+                // Serialize and save the data
+                await fs.writeFile(queueDataPath, JSON.stringify(data, null, 2), 'utf-8');
+                console.log(`[Main Process] Successfully saved queue data to: ${queueDataPath}`);
+                return { success: true };
+            } catch (error) {
+                console.error(`[Main Process] Error saving queue data:`, error);
+                return { success: false, error: String(error) };
+            }
+        });
+
+        // Handler to get file size
+        ipcMain.handle('get-file-size', async (_event, filePath) => {
+            // Add validation for undefined or empty paths
+            if (!filePath) {
+                console.error(`[Main Process] Invalid file path provided to get-file-size: ${filePath}`);
+                return undefined;
+            }
+            
+            console.log(`[Main Process] Request to get file size for: ${filePath}`);
+            try {
+                // Check if the file exists first
+                try {
+                    await fs.access(filePath, fs.constants.R_OK);
+                } catch (accessError) {
+                    console.error(`[Main Process] File does not exist or is not readable: ${filePath}`);
+                    return undefined;
+                }
+                
+                const stats = await fs.stat(filePath);
+                if (!stats.isFile()) {
+                    console.error(`[Main Process] Path exists but is not a file: ${filePath}`);
+                    return undefined;
+                }
+                
+                const sizeInBytes = stats.size;
+                console.log(`[Main Process] File size for ${filePath}: ${sizeInBytes} bytes`);
+                return sizeInBytes;
+            } catch (error) {
+                console.error(`[Main Process] Error getting file size for ${filePath}:`, error);
+                return undefined;
+            }
+        });
+
+        // Handler to start an encoding job
+        ipcMain.handle('start-encoding', async (_event, options) => {
+            console.log(`[Main Process] Request to start encoding for: ${options.inputPath}`);
+            try {
+                // This reuses the existing startEncodingProcess handler
+                return await startEncodingProcess(options);
+            } catch (error) {
+                console.error(`[Main Process] Error starting encoding:`, error);
+                return { 
+                    success: false, 
+                    error: String(error),
+                    jobId: options.jobId 
+                };
+            }
+        });
+
+        // Handler to open an encoding log
+        ipcMain.handle('open-encoding-log', async (_event, jobId) => {
+            console.log(`[Main Process] Request to open encoding log for job: ${jobId}`);
+            try {
+                const logFilePath = path.join(logDir, `${jobId}.log`);
+                
+                // Check if file exists
+                try {
+                    await fs.access(logFilePath, fs.constants.R_OK);
+                } catch (error) {
+                    console.error(`[Main Process] Log file not found: ${logFilePath}`);
+                    return { success: false, error: `Log file not found for job ${jobId}` };
+                }
+                
+                // Open the file with the default text editor
+                await shell.openPath(logFilePath);
+                console.log(`[Main Process] Successfully opened log file: ${logFilePath}`);
+                return { success: true };
+            } catch (error) {
+                console.error(`[Main Process] Error opening log file:`, error);
+                return { success: false, error: String(error) };
+            }
+        });
+        // --- End Queue Handlers ---
+
+        // Setup system tray
+        setupTray();
+
+        // --- End IPC Handler Registration ---
+
+        // Add the replaceFile handler
+        ipcMain.handle('replace-file', async (_event: IpcMainInvokeEvent, sourcePath: string, destinationPath: string): Promise<boolean> => {
+            try {
+                console.log(`[Main Process] Replacing file: ${destinationPath} with ${sourcePath}`);
+                
+                // Verify paths are not empty or the same
+                if (!sourcePath || !destinationPath) {
+                    console.error(`[Main Process] Invalid paths: source=${sourcePath}, destination=${destinationPath}`);
+                    return false;
+                }
+                
+                if (sourcePath === destinationPath) {
+                    console.log(`[Main Process] Source and destination are the same, no replacement needed`);
+                    return true;
+                }
+                
+                // Check if source file exists and is readable
+                try {
+                    const sourceStats = await fs.stat(sourcePath);
+                    if (!sourceStats.isFile() || sourceStats.size === 0) {
+                        console.error(`[Main Process] Source file is not valid: ${sourcePath}, size: ${sourceStats.size}`);
+                        return false;
+                    }
+                    console.log(`[Main Process] Source file verified: ${sourcePath}, size: ${sourceStats.size} bytes`);
+                } catch (error) {
+                    console.error(`[Main Process] Error accessing source file: ${sourcePath}`, error);
+                    return false;
+                }
+                
+                // Create a unique backup path with timestamp
+                const timestamp = new Date().getTime();
+                const backupPath = `${destinationPath}.backup-${timestamp}`;
+                let backupCreated = false;
+                
+                // Check if destination exists
+                if (fsSync.existsSync(destinationPath)) {
+                    try {
+                        // Create backup with retry logic
+                        for (let attempt = 1; attempt <= 3; attempt++) {
+                            try {
+                                await fs.rename(destinationPath, backupPath);
+                                backupCreated = true;
+                                console.log(`[Main Process] Created backup of original file at: ${backupPath} (attempt ${attempt})`);
+                                break;
+                            } catch (backupError) {
+                                if (attempt < 3) {
+                                    console.log(`[Main Process] Backup attempt ${attempt} failed, retrying in 500ms...`);
+                                    // Wait before retry to handle potential file locks
+                                    await new Promise(resolve => setTimeout(resolve, 500));
+                                } else {
+                                    throw backupError;
+                                }
+                            }
+                        }
+                    } catch (backupError) {
+                        console.error(`[Main Process] Failed to create backup:`, backupError);
+                        // Try direct replacement if backup fails
+                        console.log(`[Main Process] Attempting direct replacement without backup...`);
+                    }
+                }
+                
+                // Replace file with retry logic
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        await fs.copyFile(sourcePath, destinationPath);
+                        
+                        // Verify the copy succeeded by comparing file sizes
+                        const sourceSize = (await fs.stat(sourcePath)).size;
+                        const destSize = (await fs.stat(destinationPath)).size;
+                        
+                        if (sourceSize !== destSize) {
+                            console.error(`[Main Process] File size mismatch after copy: Source=${sourceSize}, Dest=${destSize}`);
+                            if (attempt < 3) {
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                                continue;
+                            }
+                            throw new Error(`File size mismatch after copy: Source=${sourceSize}, Dest=${destSize}`);
+                        }
+                        
+                        console.log(`[Main Process] Successfully replaced file (attempt ${attempt})`);
+                        
+                        // Delete source file after successful copy
+                        try {
+                            await fs.unlink(sourcePath);
+                            console.log(`[Main Process] Removed source file: ${sourcePath}`);
+                        } catch (cleanupError) {
+                            console.warn(`[Main Process] Could not remove source file, but replacement was successful:`, cleanupError);
+                        }
+                        
+                        // Remove the backup file if it was created and replacement was successful
+                        if (backupCreated && fsSync.existsSync(backupPath)) {
+                            try {
+                                await fs.unlink(backupPath);
+                                console.log(`[Main Process] Removed backup file: ${backupPath}`);
+                            } catch (cleanupError) {
+                                console.warn(`[Main Process] Could not remove backup file:`, cleanupError);
+                            }
+                        }
+                        
+                        return true;
+                    } catch (copyError) {
+                        if (attempt < 3) {
+                            console.log(`[Main Process] Replace attempt ${attempt} failed, retrying in 500ms...`, copyError);
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                        } else {
+                            console.error(`[Main Process] All replacement attempts failed:`, copyError);
+                            
+                            // Restore from backup if it exists and final attempt failed
+                            if (backupCreated && fsSync.existsSync(backupPath)) {
+                                try {
+                                    await fs.rename(backupPath, destinationPath);
+                                    console.log(`[Main Process] Restored original file from backup`);
+                                } catch (restoreError) {
+                                    console.error(`[Main Process] Failed to restore from backup:`, restoreError);
+                                }
+                            }
+                            
+                            throw copyError;
+                        }
+                    }
+                }
+                
+                // This should never be reached due to the logic above
+                return false;
+            } catch (error) {
+                console.error(`[Main Process] Fatal error in replaceFile:`, error);
+                return false;
+            }
+        });
+
+        // Add handler for deleting files
+        ipcMain.handle('delete-file', async (_event: IpcMainInvokeEvent, filePath: string): Promise<boolean> => {
+            try {
+                console.log(`[Main Process] Deleting file: ${filePath}`);
+                
+                // Check if file exists before attempting to delete
+                if (fsSync.existsSync(filePath)) {
+                    await fs.unlink(filePath);
+                    console.log(`[Main Process] Successfully deleted file: ${filePath}`);
+                    return true;
+                } else {
+                    console.log(`[Main Process] File does not exist, skipping deletion: ${filePath}`);
+                    return false;
+                }
+            } catch (error) {
+                console.error(`[Main Process] Error deleting file ${filePath}:`, error);
+                return false;
+            }
+        });
+
+        // --- App Event Listeners ---
+
+        // New comprehensive handler to finalize encoded files
+        ipcMain.handle('finalize-encoded-file', async (_event, params: { 
+            tempFilePath: string, 
+            finalFilePath: string, 
+            jobId: string,
+            isOverwrite: boolean,
+            originalFilePath?: string
+        }) => {
+            console.log(`[Main Process] Finalizing encoded file:`);
+            console.log(`[Main Process] - Temp file: ${params.tempFilePath}`);
+            console.log(`[Main Process] - Final destination: ${params.finalFilePath}`);
+            console.log(`[Main Process] - Job ID: ${params.jobId}`);
+            console.log(`[Main Process] - Overwrite: ${params.isOverwrite}`);
+            
+            try {
+                // Step 1: Validate that paths are provided and not undefined
+                if (!params.tempFilePath) {
+                    console.error(`[Main Process] Missing temp file path`);
+                    return { success: false, error: "Temp file path is missing or undefined" };
+                }
+                
+                if (!params.finalFilePath) {
+                    console.error(`[Main Process] Missing final file path`);
+                    return { success: false, error: "Final file path is missing or undefined" };
+                }
+                
+                // Step 2: Check if temp file exists
+                try {
+                    const tempStats = await fs.stat(params.tempFilePath);
+                    if (!tempStats.isFile() || tempStats.size === 0) {
+                        console.error(`[Main Process] Temp file is invalid or empty: ${params.tempFilePath}`);
+                        return { success: false, error: `Temp file is invalid or empty: ${params.tempFilePath}` };
+                    }
+                    console.log(`[Main Process] Temp file verified: ${params.tempFilePath}, size: ${tempStats.size} bytes`);
+                } catch (error) {
+                    console.error(`[Main Process] Couldn't access temp file: ${error instanceof Error ? error.message : String(error)}`);
+                    return { success: false, error: `Couldn't access temp file: ${error instanceof Error ? error.message : String(error)}` };
+                }
+                
+                // Step 3: Probe the temp file to get updated metadata
+                console.log(`[Main Process] Probing temp file: ${params.tempFilePath}`);
+                const probeData = await probeFile(params.tempFilePath);
+                if (!probeData) {
+                    console.error(`[Main Process] Failed to probe temp file: ${params.tempFilePath}`);
+                    return { success: false, error: "Failed to probe temp file" };
+                }
+                
+                // Step 4: Perform the file replacement
+                let success = false;
+                if (params.tempFilePath !== params.finalFilePath) {
+                    console.log(`[Main Process] Moving ${params.tempFilePath} to ${params.finalFilePath}`);
+                    
+                    // Create a backup of the destination file if it exists (for safety)
+                    let backupPath = "";
+                    let backupCreated = false;
+                    
+                    if (fsSync.existsSync(params.finalFilePath)) {
+                        backupPath = `${params.finalFilePath}.backup-${Date.now()}`;
+                        try {
+                            await fs.rename(params.finalFilePath, backupPath);
+                            backupCreated = true;
+                            console.log(`[Main Process] Created backup at: ${backupPath}`);
+                        } catch (backupError) {
+                            console.error(`[Main Process] Failed to create backup:`, backupError);
+                            // Continue anyway - we'll try a direct replacement
+                        }
+                    }
+                    
+                    // Copy the temp file to the final destination
+                    try {
+                        await fs.copyFile(params.tempFilePath, params.finalFilePath);
+                        
+                        // Verify sizes match
+                        const srcSize = (await fs.stat(params.tempFilePath)).size;
+                        const destSize = (await fs.stat(params.finalFilePath)).size;
+                        
+                        if (srcSize !== destSize) {
+                            throw new Error(`File size mismatch after copy: Temp=${srcSize}, Final=${destSize}`);
+                        }
+                        
+                        // Copy succeeded, clean up
+                        success = true;
+                        console.log(`[Main Process] Successfully copied file to destination: ${params.finalFilePath}`);
+                        
+                        // Remove the temp file
+                        try {
+                            await fs.unlink(params.tempFilePath);
+                            console.log(`[Main Process] Removed temp file: ${params.tempFilePath}`);
+                        } catch (cleanupError) {
+                            console.warn(`[Main Process] Could not remove temp file: ${cleanupError}`);
+                            // Non-fatal error, continue
+                        }
+                        
+                        // Remove backup if we created one
+                        if (backupCreated) {
+                            try {
+                                await fs.unlink(backupPath);
+                                console.log(`[Main Process] Removed backup: ${backupPath}`);
+                            } catch (cleanupError) {
+                                console.warn(`[Main Process] Could not remove backup: ${cleanupError}`);
+                                // Non-fatal error, continue
+                            }
+                        }
+                    } catch (copyError) {
+                        console.error(`[Main Process] Error copying file:`, copyError);
+                        
+                        // Restore from backup if available
+                        if (backupCreated) {
+                            try {
+                                await fs.rename(backupPath, params.finalFilePath);
+                                console.log(`[Main Process] Restored original from backup`);
+                            } catch (restoreError) {
+                                console.error(`[Main Process] Failed to restore from backup:`, restoreError);
+                            }
+                        }
+                        
+                        return { success: false, error: `File copy failed: ${copyError instanceof Error ? copyError.message : String(copyError)}` };
+                    }
+                } else {
+                    console.log(`[Main Process] Temp and final paths are the same, no move needed`);
+                    success = true;
+                }
+                
+                // Step 5: Update the database with the new file information
+                if (success && params.isOverwrite) {
+                    const dbPath = params.originalFilePath || params.finalFilePath;
+                    
+                    try {
+                        // Add metadata for the encoded file
+                        console.log(`[Main Process] Updating database for: ${dbPath}`);
+                        await updateMediaAfterEncoding(probeData, params.jobId, dbPath);
+                        console.log(`[Main Process] Database updated successfully`);
+                    } catch (dbError) {
+                        console.error(`[Main Process] Database update failed:`, dbError);
+                        // Non-fatal error, continue with success
+                    }
+                }
+                
+                return { 
+                    success: true, 
+                    finalPath: params.finalFilePath,
+                    probeData: probeData,
+                    message: `File successfully finalized at: ${params.finalFilePath}`
+                };
+            } catch (error) {
+                console.error(`[Main Process] Error finalizing encoded file:`, error);
+                return { 
+                    success: false, 
+                    error: `Error finalizing encoded file: ${error instanceof Error ? error.message : String(error)}`
+                };
+            }
+        });
+
+        // Add new handler for file watcher status
+        ipcMain.handle('get-file-watcher-status', async () => {
+            if (!fileWatcher) {
+                return {
+                    isActive: false,
+                    isReady: false,
+                    isScanning: false,
+                    lastScanTime: null,
+                    watchedFolders: store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[],
+                    watchedFolderCount: 0,
+                    networkDriveStatus: []
+                };
+            }
+            
+            // Get comprehensive status from watcher
+            const watcherStatus = fileWatcher.getWatcherStatus();
+            
+            return {
+                ...watcherStatus,
+                watchedFolders: store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[],
+            };
+        });
+
+        // Add new handler for checking network drive connectivity
+        ipcMain.handle('check-network-connectivity', async () => {
+            if (!fileWatcher) {
+                return {
+                    success: false,
+                    error: 'File watcher not initialized'
+                };
+            }
+            
+            try {
+                // This will trigger the checkNetworkConnectivity method in the FileWatcher class
+                // and update the watcher paths as needed
+                await fileWatcher.forceRescan();
+                
+                // Return updated status
+                return {
+                    success: true,
+                    status: fileWatcher.getWatcherStatus()
+                };
+            } catch (error) {
+                console.error('[Main Process] Error checking network connectivity:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error)
+                };
+            }
+        });
+
+        // Add new handler for triggering a full deep scan
+        ipcMain.handle('trigger-deep-scan', async () => {
+            if (!fileWatcher) {
+                return {
+                    success: false,
+                    error: 'File watcher not initialized'
+                };
+            }
+            
+            try {
+                // This will trigger the full deep scan method in the FileWatcher class
+                await fileWatcher.forceRescan();
+                
+                return {
+                    success: true,
+                    message: 'Deep scan has been triggered successfully'
+                };
+            } catch (error) {
+                console.error('[Main Process] Error triggering deep scan:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error)
+                };
+            }
+        });
+
+        // Add new handler for cleanup of deleted files
+        ipcMain.handle('trigger-cleanup-deleted-files', async () => {
+            if (!fileWatcher) {
+                return {
+                    success: false,
+                    error: 'File watcher not initialized'
+                };
+            }
+            
+            try {
+                await fileWatcher.cleanupDeletedFiles();
+                
+                return {
+                    success: true,
+                    message: 'Database cleanup completed successfully'
+                };
+            } catch (error) {
+                console.error('[Main Process] Error triggering cleanup:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error)
+                };
+            }
+        });
+
+        // Initialize the task scheduler
+        taskScheduler = new TaskScheduler(db, mainWindow);
+        taskScheduler.initialize().catch(err => {
+            console.error('Failed to initialize task scheduler:', err);
+        });
+
+        // Set up IPC handlers for the scheduler
+        setupSchedulerIpcHandlers();
     } catch (err) {
         console.error(`Failed to initialize database at path: ${dbPath || 'Unknown'}:`, err);
         // Handle error appropriately - maybe show an error dialog to the user
         // For now, we'll let the app continue but DB functionality will be broken
     }
     // --- End Initialize Database ---
-
-    // --- Start File Watcher ---
-    const initialFolders = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
-    startWatching(initialFolders);
-    // --- End Start File Watcher ---
-
-    // Load the main window content
-    if (isDev()) mainWindow.loadURL("http://localhost:3524")
-    else mainWindow.loadFile(getUIPath());
-
-    // Start other services
-    pollResources(mainWindow);
-    pollSystemStats(mainWindow); // Start polling system stats
-
-    // Set a timeout in case watcher never gets ready
-    setTimeout(() => {
-        if (!isWatcherReady && splashScreen && !splashScreen.isDestroyed()) {
-            console.log("Timeout reached waiting for watcher. Showing main window...");
-            closeSplashScreen();
-        }
-    }, APP_STARTUP_TIMEOUT);
-    
-    ipcMain.handle("getStaticData", () => {
-        return getStaticData();
-    })
-
-    // --- Database Query Handler ---
-    ipcMain.handle('db-query', async (_event, sql: string, params: any[] = []) => {
-        if (!db) {
-            console.error("Database not initialized. Cannot execute query.");
-            throw new Error("Database not available.");
-        }
-        try {
-            // Basic security: Check if the query is a SELECT statement for 'all'/'get'
-            // More robust validation might be needed depending on requirements
-            const command = sql.trim().split(' ')[0].toUpperCase();
-            const stmt = db.prepare(sql);
-
-            if (command === 'SELECT') {
-                return params.length > 0 ? stmt.all(params) : stmt.all();
-            } else if (['INSERT', 'UPDATE', 'DELETE'].includes(command)) {
-                const info = params.length > 0 ? stmt.run(params) : stmt.run();
-                return info; // Contains changes, lastInsertRowid etc.
-            } else {
-                console.warn(`Unsupported SQL command attempted: ${command}`);
-                throw new Error(`Unsupported SQL command: ${command}`);
-            }
-        } catch (error) {
-            console.error(`Error executing SQL: ${sql}`, params, error);
-            throw error; // Re-throw the error to be caught by the renderer
-        }
-    });
-    // --- End Database Query Handler ---
-
-    // --- Watched Folder Management Handlers ---
-    ipcMain.handle('get-watched-folders', async (): Promise<WatchedFolder[]> => {
-        return store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
-    });
-
-    ipcMain.handle('add-watched-folder', async (_event, folderInfo: Omit<WatchedFolder, 'path'>): Promise<WatchedFolder | null> => {
-        if (!mainWindow) throw new Error("Main window not available");
-        const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
-        if (result.canceled || result.filePaths.length === 0) return null;
-
-        const folderPath = result.filePaths[0];
-        const currentFolders = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
-        if (currentFolders.some(f => f.path === folderPath)) {
-             throw new Error(`Folder already being watched: ${folderPath}`);
-        }
-
-        const newFolder: WatchedFolder = { path: folderPath, ...folderInfo };
-        currentFolders.push(newFolder);
-        store.set(WATCHED_FOLDERS_KEY, currentFolders);
-        watchPath(folderPath);
-        console.log(`Added watched folder: ${JSON.stringify(newFolder)}`);
-        return newFolder;
-    });
-
-    ipcMain.handle('remove-watched-folder', async (_event, folderPath: string): Promise<void> => {
-        const currentFolders = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
-        const updatedFolders = currentFolders.filter(f => f.path !== folderPath);
-        if (currentFolders.length === updatedFolders.length) {
-             console.warn(`Attempted to remove non-existent watched folder: ${folderPath}`);
-             return; 
-        }
-        store.set(WATCHED_FOLDERS_KEY, updatedFolders);
-        unwatchPath(folderPath);
-        console.log(`Removed watched folder: ${folderPath}`);
-    });
-    // --- End Watched Folder Management Handlers ---
-
-    // --- Use standard ipcMain.handle ---
-    ipcMain.handle("getAvailableGpus", async (): Promise<GpuInfo[]> => {
-        try {
-            const gpus = await si.graphics();
-            // Filter out potential RDP adapter from selection if desired
-            return gpus.controllers
-                .filter(gpu => !gpu.vendor?.includes('Microsoft')) // Example filter
-                .map(gpu => ({ 
-                    vendor: gpu.vendor ?? 'Unknown', 
-                    model: gpu.model ?? 'Unknown', 
-                    memoryTotal: gpu.memoryTotal ?? null // Include detected VRAM
-                }));
-        } catch (error) {
-            console.error("Error fetching available GPUs:", error);
-            return [];
-        }
-    });
-
-    ipcMain.handle("getSelectedGpu", async (): Promise<string | null> => {
-        return store.get(SELECTED_GPU_KEY, null) as string | null;
-    });
-
-    ipcMain.handle("setSelectedGpu", async (_event: Electron.IpcMainInvokeEvent, model: string | null): Promise<void> => {
-        // console.log("Setting selected GPU to:", model); // Comment out confirmation log
-        if (model === null || model === 'default') {
-            store.delete(SELECTED_GPU_KEY);
-        } else {
-            store.set(SELECTED_GPU_KEY, model);
-        }
-    });
-
-    // Added handlers for PowerShell GPU monitoring toggle
-    ipcMain.handle("getPsGpuMonitoringEnabled", async (): Promise<boolean> => {
-        return store.get(ENABLE_PS_GPU_KEY, false) as boolean;
-    });
-
-    ipcMain.handle("setPsGpuMonitoringEnabled", async (_event: Electron.IpcMainInvokeEvent, isEnabled: boolean): Promise<void> => {
-        store.set(ENABLE_PS_GPU_KEY, isEnabled);
-    });
-
-    // --- Added Handlers for Manual VRAM Override ---
-    ipcMain.handle("get-manual-gpu-vram", async (): Promise<number | null> => {
-        return store.get(MANUAL_GPU_VRAM_MB_KEY, null) as number | null;
-    });
-
-    ipcMain.handle("set-manual-gpu-vram", async (_event: Electron.IpcMainInvokeEvent, vramMb: number | null): Promise<void> => {
-        if (vramMb === null || typeof vramMb !== 'number' || vramMb <= 0) {
-            store.delete(MANUAL_GPU_VRAM_MB_KEY);
-            console.log("Cleared manual GPU VRAM override.");
-        } else {
-            store.set(MANUAL_GPU_VRAM_MB_KEY, vramMb);
-            console.log(`Set manual GPU VRAM override to: ${vramMb} MB`);
-        }
-    });
-    // --- End IPC Handlers ---
-
-    // --- Added Scanner Trigger Handler ---
-    ipcMain.handle('trigger-scan', async () => {
-        // Create a reference object for isScanning so it can be updated by the scanner functions
-        const isScanningRef = { value: isScanning };
-        const foldersToScan = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
-        
-        await scanMediaFolders(db, mainWindow, foldersToScan, isScanningRef);
-        // Update the local isScanning variable from the reference
-        isScanning = isScanningRef.value;
-        
-        return { status: 'Manual scan triggered' };
-    });
-
-    // Add handler for scanning a single folder
-    ipcMain.handle('trigger-folder-scan', async (_event, folderPath: string) => {
-        // Create a reference object for isScanning so it can be updated by the scanner functions
-        const isScanningRef = { value: isScanning };
-        const foldersToScan = store.get(WATCHED_FOLDERS_KEY, []) as WatchedFolder[];
-        
-        await scanSingleFolder(db, folderPath, mainWindow, foldersToScan, isScanningRef);
-        // Update the local isScanning variable from the reference
-        isScanning = isScanningRef.value;
-        
-        return { status: 'Single folder scan triggered' };
-    });
-    // --- End Scanner Trigger Handler ---
-
-    // Gather hardware info on startup
-    gatherAndStoreHardwareInfo();
-
-    // Add new IPC handlers for hardware info
-    ipcMain.handle('get-hardware-info', async () => {
-        if (!db) throw new Error("Database not initialized");
-        const stmt = db.prepare('SELECT * FROM hardware_info ORDER BY device_type, priority DESC');
-        return stmt.all();
-    });
-
-    ipcMain.handle('update-hardware-priority', async (_event, deviceId: number, priority: number) => {
-        if (!db) throw new Error("Database not initialized");
-        const stmt = db.prepare('UPDATE hardware_info SET priority = ? WHERE id = ?');
-        return stmt.run(priority, deviceId);
-    });
-
-    ipcMain.handle('update-hardware-enabled', async (_event, deviceId: number, isEnabled: boolean) => {
-        if (!db) throw new Error("Database not initialized");
-        const stmt = db.prepare('UPDATE hardware_info SET is_enabled = ? WHERE id = ?');
-        return stmt.run(isEnabled, deviceId);
-    });
-
-    ipcMain.handle('refresh-hardware-info', async () => {
-        await gatherAndStoreHardwareInfo();
-        const stmt = db.prepare('SELECT * FROM hardware_info ORDER BY device_type, priority DESC');
-        return stmt.all();
-    });
-
-    // --- Workflow Management Handlers ---
-    // NOTE: These handlers are commented out as we're removing workflow functionality
-    /*
-    ipcMain.handle('get-workflows', async (): Promise<Workflow[]> => {
-        if (!db) throw new Error("Database not initialized");
-        try {
-            const stmt = db.prepare('SELECT id, name, description FROM workflows ORDER BY name');
-            return stmt.all() as Workflow[];
-        } catch (error) {
-            console.error("Error fetching workflows:", error);
-            throw error;
-        }
-    });
-
-    ipcMain.handle('get-workflow-details', async (_event, workflowId: number): Promise<WorkflowDetails | null> => {
-        if (!db) throw new Error("Database not initialized");
-        try {
-            const workflowStmt = db.prepare('SELECT id, name, description FROM workflows WHERE id = ?');
-            const workflow = workflowStmt.get(workflowId) as Workflow | undefined;
-            if (!workflow) return null;
-
-            const nodesStmt = db.prepare('SELECT node_id as id, node_type as type, position_x, position_y, data FROM workflow_nodes WHERE workflow_id = ?');
-            // Add explicit type for the result of nodesStmt.all()
-            const nodesData = nodesStmt.all(workflowId) as { id: string; type: string; position_x: number; position_y: number; data: string | null }[];
-            const nodes = nodesData.map(n => ({
-                id: n.id,
-                type: n.type,
-                position: { x: n.position_x, y: n.position_y },
-                data: n.data ? JSON.parse(n.data) : {} // Ensure data is parsed
-            }));
-
-            const edgesStmt = db.prepare('SELECT edge_id as id, source_node_id as source, target_node_id as target FROM workflow_edges WHERE workflow_id = ?');
-            // Add explicit type for the result of edgesStmt.all()
-            const edgesData = edgesStmt.all(workflowId) as { id: string; source: string; target: string }[];
-
-            return {
-                ...workflow,
-                nodes: nodes as Node[], // Assert type after mapping
-                edges: edgesData as Edge[], // Use the typed data
-            };
-        } catch (error) {
-            console.error(`Error fetching details for workflow ${workflowId}:`, error);
-            throw error;
-        }
-    });
-
-    ipcMain.handle('save-workflow', async (_event, workflowData: { id?: number; name: string; description: string; nodes: Node[]; edges: Edge[] }): Promise<number> => {
-        if (!db) throw new Error("Database not initialized");
-        const { id, name, description, nodes, edges } = workflowData;
-
-        // Use a transaction for atomicity
-        const transaction = db.transaction(() => {
-            let workflowId: number;
-
-            if (id) { // Update existing workflow
-                workflowId = id;
-                const updateWorkflowStmt = db.prepare(`
-                    UPDATE workflows 
-                    SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP 
-                    WHERE id = ?
-                `);
-                updateWorkflowStmt.run(name, description, workflowId);
-
-                // Clear existing nodes and edges for simplicity, then re-insert
-                db.prepare('DELETE FROM workflow_nodes WHERE workflow_id = ?').run(workflowId);
-                db.prepare('DELETE FROM workflow_edges WHERE workflow_id = ?').run(workflowId);
-            } else { // Insert new workflow
-                const insertWorkflowStmt = db.prepare('INSERT INTO workflows (name, description) VALUES (?, ?)');
-                const info = insertWorkflowStmt.run(name, description);
-                workflowId = Number(info.lastInsertRowid); // Get the new ID
-            }
-
-            // Insert nodes
-            const insertNodeStmt = db.prepare(`
-                INSERT INTO workflow_nodes (workflow_id, node_id, node_type, label, description, position_x, position_y, data)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `);
-            nodes.forEach(node => {
-                insertNodeStmt.run(
-                    workflowId,
-                    node.id,
-                    node.type || 'default', // Ensure type is provided
-                    node.data?.label || 'Unknown',
-                    node.data?.description || '',
-                    node.position.x,
-                    node.position.y,
-                    JSON.stringify(node.data || {}) // Store data as JSON string
-                );
-            });
-
-            // Insert edges
-            const insertEdgeStmt = db.prepare(`
-                INSERT INTO workflow_edges (workflow_id, edge_id, source_node_id, target_node_id)
-                VALUES (?, ?, ?, ?)
-            `);
-            edges.forEach(edge => {
-                insertEdgeStmt.run(
-                    workflowId,
-                    edge.id,
-                    edge.source,
-                    edge.target
-                );
-            });
-
-            return workflowId; // Return the ID of the saved/updated workflow
-        });
-
-        try {
-            const savedWorkflowId = transaction();
-            console.log(`Workflow ${id ? 'updated' : 'saved'} with ID: ${savedWorkflowId}`);
-            return savedWorkflowId;
-        } catch (error) {
-            console.error(`Error saving workflow (ID: ${id}):`, error);
-            throw error;
-        }
-    });
-
-    ipcMain.handle('delete-workflow', async (_event, workflowId: number): Promise<{ changes: number }> => {
-        if (!db) throw new Error("Database not initialized");
-        try {
-            // Due to CASCADE DELETE, deleting from workflows will also delete related nodes and edges
-            const stmt = db.prepare('DELETE FROM workflows WHERE id = ?');
-            const info = stmt.run(workflowId);
-            console.log(`Deleted workflow ID: ${workflowId}, changes: ${info.changes}`);
-            return { changes: info.changes };
-        } catch (error) {
-            console.error(`Error deleting workflow ${workflowId}:`, error);
-            throw error;
-        }
-    });
-    */
-    // --- End Workflow Management Handlers ---
-
-    // --- FFprobe Handler ---
-    ipcMain.handle('probe-file', async (_event, filePath: string) => {
-        if (!filePath) {
-            console.warn("Probe request received without a file path.");
-            return null;
-        }
-        console.log(`[Main Process] Received probe request for: ${filePath}`);
-        try {
-            // Ensure the file exists before probing
-            await fs.access(filePath, fs.constants.R_OK);
-            const probeData = await probeFile(filePath); // Use existing probeFile function
-            console.log(`[Main Process] Probe successful for: ${filePath}`);
-            console.log("[Main Process] Full ffprobe result:", JSON.stringify(probeData, null, 2));
-            return probeData;
-        } catch (error) {
-            console.error(`[Main Process] Error probing file ${filePath}:`, error);
-            // Return null or throw an error that the renderer can catch
-            // Returning null might be safer for the UI
-            return null; 
-        }
-    });
-
-    // --- Encoding Handlers ---
-    // Add handlers for file dialogs
-    ipcMain.handle('dialog:showOpen', async (_event, options) => {
-        if (!mainWindow) {
-            throw new Error('Main window not available');
-        }
-        // Ensure options are passed correctly
-        return dialog.showOpenDialog(mainWindow, options);
-    });
-
-    ipcMain.handle('dialog:showSave', async (_event, options) => {
-        if (!mainWindow) {
-            throw new Error('Main window not available');
-        }
-        // Ensure options are passed correctly
-        return dialog.showSaveDialog(mainWindow, options);
-    });
-
-    // Add the new handler that accepts options
-    ipcMain.handle('start-encoding-process', async (event, options: EncodingOptions) => {
-        console.log(`[Main Process] Encoding request received for: ${options.inputPath} → ${options.outputPath}`);
-        console.log(`[Main Process] Options:`, options);
-        
-        try {
-            // Probe the file to get info and check if it was already processed
-            const probeData = await probeFile(options.inputPath);
-            
-            // Note: We don't need to show a dialog here because the UI component in ManualEncode.tsx
-            // already shows a dialog for already processed files before initiating this IPC call.
-            // Just log the status for tracking
-            if (probeData?.processedByRecodarr?.processed) {
-                console.log(`[Main Process] File has already been processed by Recodarr: ${options.inputPath}`);
-                console.log(`[Main Process] Previously encoded: ${probeData.processedByRecodarr.date || 'Unknown'}`);
-                console.log(`[Main Process] Video codec: ${probeData.processedByRecodarr.videoCodec || 'Unknown'}`);
-                console.log(`[Main Process] Audio codec: ${probeData.processedByRecodarr.audioCodec || 'Unknown'}`);
-                // Since the UI is handling the dialog, we just continue with encoding here
-            } else {
-                console.log(`[Main Process] File has not been processed before or no processing metadata found`);
-            }
-
-            // Use the job ID from options if provided, otherwise generate one
-            const jobId = options.jobId || crypto.randomUUID(); 
-            console.log(`[Main Process] Using Job ID: ${jobId} ${options.jobId ? '(provided in options)' : '(newly generated)'}`);
-
-            // Rest of the encoding process...
-            const isOverwrite = options.overwriteInput ?? (options.inputPath === options.outputPath);
-            console.log(`[Main Process] Overwrite mode determined: ${isOverwrite}`);
-
-            // Find the part where encoding progress is forwarded to the renderer
-            const progressCallback = (progress: EncodingProgress) => {
-                try {
-                    if (mainWindow && !mainWindow.isDestroyed()) {
-                        mainWindow.webContents.send('encodingProgress', { ...progress, jobId }); // Include jobId in progress updates
-                    }
-                } catch (error) {
-                    console.error(`[Encoding Progress] Error sending progress update:`, error);
-                }
-            };
-
-            // Merge received options with the progress callback, overwrite flag, jobId, and log path
-            const optionsWithCallback: EncodingOptions = {
-                ...options,
-                overwriteInput: isOverwrite, // Pass the determined flag
-                progressCallback: progressCallback,
-                jobId: jobId, // Pass jobId
-                logDirectoryPath: logDir // Pass log directory path
-            };
-
-            console.log('[Main Process] Calling startEncodingProcess with options:', JSON.stringify(optionsWithCallback, null, 2));
-
-            // Call the actual encoding function from ffmpegUtils
-            const result = await startEncodingProcess(optionsWithCallback);
-
-            console.log('[Main Process] Encoding process finished with result:', result);
-
-            // Prepare the result object to send back to UI, always include jobId
-            let finalResult: any = { ...result, jobId: jobId }; // Ensure jobId is always returned
-
-            // --- Post-Encoding Update (Conditional) --- 
-            if (result.success && result.outputPath) {
-                try {
-                    console.log(`[Main Process] Encoding successful for Job ID ${jobId}. Temporary output at: ${result.outputPath}`);
-                    
-                    if (isOverwrite) {
-                        console.log(`[Main Process] Overwrite mode: Original file will be replaced through Queue Service's replaceFile`);
-                        // Don't try to rename here - let the queue service handle it with its robust replaceFile
-                        
-                        // Just probe the temporary file
-                        const probeData = await probeFile(result.outputPath);
-                        if (probeData) {
-                            console.log(`[Main Process] Temporary file successfully probed: ${result.outputPath}`);
-                            mainWindow?.webContents.send('encodingProgress', {
-                                jobId,
-                                status: `Encoding completed with ${result.reductionPercent?.toFixed(1) ?? 'N/A'}% reduction. File replacement will be handled by queue service.`
-                            });
-                        } else {
-                            console.warn(`[Main Process] Probe failed for temp file ${result.outputPath}. Will still attempt replacement.`);
-                        }
-                    } else {
-                        // Non-overwrite mode (save as new) - we should still probe
-                        const probeData = await probeFile(result.outputPath);
-                        if (probeData) {
-                            console.log(`[Main Process] New file successfully probed: ${result.outputPath}`);
-                            mainWindow?.webContents.send('encodingProgress', {
-                                jobId,
-                                status: `Save As New complete! Reduction: ${result.reductionPercent?.toFixed(1) ?? 'N/A'}%. File: ${result.outputPath}`
-                            });
-                        } else {
-                            console.warn(`[Main Process] Probe failed for new file ${result.outputPath}.`);
-                        }
-                    }
-                } catch (updateError) {
-                    console.error(`[Main Process] Error during post-encoding probe for Job ID ${jobId}:`, updateError);
-                    mainWindow?.webContents.send('encodingProgress', {
-                        jobId,
-                        status: `Encoding succeeded but probe failed. Output: ${result.outputPath}`
-                    });
-                }
-            } else if (!result.success) {
-                // Send failure status update
-                mainWindow?.webContents.send('encodingProgress', {
-                    jobId,
-                    status: `Encoding failed: ${result.error}`
-                });
-            }
-            // --- End Post-Encoding Update --- 
-
-            return finalResult; // Return the result including the jobId
-        } catch (error) {
-            console.error('[Main Process] Error in start-encoding-process:', error);
-            return {
-                success: false,
-                error: error instanceof Error ? error.message : String(error)
-            };
-        }
-    });
-
-    // --- Add New Handler for Reading Logs ---
-    ipcMain.handle('get-encoding-log', async (_event, jobId: string): Promise<string | null> => {
-        if (!jobId) {
-            console.warn("[get-encoding-log] Received request without a Job ID.");
-            return null;
-        }
-        const logFilePath = path.join(logDir, `${jobId}.log`);
-        console.log(`[get-encoding-log] Attempting to read log file: ${logFilePath}`);
-        try {
-            // Ensure file exists before reading
-            await fs.access(logFilePath, fs.constants.R_OK);
-            const logContent = await fs.readFile(logFilePath, 'utf-8');
-            console.log(`[get-encoding-log] Successfully read log file for Job ID: ${jobId}`);
-            return logContent;
-        } catch (error: any) {
-            if (error.code === 'ENOENT') {
-                console.error(`[get-encoding-log] Log file not found for Job ID ${jobId} at path: ${logFilePath}`);
-                return `Log file not found for Job ID: ${jobId}`;
-            }
-            console.error(`[get-encoding-log] Error reading log file ${logFilePath}:`, error);
-            return `Error reading log file for Job ID ${jobId}: ${error.message}`;
-        }
-    });
-    // --- End New Handler ---
-
-    // Helper function to update media DB after encoding
-    async function updateMediaAfterEncoding(probeData: any, jobId: string, targetDbFilePath: string): Promise<void> {
-        if (!db) {
-            console.error("Database not initialized, cannot update media after encoding.");
-            return;
-        }
-        // We use targetDbFilePath (original input path in overwrite mode) for WHERE clause,
-        // but probeData still contains info about the *newly created* file (size, codecs).
-        if (!probeData?.format) { // Check format object exists
-            console.warn("Skipping DB update after encoding due to missing format info in probe data.");
-            return;
-        }
-
-        const fileSize = probeData.format.size ? parseInt(probeData.format.size, 10) : null;
-
-        let videoCodec: string | null = null;
-        let audioCodec: string | null = null;
-        let resolutionWidth: number | null = null;
-        let resolutionHeight: number | null = null;
-        let audioChannels: number | null = null;
-
-        if (probeData.streams && Array.isArray(probeData.streams)) {
-            const videoStream = probeData.streams.find((s: any) => s.codec_type === 'video');
-            const audioStream = probeData.streams.find((s: any) => s.codec_type === 'audio');
-            videoCodec = videoStream?.codec_name ?? null;
-            audioCodec = audioStream?.codec_name ?? null;
-            resolutionWidth = videoStream?.width ?? null;
-            resolutionHeight = videoStream?.height ?? null;
-            audioChannels = audioStream?.channels ?? null;
-        }
-                
-        console.log(`[DB Update] Attempting to update media for file path in DB: ${targetDbFilePath} with Job ID: ${jobId}`);
-        console.log(`[DB Update] New Data: Size=${fileSize}, VideoCodec=${videoCodec}, AudioCodec=${audioCodec}, Resolution=${resolutionWidth}x${resolutionHeight}, Channels=${audioChannels}`);
-
-        // Use a specific UPDATE statement targeting the targetDbFilePath
-        const updateSql = `
-            UPDATE media 
-            SET currentSize = ?, 
-                videoCodec = ?, 
-                audioCodec = ?, 
-                resolutionWidth = ?, 
-                resolutionHeight = ?, 
-                audioChannels = ?, 
-                encodingJobId = ?, 
-                lastSizeCheckAt = CURRENT_TIMESTAMP 
-            WHERE filePath = ?
-        `;
-        try {
-            const updateStmt = db.prepare(updateSql);
-            // Use new data from probeData, but use targetDbFilePath for the WHERE condition
-            const info = updateStmt.run(fileSize, videoCodec, audioCodec, resolutionWidth, resolutionHeight, audioChannels, jobId, targetDbFilePath);
-
-            if (info.changes > 0) {
-                console.log(`[DB Update] Successfully updated media record for ${targetDbFilePath} (Job ID: ${jobId}). Changes: ${info.changes}`);
-            } else {
-                console.warn(`[DB Update] No media record found or updated for filePath: ${targetDbFilePath}. Original file might not be in library.`);
-            }
-        } catch (error) {
-            console.error(`[DB Update] Error updating media record for ${targetDbFilePath} (Job ID: ${jobId}):`, error);
-            throw error; // Re-throw to be caught by the caller
-        }
-    }
-
-    // Keep the old subscription handlers (can be removed if subscribeEncodingProgress in preload is robust)
-    let encodingProgressEventSender: Electron.IpcMainEvent['sender'] | null = null;
-    ipcMain.on('subscribeEncodingProgress', (event) => {
-        console.log('[Main Process] Renderer subscribed via ipcMain.on.');
-        encodingProgressEventSender = event.sender; // Store sender
-    });
-
-    ipcMain.on('unsubscribeEncodingProgress', () => {
-        console.log('[Main Process] Renderer unsubscribed via ipcMain.on.');
-        encodingProgressEventSender = null;
-    });
-    // --- End Encoding Handlers ---
-
-    // Add new handler for getting initial logs
-    ipcMain.handle('get-initial-logs', async () => {
-        return getLogBuffer();
-    });
-
-    // Add handler for custom confirmation dialog
-    ipcMain.handle('show-confirmation-dialog', async (_event, options) => {
-        console.log(`[Main Process] Received request to show confirmation dialog:`, options);
-        
-        try {
-            if (!mainWindow || mainWindow.isDestroyed()) {
-                console.error('[Main Process] Cannot show dialog - main window not available');
-                return { confirmed: false, error: 'Main window not available' };
-            }
-            
-            // Default options if not provided
-            const dialogOpts = {
-                type: 'question',
-                buttons: ['Cancel', 'Confirm'],
-                defaultId: 0,
-                title: options.title || 'Confirmation',
-                message: options.message || 'Please confirm this action',
-                detail: options.detail || '',
-                ...options
-            };
-            
-            console.log(`[Main Process] Showing confirmation dialog`);
-            const result = await dialog.showMessageBox(mainWindow, dialogOpts);
-            console.log(`[Main Process] Dialog result:`, result);
-            
-            // User confirmed if they clicked the second button (index 1)
-            return { 
-                confirmed: result.response === 1,
-                response: result.response
-            };
-        } catch (error) {
-            console.error(`[Main Process] Error showing confirmation dialog:`, error);
-            return { confirmed: false, error: String(error) };
-        }
-    });
-
-    // --- Encoding Preset Handlers ---
-    ipcMain.handle('get-presets', async () => {
-        if (!db) throw new Error("Database not initialized");
-        try {
-            const stmt = db.prepare('SELECT * FROM encoding_presets ORDER BY name');
-            const presets = stmt.all();
-            
-            // Process the results to handle serialized data and backward compatibility
-            return presets.map((preset: any) => {
-                const result = { ...preset };
-
-                // Deserialize or construct audioLanguageOrder
-                if (typeof result.audioLanguageOrder === 'string') {
-                    try {
-                        result.audioLanguageOrder = JSON.parse(result.audioLanguageOrder);
-                    } catch (e) {
-                        console.error(`Error parsing audioLanguageOrder for preset ${preset.id}:`, e);
-                        result.audioLanguageOrder = null; // Fallback on error
-                    }
-                } else if (result.audioLanguageOrder === null || result.audioLanguageOrder === undefined) {
-                    // Backward compatibility: Construct order from old fields if new field is missing
-                    console.warn(`Preset ${preset.id} missing audioLanguageOrder, attempting fallback from old fields.`);
-                    let order: string[] = [];
-                    const preferredLangs = typeof preset.preferredAudioLanguages === 'string' ? JSON.parse(preset.preferredAudioLanguages || '[]') : (preset.preferredAudioLanguages || []);
-                    const keepOriginal = Boolean(preset.keepOriginalAudio ?? true); // Default true
-                    const defaultLang = preset.defaultAudioLanguage || 'original';
-
-                    if (defaultLang !== 'original' && preferredLangs.includes(defaultLang)) {
-                        order.push(defaultLang);
-                    }
-                    if (keepOriginal) {
-                        order.push('original');
-                    }
-                    preferredLangs.forEach((lang: string) => {
-                        if (!order.includes(lang)) {
-                            order.push(lang);
-                        }
-                    });
-                    // Ensure 'original' is present if keepOriginal was true but wasn't the default
-                    if (keepOriginal && defaultLang !== 'original' && !order.includes('original')){
-                        order.push('original');
-                    }
-                    // Remove duplicates just in case
-                    result.audioLanguageOrder = [...new Set(order)];
-                    console.log(`Constructed fallback order for ${preset.id}:`, result.audioLanguageOrder);
-                }
-
-                // Deserialize subtitleLanguageOrder
-                if (typeof result.subtitleLanguageOrder === 'string') {
-                    try {
-                        result.subtitleLanguageOrder = JSON.parse(result.subtitleLanguageOrder);
-                    } catch (e) {
-                        console.error(`Error parsing subtitleLanguageOrder for preset ${preset.id}:`, e);
-                        result.subtitleLanguageOrder = null; // Fallback on error
-                    }
-                } else if (result.subtitleLanguageOrder === null || result.subtitleLanguageOrder === undefined) {
-                    // Default to empty array for new installations
-                    result.subtitleLanguageOrder = [];
-                }
-
-                // Deserialize subtitleTypeOrder
-                if (typeof result.subtitleTypeOrder === 'string') {
-                    try {
-                        result.subtitleTypeOrder = JSON.parse(result.subtitleTypeOrder);
-                    } catch (e) {
-                        console.error(`Error parsing subtitleTypeOrder for preset ${preset.id}:`, e);
-                        result.subtitleTypeOrder = null; // Fallback on error
-                    }
-                } else if (result.subtitleTypeOrder === null || result.subtitleTypeOrder === undefined) {
-                    // Default to empty array for new installations
-                    result.subtitleTypeOrder = [];
-                }
-
-                // Clean up old fields from the result sent to UI
-                delete result.preferredAudioLanguages;
-                delete result.keepOriginalAudio;
-                delete result.defaultAudioLanguage;
-                
-                return result;
-            });
-        } catch (error) {
-            console.error("Error fetching encoding presets:", error);
-            throw error;
-        }
-    });
-
-    ipcMain.handle('save-preset', async (_event, preset: any) => {
-        if (!db) throw new Error("Database not initialized");
-        // Destructure known fields, including the new ones
-        const { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings } = preset;
-        console.log(`Received save request for preset ID: ${id}, Name: ${name}`);
-
-        // Process settings for storage
-        const processedSettings = { ...settings };
-        
-        // Serialize array fields to JSON strings
-        let serializedAudioOrder: string | null = null;
-        let serializedSubtitleLangOrder: string | null = null;
-        let serializedSubtitleTypeOrder: string | null = null;
-        
-        // Serialize the audioLanguageOrder field
-        if (Array.isArray(audioLanguageOrder)) {
-            serializedAudioOrder = JSON.stringify(audioLanguageOrder);
-        } else if (audioLanguageOrder === undefined || audioLanguageOrder === null) {
-            serializedAudioOrder = null; // Explicitly null if missing or null
-        }
-        
-        // Serialize the subtitleLanguageOrder field
-        if (Array.isArray(subtitleLanguageOrder)) {
-            serializedSubtitleLangOrder = JSON.stringify(subtitleLanguageOrder);
-        } else if (subtitleLanguageOrder === undefined || subtitleLanguageOrder === null) {
-            serializedSubtitleLangOrder = null;
-        }
-        
-        // Serialize the subtitleTypeOrder field
-        if (Array.isArray(subtitleTypeOrder)) {
-            serializedSubtitleTypeOrder = JSON.stringify(subtitleTypeOrder);
-        } else if (subtitleTypeOrder === undefined || subtitleTypeOrder === null) {
-            serializedSubtitleTypeOrder = null;
-        }
-        
-        // Remove potentially interfering old audio fields from settings if they exist
-        delete processedSettings.preferredAudioLanguages;
-        delete processedSettings.keepOriginalAudio;
-        delete processedSettings.defaultAudioLanguage;
-        
-        // Ensure other optional fields are null if undefined before saving
-        Object.keys(processedSettings).forEach(key => {
-            if (processedSettings[key] === undefined) {
-                processedSettings[key] = null;
-            }
-        });
-
-        try {
-            const existingPreset = db.prepare('SELECT id FROM encoding_presets WHERE id = ?').get(id) as { id: string } | undefined;
-
-            if (existingPreset) {
-                 console.log(`Updating existing preset ID: ${id}`);
-                const updateFields = Object.keys(processedSettings);
-                // Add all serialized fields explicitly
-                const setClauses = [
-                    'audioLanguageOrder = @audioLanguageOrder',
-                    'subtitleLanguageOrder = @subtitleLanguageOrder',
-                    'subtitleTypeOrder = @subtitleTypeOrder',
-                    ...updateFields.map(key => `${key} = @${key}`)
-                ].join(', ');
-                const sql = `UPDATE encoding_presets SET name = @name, ${setClauses}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`;
-                const stmt = db.prepare(sql);
-                // Include all serialized fields in params
-                const params = { 
-                    id, 
-                    name, 
-                    audioLanguageOrder: serializedAudioOrder,
-                    subtitleLanguageOrder: serializedSubtitleLangOrder,
-                    subtitleTypeOrder: serializedSubtitleTypeOrder,
-                    ...processedSettings 
-                };
-                console.log("Update Params:", params);
-                const info = stmt.run(params);
-                console.log(`Update result: Changes=${info.changes}`);
-                // Return the original preset structure received from UI
-                return { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings }; 
-            } else {
-                 console.log(`Inserting new preset with ID: ${id}, Name: ${name}`);
-                const insertFields = Object.keys(processedSettings).filter(key => processedSettings[key] !== null);
-                
-                // Add serialized fields explicitly if they're not null
-                const columns = [
-                    'id', 
-                    'name', 
-                    ...(serializedAudioOrder !== null ? ['audioLanguageOrder'] : []),
-                    ...(serializedSubtitleLangOrder !== null ? ['subtitleLanguageOrder'] : []),
-                    ...(serializedSubtitleTypeOrder !== null ? ['subtitleTypeOrder'] : []),
-                    ...insertFields
-                ];
-                
-                const placeholders = columns.map(key => `@${key}`).join(', ');
-                const sql = `INSERT INTO encoding_presets (${columns.join(', ')}) VALUES (${placeholders})`;
-                const stmt = db.prepare(sql);
-                
-                // Define params with a more flexible type signature
-                const params: { [key: string]: any } = { id, name };
-                
-                if (serializedAudioOrder !== null) params['audioLanguageOrder'] = serializedAudioOrder;
-                if (serializedSubtitleLangOrder !== null) params['subtitleLanguageOrder'] = serializedSubtitleLangOrder;
-                if (serializedSubtitleTypeOrder !== null) params['subtitleTypeOrder'] = serializedSubtitleTypeOrder;
-                
-                insertFields.forEach(key => params[key] = processedSettings[key]);
-                console.log("Insert Params:", params);
-                
-                const info = stmt.run(params);
-                console.log(`Insert result: Changes=${info.changes}, LastInsertRowid=${info.lastInsertRowid}`);
-                
-                // Return the original preset structure received from UI
-                return { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings };
-            }
-        } catch (error) {
-            console.error(`Error saving preset (ID: ${id}, Name: ${name}):`, error);
-             if (error instanceof Error && error.message.includes('UNIQUE constraint failed: encoding_presets.name')) {
-                 throw new Error(`Preset name "${name}" already exists. Please choose a different name.`);
-             }
-            throw error;
-        }
-    });
-
-    ipcMain.handle('delete-preset', async (_event, id: string) => {
-        if (!db) throw new Error("Database not initialized");
-        try {
-            const stmt = db.prepare('DELETE FROM encoding_presets WHERE id = ?');
-            const info = stmt.run(id);
-            console.log(`Deleted preset ID: ${id}, Changes: ${info.changes}`);
-            return info; // Return info about deletion (e.g., info.changes)
-        } catch (error) {
-            console.error(`Error deleting preset ${id}:`, error);
-            throw error;
-        }
-    });
-    // --- End Encoding Preset Handlers ---
-
-    // --- Queue Handlers ---
-    // Path for storing queue data
-    const queueDataPath = path.join(app.getPath('userData'), 'queue.json');
-
-    // Handler to load saved queue data
-    ipcMain.handle('load-queue-data', async () => {
-        console.log(`[Main Process] Request to load queue data from: ${queueDataPath}`);
-        try {
-            // Check if the file exists
-            try {
-                await fs.access(queueDataPath, fs.constants.R_OK);
-            } catch (error) {
-                console.log(`[Main Process] Queue data file not found, returning empty array`);
-                return { jobs: [] };
-            }
-
-            // Read and parse the file
-            const data = await fs.readFile(queueDataPath, 'utf-8');
-            const queueData = JSON.parse(data);
-            console.log(`[Main Process] Successfully loaded queue data with ${queueData.jobs?.length || 0} jobs`);
-            return queueData;
-        } catch (error) {
-            console.error(`[Main Process] Error loading queue data:`, error);
-            return { jobs: [], error: String(error) };
-        }
-    });
-
-    // Handler to save queue data
-    ipcMain.handle('save-queue-data', async (_event, data) => {
-        // Validate data structure
-        if (!data || typeof data !== 'object') {
-            console.error(`[Main Process] Invalid data provided to save-queue-data: ${data}`);
-            return { success: false, error: 'Invalid data structure provided' };
-        }
-        
-        // Ensure jobs array exists, create empty array if missing
-        if (!data.jobs || !Array.isArray(data.jobs)) {
-            console.warn(`[Main Process] Missing or invalid jobs array in queue data, creating empty array`);
-            data.jobs = [];
-        }
-        
-        console.log(`[Main Process] Request to save queue data with ${data.jobs.length || 0} jobs`);
-        try {
-            // Serialize and save the data
-            await fs.writeFile(queueDataPath, JSON.stringify(data, null, 2), 'utf-8');
-            console.log(`[Main Process] Successfully saved queue data to: ${queueDataPath}`);
-            return { success: true };
-        } catch (error) {
-            console.error(`[Main Process] Error saving queue data:`, error);
-            return { success: false, error: String(error) };
-        }
-    });
-
-    // Handler to get file size
-    ipcMain.handle('get-file-size', async (_event, filePath) => {
-        // Add validation for undefined or empty paths
-        if (!filePath) {
-            console.error(`[Main Process] Invalid file path provided to get-file-size: ${filePath}`);
-            return undefined;
-        }
-        
-        console.log(`[Main Process] Request to get file size for: ${filePath}`);
-        try {
-            // Check if the file exists first
-            try {
-                await fs.access(filePath, fs.constants.R_OK);
-            } catch (accessError) {
-                console.error(`[Main Process] File does not exist or is not readable: ${filePath}`);
-                return undefined;
-            }
-            
-            const stats = await fs.stat(filePath);
-            if (!stats.isFile()) {
-                console.error(`[Main Process] Path exists but is not a file: ${filePath}`);
-                return undefined;
-            }
-            
-            const sizeInBytes = stats.size;
-            console.log(`[Main Process] File size for ${filePath}: ${sizeInBytes} bytes`);
-            return sizeInBytes;
-        } catch (error) {
-            console.error(`[Main Process] Error getting file size for ${filePath}:`, error);
-            return undefined;
-        }
-    });
-
-    // Handler to start an encoding job
-    ipcMain.handle('start-encoding', async (_event, options) => {
-        console.log(`[Main Process] Request to start encoding for: ${options.inputPath}`);
-        try {
-            // This reuses the existing startEncodingProcess handler
-            return await startEncodingProcess(options);
-        } catch (error) {
-            console.error(`[Main Process] Error starting encoding:`, error);
-            return { 
-                success: false, 
-                error: String(error),
-                jobId: options.jobId 
-            };
-        }
-    });
-
-    // Handler to open an encoding log
-    ipcMain.handle('open-encoding-log', async (_event, jobId) => {
-        console.log(`[Main Process] Request to open encoding log for job: ${jobId}`);
-        try {
-            const logFilePath = path.join(logDir, `${jobId}.log`);
-            
-            // Check if file exists
-            try {
-                await fs.access(logFilePath, fs.constants.R_OK);
-            } catch (error) {
-                console.error(`[Main Process] Log file not found: ${logFilePath}`);
-                return { success: false, error: `Log file not found for job ${jobId}` };
-            }
-            
-            // Open the file with the default text editor
-            await shell.openPath(logFilePath);
-            console.log(`[Main Process] Successfully opened log file: ${logFilePath}`);
-            return { success: true };
-        } catch (error) {
-            console.error(`[Main Process] Error opening log file:`, error);
-            return { success: false, error: String(error) };
-        }
-    });
-    // --- End Queue Handlers ---
-
-    // Setup system tray
-    setupTray();
-
-    // --- End IPC Handler Registration ---
-
-    // Add the replaceFile handler
-    ipcMain.handle('replace-file', async (_event: IpcMainInvokeEvent, sourcePath: string, destinationPath: string): Promise<boolean> => {
-        try {
-            console.log(`[Main Process] Replacing file: ${destinationPath} with ${sourcePath}`);
-            
-            // Verify paths are not empty or the same
-            if (!sourcePath || !destinationPath) {
-                console.error(`[Main Process] Invalid paths: source=${sourcePath}, destination=${destinationPath}`);
-                return false;
-            }
-            
-            if (sourcePath === destinationPath) {
-                console.log(`[Main Process] Source and destination are the same, no replacement needed`);
-                return true;
-            }
-            
-            // Check if source file exists and is readable
-            try {
-                const sourceStats = await fs.stat(sourcePath);
-                if (!sourceStats.isFile() || sourceStats.size === 0) {
-                    console.error(`[Main Process] Source file is not valid: ${sourcePath}, size: ${sourceStats.size}`);
-                    return false;
-                }
-                console.log(`[Main Process] Source file verified: ${sourcePath}, size: ${sourceStats.size} bytes`);
-            } catch (error) {
-                console.error(`[Main Process] Error accessing source file: ${sourcePath}`, error);
-                return false;
-            }
-            
-            // Create a unique backup path with timestamp
-            const timestamp = new Date().getTime();
-            const backupPath = `${destinationPath}.backup-${timestamp}`;
-            let backupCreated = false;
-            
-            // Check if destination exists
-            if (fsSync.existsSync(destinationPath)) {
-                try {
-                    // Create backup with retry logic
-                    for (let attempt = 1; attempt <= 3; attempt++) {
-                        try {
-                            await fs.rename(destinationPath, backupPath);
-                            backupCreated = true;
-                            console.log(`[Main Process] Created backup of original file at: ${backupPath} (attempt ${attempt})`);
-                            break;
-                        } catch (backupError) {
-                            if (attempt < 3) {
-                                console.log(`[Main Process] Backup attempt ${attempt} failed, retrying in 500ms...`);
-                                // Wait before retry to handle potential file locks
-                                await new Promise(resolve => setTimeout(resolve, 500));
-                            } else {
-                                throw backupError;
-                            }
-                        }
-                    }
-                } catch (backupError) {
-                    console.error(`[Main Process] Failed to create backup:`, backupError);
-                    // Try direct replacement if backup fails
-                    console.log(`[Main Process] Attempting direct replacement without backup...`);
-                }
-            }
-            
-            // Replace file with retry logic
-            for (let attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    await fs.copyFile(sourcePath, destinationPath);
-                    
-                    // Verify the copy succeeded by comparing file sizes
-                    const sourceSize = (await fs.stat(sourcePath)).size;
-                    const destSize = (await fs.stat(destinationPath)).size;
-                    
-                    if (sourceSize !== destSize) {
-                        console.error(`[Main Process] File size mismatch after copy: Source=${sourceSize}, Dest=${destSize}`);
-                        if (attempt < 3) {
-                            await new Promise(resolve => setTimeout(resolve, 500));
-                            continue;
-                        }
-                        throw new Error(`File size mismatch after copy: Source=${sourceSize}, Dest=${destSize}`);
-                    }
-                    
-                    console.log(`[Main Process] Successfully replaced file (attempt ${attempt})`);
-                    
-                    // Delete source file after successful copy
-                    try {
-                        await fs.unlink(sourcePath);
-                        console.log(`[Main Process] Removed source file: ${sourcePath}`);
-                    } catch (cleanupError) {
-                        console.warn(`[Main Process] Could not remove source file, but replacement was successful:`, cleanupError);
-                    }
-                    
-                    // Remove the backup file if it was created and replacement was successful
-                    if (backupCreated && fsSync.existsSync(backupPath)) {
-                        try {
-                            await fs.unlink(backupPath);
-                            console.log(`[Main Process] Removed backup file: ${backupPath}`);
-                        } catch (cleanupError) {
-                            console.warn(`[Main Process] Could not remove backup file:`, cleanupError);
-                        }
-                    }
-                    
-                    return true;
-                } catch (copyError) {
-                    if (attempt < 3) {
-                        console.log(`[Main Process] Replace attempt ${attempt} failed, retrying in 500ms...`, copyError);
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                    } else {
-                        console.error(`[Main Process] All replacement attempts failed:`, copyError);
-                        
-                        // Restore from backup if it exists and final attempt failed
-                        if (backupCreated && fsSync.existsSync(backupPath)) {
-                            try {
-                                await fs.rename(backupPath, destinationPath);
-                                console.log(`[Main Process] Restored original file from backup`);
-                            } catch (restoreError) {
-                                console.error(`[Main Process] Failed to restore from backup:`, restoreError);
-                            }
-                        }
-                        
-                        throw copyError;
-                    }
-                }
-            }
-            
-            // This should never be reached due to the logic above
-            return false;
-        } catch (error) {
-            console.error(`[Main Process] Fatal error in replaceFile:`, error);
-            return false;
-        }
-    });
-
-    // Add handler for deleting files
-    ipcMain.handle('delete-file', async (_event: IpcMainInvokeEvent, filePath: string): Promise<boolean> => {
-        try {
-            console.log(`[Main Process] Deleting file: ${filePath}`);
-            
-            // Check if file exists before attempting to delete
-            if (fsSync.existsSync(filePath)) {
-                await fs.unlink(filePath);
-                console.log(`[Main Process] Successfully deleted file: ${filePath}`);
-                return true;
-            } else {
-                console.log(`[Main Process] File does not exist, skipping deletion: ${filePath}`);
-                return false;
-            }
-        } catch (error) {
-            console.error(`[Main Process] Error deleting file ${filePath}:`, error);
-            return false;
-        }
-    });
-
-    // --- App Event Listeners ---
-
-    // New comprehensive handler to finalize encoded files
-    ipcMain.handle('finalize-encoded-file', async (_event, params: { 
-        tempFilePath: string, 
-        finalFilePath: string, 
-        jobId: string,
-        isOverwrite: boolean,
-        originalFilePath?: string
-    }) => {
-        console.log(`[Main Process] Finalizing encoded file:`);
-        console.log(`[Main Process] - Temp file: ${params.tempFilePath}`);
-        console.log(`[Main Process] - Final destination: ${params.finalFilePath}`);
-        console.log(`[Main Process] - Job ID: ${params.jobId}`);
-        console.log(`[Main Process] - Overwrite: ${params.isOverwrite}`);
-        
-        try {
-            // Step 1: Validate that paths are provided and not undefined
-            if (!params.tempFilePath) {
-                console.error(`[Main Process] Missing temp file path`);
-                return { success: false, error: "Temp file path is missing or undefined" };
-            }
-            
-            if (!params.finalFilePath) {
-                console.error(`[Main Process] Missing final file path`);
-                return { success: false, error: "Final file path is missing or undefined" };
-            }
-            
-            // Step 2: Check if temp file exists
-            try {
-                const tempStats = await fs.stat(params.tempFilePath);
-                if (!tempStats.isFile() || tempStats.size === 0) {
-                    console.error(`[Main Process] Temp file is invalid or empty: ${params.tempFilePath}`);
-                    return { success: false, error: `Temp file is invalid or empty: ${params.tempFilePath}` };
-                }
-                console.log(`[Main Process] Temp file verified: ${params.tempFilePath}, size: ${tempStats.size} bytes`);
-            } catch (error) {
-                console.error(`[Main Process] Couldn't access temp file: ${error instanceof Error ? error.message : String(error)}`);
-                return { success: false, error: `Couldn't access temp file: ${error instanceof Error ? error.message : String(error)}` };
-            }
-            
-            // Step 3: Probe the temp file to get updated metadata
-            console.log(`[Main Process] Probing temp file: ${params.tempFilePath}`);
-            const probeData = await probeFile(params.tempFilePath);
-            if (!probeData) {
-                console.error(`[Main Process] Failed to probe temp file: ${params.tempFilePath}`);
-                return { success: false, error: "Failed to probe temp file" };
-            }
-            
-            // Step 4: Perform the file replacement
-            let success = false;
-            if (params.tempFilePath !== params.finalFilePath) {
-                console.log(`[Main Process] Moving ${params.tempFilePath} to ${params.finalFilePath}`);
-                
-                // Create a backup of the destination file if it exists (for safety)
-                let backupPath = "";
-                let backupCreated = false;
-                
-                if (fsSync.existsSync(params.finalFilePath)) {
-                    backupPath = `${params.finalFilePath}.backup-${Date.now()}`;
-                    try {
-                        await fs.rename(params.finalFilePath, backupPath);
-                        backupCreated = true;
-                        console.log(`[Main Process] Created backup at: ${backupPath}`);
-                    } catch (backupError) {
-                        console.error(`[Main Process] Failed to create backup:`, backupError);
-                        // Continue anyway - we'll try a direct replacement
-                    }
-                }
-                
-                // Copy the temp file to the final destination
-                try {
-                    await fs.copyFile(params.tempFilePath, params.finalFilePath);
-                    
-                    // Verify sizes match
-                    const srcSize = (await fs.stat(params.tempFilePath)).size;
-                    const destSize = (await fs.stat(params.finalFilePath)).size;
-                    
-                    if (srcSize !== destSize) {
-                        throw new Error(`File size mismatch after copy: Temp=${srcSize}, Final=${destSize}`);
-                    }
-                    
-                    // Copy succeeded, clean up
-                    success = true;
-                    console.log(`[Main Process] Successfully copied file to destination: ${params.finalFilePath}`);
-                    
-                    // Remove the temp file
-                    try {
-                        await fs.unlink(params.tempFilePath);
-                        console.log(`[Main Process] Removed temp file: ${params.tempFilePath}`);
-                    } catch (cleanupError) {
-                        console.warn(`[Main Process] Could not remove temp file: ${cleanupError}`);
-                        // Non-fatal error, continue
-                    }
-                    
-                    // Remove backup if we created one
-                    if (backupCreated) {
-                        try {
-                            await fs.unlink(backupPath);
-                            console.log(`[Main Process] Removed backup: ${backupPath}`);
-                        } catch (cleanupError) {
-                            console.warn(`[Main Process] Could not remove backup: ${cleanupError}`);
-                            // Non-fatal error, continue
-                        }
-                    }
-                } catch (copyError) {
-                    console.error(`[Main Process] Error copying file:`, copyError);
-                    
-                    // Restore from backup if available
-                    if (backupCreated) {
-                        try {
-                            await fs.rename(backupPath, params.finalFilePath);
-                            console.log(`[Main Process] Restored original from backup`);
-                        } catch (restoreError) {
-                            console.error(`[Main Process] Failed to restore from backup:`, restoreError);
-                        }
-                    }
-                    
-                    return { success: false, error: `File copy failed: ${copyError instanceof Error ? copyError.message : String(copyError)}` };
-                }
-            } else {
-                console.log(`[Main Process] Temp and final paths are the same, no move needed`);
-                success = true;
-            }
-            
-            // Step 5: Update the database with the new file information
-            if (success && params.isOverwrite) {
-                const dbPath = params.originalFilePath || params.finalFilePath;
-                
-                try {
-                    // Add metadata for the encoded file
-                    console.log(`[Main Process] Updating database for: ${dbPath}`);
-                    await updateMediaAfterEncoding(probeData, params.jobId, dbPath);
-                    console.log(`[Main Process] Database updated successfully`);
-                } catch (dbError) {
-                    console.error(`[Main Process] Database update failed:`, dbError);
-                    // Non-fatal error, continue with success
-                }
-            }
-            
-            return { 
-                success: true, 
-                finalPath: params.finalFilePath,
-                probeData: probeData,
-                message: `File successfully finalized at: ${params.finalFilePath}`
-            };
-        } catch (error) {
-            console.error(`[Main Process] Error finalizing encoded file:`, error);
-            return { 
-                success: false, 
-                error: `Error finalizing encoded file: ${error instanceof Error ? error.message : String(error)}`
-            };
-        }
-    });
 })
 
 // Quit when all windows are closed, except on macOS.
 app.on('window-all-closed', () => {
   // Always quit the app when all windows are closed, even on macOS
   // This ensures the npm run dev process also terminates
-  app.quit()
+  if (process.platform !== 'darwin') {
+    if (taskScheduler) {
+      taskScheduler.shutdown();
+    }
+    app.quit()
+  }
 })
 
 app.on('activate', () => {
-  // On OS X it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
-  // For simplicity, we won't re-create the window here, but you could add
-  // the window creation logic from the 'ready' event if needed.
-  // if (BrowserWindow.getAllWindows().length === 0) {
-  //   createWindow() // Assuming createWindow is extracted from 'ready'
-  // }
+  
 })
 
 // Optional: Close the database connection gracefully on quit
@@ -2370,4 +1802,68 @@ function pollSystemStats(window: BrowserWindow) {
             window.webContents.send("system-stats-update", stats);
         }
     }, 2000); // Poll every 2 seconds
+}
+
+// Set up IPC handlers for the scheduler
+function setupSchedulerIpcHandlers() {
+  // Get all tasks
+  ipcMain.handle('scheduler:getAllTasks', async () => {
+    if (!taskScheduler) {
+      throw new Error('Task scheduler not initialized');
+    }
+    return taskScheduler.getAllTasks();
+  });
+
+  // Add a new task
+  ipcMain.handle('scheduler:addTask', async (_, task) => {
+    if (!taskScheduler) {
+      throw new Error('Task scheduler not initialized');
+    }
+    return taskScheduler.addTask(task);
+  });
+
+  // Update a task
+  ipcMain.handle('scheduler:updateTask', async (_, taskId, updates) => {
+    if (!taskScheduler) {
+      throw new Error('Task scheduler not initialized');
+    }
+    return taskScheduler.updateTask(taskId, updates);
+  });
+
+  // Toggle task enabled state
+  ipcMain.handle('scheduler:toggleTask', async (_, taskId, enabled) => {
+    if (!taskScheduler) {
+      throw new Error('Task scheduler not initialized');
+    }
+    return taskScheduler.toggleTaskEnabled(taskId, enabled);
+  });
+
+  // Delete a task
+  ipcMain.handle('scheduler:deleteTask', async (_, taskId) => {
+    if (!taskScheduler) {
+      throw new Error('Task scheduler not initialized');
+    }
+    return taskScheduler.deleteTask(taskId);
+  });
+
+  // Run a task now
+  ipcMain.handle('scheduler:runTaskNow', async (_, taskId) => {
+    if (!taskScheduler) {
+      throw new Error('Task scheduler not initialized');
+    }
+    await taskScheduler.runTaskNow(taskId);
+  });
+
+  // Get config value
+  ipcMain.handle('scheduler:getConfigValue', async (_, key) => {
+    console.log(`[Main Process] Getting config value for key: ${key}`);
+    return store.get(key);
+  });
+
+  // Set config value
+  ipcMain.handle('scheduler:setConfigValue', async (_, key, value) => {
+    console.log(`[Main Process] Setting config value for key: ${key} to:`, value);
+    store.set(key, value);
+    return true;
+  });
 }

@@ -10,65 +10,9 @@ import { Label } from "../../../src/components/ui/label";
 import { Switch } from "../../../src/components/ui/switch";
 import { Input } from "../../../src/components/ui/input";
 import { Button } from "../../../src/components/ui/button";
-import { GripVertical } from 'lucide-react';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../../src/components/ui/table";
-import {
-  DndContext, 
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  DragEndEvent
-} from '@dnd-kit/core';
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import { GpuInfo, HardwareInfo } from '../../types';
+import { GpuInfo } from '../../types';
 import LogViewer from '../components/settings/LogViewer';
-
-interface SortableTableRowProps {
-  id: string;
-  children: React.ReactNode;
-}
-
-const SortableTableRow = ({ id, children }: SortableTableRowProps) => {
-  const {
-    attributes,
-    listeners,
-    transform,
-    transition,
-    setNodeRef,
-  } = useSortable({ id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  return (
-    <TableRow ref={setNodeRef} style={style} className="hover:bg-muted/50">
-      <TableCell>
-        <div {...attributes} {...listeners} className="cursor-grab">
-          <GripVertical className="h-4 w-4 text-muted-foreground" />
-        </div>
-      </TableCell>
-      {children}
-    </TableRow>
-  );
-};
+import ScheduledTasks from '../components/settings/ScheduledTasks';
 
 const Settings: React.FC = () => {
   const [availableGpus, setAvailableGpus] = useState<GpuInfo[]>([]);
@@ -78,33 +22,22 @@ const Settings: React.FC = () => {
   const [currentManualVram, setCurrentManualVram] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingVram, setIsSavingVram] = useState(false);
-  const [hardwareDevices, setHardwareDevices] = useState<HardwareInfo[]>([]);
-
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
 
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
       try {
-        const [gpus, currentSelection, currentPsMonSetting, manualVram, devices] = await Promise.all([
+        const [gpus, currentSelection, currentPsMonSetting, manualVram] = await Promise.all([
           window.electron.getAvailableGpus(),
           window.electron.getSelectedGpu(),
           window.electron.getPsGpuMonitoringEnabled(),
-          window.electron.getManualGpuVram(),
-          window.electron.getHardwareInfo()
+          window.electron.getManualGpuVram()
         ]);
         setAvailableGpus(gpus);
         setSelectedGpuModel(currentSelection ?? 'default');
         setPsMonEnabled(currentPsMonSetting);
         setCurrentManualVram(manualVram);
         setManualVramInput(manualVram?.toString() ?? "");
-        // Sort devices by priority in descending order (higher priority first)
-        setHardwareDevices(devices.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)));
       } catch (error) {
         console.error("Error fetching settings:", error);
       } finally {
@@ -113,59 +46,6 @@ const Settings: React.FC = () => {
     };
     fetchData();
   }, []);
-
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const { active, over } = event;
-    
-    if (over && active.id !== over.id) {
-      setHardwareDevices((items) => {
-        const oldIndex = items.findIndex(item => item.id.toString() === active.id);
-        const newIndex = items.findIndex(item => item.id.toString() === over.id);
-        
-        const newItems = arrayMove(items, oldIndex, newIndex);
-        
-        // Update priorities based on new order
-        const updatedItems = newItems.map((item: HardwareInfo, index: number) => ({
-          ...item,
-          priority: newItems.length - index // Higher index = higher priority
-        }));
-
-        // Update priorities in the database
-        Promise.all(
-          updatedItems.map((device: HardwareInfo) =>
-            window.electron.updateHardwarePriority(device.id, device.priority || 0)
-          )
-        ).catch(error => {
-          console.error("Error updating priorities:", error);
-        });
-
-        return updatedItems;
-      });
-    }
-  };
-
-  const handleDeviceToggle = async (deviceId: number, isEnabled: boolean) => {
-    try {
-      await window.electron.updateHardwareEnabled(deviceId, isEnabled);
-      setHardwareDevices(devices =>
-        devices.map(device =>
-          device.id === deviceId ? { ...device, is_enabled: isEnabled } : device
-        )
-      );
-    } catch (error) {
-      console.error("Error toggling device:", error);
-    }
-  };
-
-  const refreshHardwareInfo = async () => {
-    try {
-      const updatedDevices = await window.electron.refreshHardwareInfo();
-      // Sort devices by priority in descending order (higher priority first)
-      setHardwareDevices(updatedDevices.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)));
-    } catch (error) {
-      console.error("Error refreshing hardware info:", error);
-    }
-  };
 
   const selectedGpuDetails = useMemo(() => {
     if (selectedGpuModel === 'default') {
@@ -241,66 +121,6 @@ const Settings: React.FC = () => {
         <div className="grid gap-6">
           <h1 className="text-3xl font-bold tracking-tight text-foreground">Settings</h1>
           
-          <div className="rounded-lg border bg-card p-6 text-card-foreground">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold">Transcoding Priority</h2>
-              <Button onClick={refreshHardwareInfo} variant="outline" size="sm">
-                Refresh Hardware
-              </Button>
-            </div>
-            
-            <div className="mt-4">
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[50px]"></TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Device</TableHead>
-                      <TableHead>Details</TableHead>
-                      <TableHead className="w-[100px]">Enabled</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                  >
-                    <SortableContext
-                      items={hardwareDevices.map(d => d.id.toString())}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <TableBody>
-                        {hardwareDevices.map((device) => (
-                          <SortableTableRow key={device.id} id={device.id.toString()}>
-                            <TableCell className="font-medium">{device.device_type}</TableCell>
-                            <TableCell>
-                              {device.vendor} {device.model}
-                            </TableCell>
-                            <TableCell>
-                              {device.device_type === 'CPU'
-                                ? `${device.cores_threads ?? 'Unknown'} Threads @ ${device.base_clock_mhz ? `${device.base_clock_mhz} MHz` : 'Unknown'}`
-                                : device.memory_mb ? `${device.memory_mb} MB VRAM` : 'Unknown'}
-                            </TableCell>
-                            <TableCell>
-                              <Switch
-                                checked={device.is_enabled}
-                                onCheckedChange={(checked) => handleDeviceToggle(device.id, checked)}
-                              />
-                            </TableCell>
-                          </SortableTableRow>
-                        ))}
-                      </TableBody>
-                    </SortableContext>
-                  </DndContext>
-                </Table>
-              </div>
-              <p className="text-sm text-muted-foreground mt-4">
-                Drag and drop devices to set transcoding priority. Higher items have higher priority.
-              </p>
-            </div>
-          </div>
-
           <div className="rounded-lg border bg-card p-6 text-card-foreground">
             <h2 className="text-xl font-semibold mb-4">System Monitoring</h2>
             <div className="grid gap-6">
@@ -391,6 +211,11 @@ const Settings: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Scheduled Tasks Section */}
+          <div className="rounded-lg border bg-card p-6 text-card-foreground">
+            <ScheduledTasks />
           </div>
 
           {/* Log Viewer Section */}

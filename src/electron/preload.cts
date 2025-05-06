@@ -172,6 +172,16 @@ type LocalElectronApi = {
     updateHardwareEnabled: (deviceId: number, isEnabled: boolean) => Promise<void>;
     refreshHardwareInfo: () => Promise<HardwareInfo[]>;
     
+    // Add scheduler-related methods
+    getAllScheduledTasks: () => Promise<any[]>;
+    addScheduledTask: (task: any) => Promise<any>;
+    updateScheduledTask: (taskId: string, updates: any) => Promise<any>;
+    toggleScheduledTask: (taskId: string, enabled: boolean) => Promise<any>;
+    deleteScheduledTask: (taskId: string) => Promise<boolean>;
+    runScheduledTaskNow: (taskId: string) => Promise<void>;
+    getConfigValue: (key: string) => Promise<any>;
+    setConfigValue: (key: string, value: any) => Promise<boolean>;
+    
     // Removed workflow-related methods
     // getWorkflows: () => Promise<Workflow[]>;
     // getWorkflowDetails: (id: number) => Promise<WorkflowDetails | null>;
@@ -234,6 +244,16 @@ electron.contextBridge.exposeInMainWorld("electron", {
     updateHardwarePriority: (deviceId, priority) => ipcInvoke("update-hardware-priority", deviceId, priority),
     updateHardwareEnabled: (deviceId, isEnabled) => ipcInvoke("update-hardware-enabled", deviceId, isEnabled),
     refreshHardwareInfo: () => ipcInvoke("refresh-hardware-info"),
+    
+    // Add scheduler-related methods
+    getAllScheduledTasks: () => ipcInvoke('scheduler:getAllTasks'),
+    addScheduledTask: (task) => ipcInvoke('scheduler:addTask', task),
+    updateScheduledTask: (taskId, updates) => ipcInvoke('scheduler:updateTask', taskId, updates),
+    toggleScheduledTask: (taskId, enabled) => ipcInvoke('scheduler:toggleTask', taskId, enabled),
+    deleteScheduledTask: (taskId) => ipcInvoke('scheduler:deleteTask', taskId),
+    runScheduledTaskNow: (taskId) => ipcInvoke('scheduler:runTaskNow', taskId),
+    getConfigValue: (key) => ipcInvoke('scheduler:getConfigValue', key),
+    setConfigValue: (key, value) => ipcInvoke('scheduler:setConfigValue', key, value),
     
     // Remove workflow-related methods
     // getWorkflows: () => ipcInvoke('get-workflows'),
