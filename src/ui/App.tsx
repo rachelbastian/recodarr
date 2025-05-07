@@ -6,7 +6,7 @@ import Dashboard from './pages/Dashboard';
 // import Statistics from './pages/Statistics'; // Commented out - file doesn't exist
 import Media from './pages/Media';
 import Libraries from './pages/Libraries';
-// import Workflows from './pages/Workflows'; // Old import
+import Workflows from './pages/Workflows'; // Import Workflows
 import Settings from './pages/Settings';
 import ManualEncode from './pages/ManualEncode'; // Import ManualEncode
 import Presets from './pages/Presets'; // Import the new Presets page
@@ -29,7 +29,7 @@ function App() {
                             {/* <Route path="/statistics" element={<Statistics />} /> */}{/* Commented out */}
                             <Route path="/media" element={<Media />} />
                             <Route path="/libraries" element={<Libraries />} />
-                            {/* <Route path="/workflows" element={<Workflows />} /> */}
+                            <Route path="/workflows" element={<Workflows />} />
                             <Route path="/settings" element={<Settings />} />
                             <Route path="/encoding" element={<ManualEncode />} /> {/* Add Manual Encode route */}
                             <Route path="/queue" element={<Queue />} /> {/* Add Queue route */}

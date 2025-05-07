@@ -67,7 +67,7 @@ const Navbar: React.FC = () => {
           
           <SidebarItem icon={<Film className="h-4 w-4" />} label="Media" href="/media" active={isActive('/media')} />
           <SidebarItem icon={<Library className="h-4 w-4" />} label="Libraries" href="/libraries" active={isActive('/libraries')} />
-          {/* <SidebarItem icon={<Share2 className="h-4 w-4" />} label="Workflows" href="/workflows" active={isActive('/workflows')} /> */}
+          <SidebarItem icon={<Share2 className="h-4 w-4" />} label="Workflows" href="/workflows" active={isActive('/workflows')} />
           
           <SidebarItem icon={<ListOrdered className="h-4 w-4" />} label="Encoding" href="/encoding" active={isActive('/encoding')} />
           <SidebarItem icon={<ListChecks className="h-4 w-4" />} label="Queue" href="/queue" active={isActive('/queue')} />
@@ -83,4 +83,4 @@ const Navbar: React.FC = () => {
   );
 };
 
-export default Navbar; 
+export default Navbar;
