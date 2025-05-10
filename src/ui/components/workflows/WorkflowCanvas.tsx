@@ -61,7 +61,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [workflowName, setWorkflowName] = useState<string>('New Workflow');
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { project } = useReactFlow();
+  const { project, getNodes, getEdges } = useReactFlow();
   
   const [undoStack, setUndoStack] = useState<Array<{ nodes: Node[]; edges: Edge[] }>>([]);
   const [hasChanges, setHasChanges] = useState(false);
@@ -77,7 +77,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
   
   // Auto-layout configuration
   const nodeWidth = 280; // Increased width
-  const nodeHeight = 80;  // Decreased height
+  const nodeHeight = 56;  // Decreased height from 80 to 56
   const horizontalGap = 120; // Adjusted gap
   const verticalGap = 120;  // Adjusted gap
   
@@ -288,7 +288,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
     onNodeSelect(newNode);
     
     // Auto-layout the workflow after adding the node - Disabled for manual positioning
-    // setTimeout(() => autoLayoutWorkflow(), 50);
+    setTimeout(() => autoLayoutWorkflow(), 50);
   }, [
     selectedNodeType, 
     selectedNodeTemplate, 
@@ -341,22 +341,25 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
 
   // Auto-layout the workflow for a clean organized flow
   const autoLayoutWorkflow = useCallback(() => {
-    if (nodes.length === 0) return;
+    const currentNodes = getNodes(); // Get fresh nodes at execution time
+    const currentEdges = getEdges(); // Get fresh edges at execution time
 
-    // Save current state to undo stack
-    setUndoStack(prev => [...prev, { nodes, edges }]);
+    if (currentNodes.length === 0) return;
+
+    // Save current state to undo stack (using currentNodes, currentEdges)
+    setUndoStack(prev => [...prev, { nodes: currentNodes, edges: currentEdges }]);
 
     // Create a map of nodes for quick lookup
-    const nodeMap = new Map(nodes.map(node => [node.id, node]));
+    const nodeMap = new Map(currentNodes.map(node => [node.id, node]));
     
     // Create an adjacency list to track connections
     const adjacencyList: Record<string, string[]> = {};
-    nodes.forEach(node => {
+    currentNodes.forEach(node => {
       adjacencyList[node.id] = [];
     });
     
-    // Build the graph
-    edges.forEach(edge => {
+    // Build the graph using currentEdges
+    currentEdges.forEach(edge => {
       const source = edge.source;
       const target = edge.target;
       
@@ -365,15 +368,15 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
       }
     });
     
-    // Find root nodes (nodes without incoming edges)
-    const incomingEdges = new Set<string>();
-    edges.forEach(edge => {
-      incomingEdges.add(edge.target);
+    // Find root nodes (nodes without incoming edges) from currentNodes and currentEdges
+    const incomingEdgesSet = new Set<string>();
+    currentEdges.forEach(edge => {
+      incomingEdgesSet.add(edge.target);
     });
     
     // Prioritize trigger nodes as roots
-    const rootNodes = nodes
-      .filter(node => !incomingEdges.has(node.id))
+    const rootNodes = currentNodes
+      .filter(node => !incomingEdgesSet.has(node.id))
       .sort((a, b) => {
         if (a.type === 'trigger' && b.type !== 'trigger') return -1;
         if (a.type !== 'trigger' && b.type === 'trigger') return 1;
@@ -397,6 +400,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
       nodePositions.set(nodeId, { x, y });
       
       const children = adjacencyList[nodeId] || [];
+      const numChildren = children.length;
       
       if (isConditionNode(nodeId)) {
         // For condition nodes, create branches
@@ -405,13 +409,13 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
         
         // Determine which children are on the true path and which are on the false path
         children.forEach(childId => {
-          const edge = edges.find(e => e.source === nodeId && e.target === childId);
+          const edge = currentEdges.find(e => e.source === nodeId && e.target === childId); // Use currentEdges
           if (edge?.sourceHandle === `${nodeId}-true`) {
             truePathNodes.push(childId);
           } else if (edge?.sourceHandle === `${nodeId}-false`) {
             falsePathNodes.push(childId);
           } else {
-            // If no specific handle, default to true path
+            // If no specific handle, default to true path (or handle as error/main path)
             truePathNodes.push(childId);
           }
         });
@@ -420,7 +424,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
         truePathNodes.forEach((childId, index) => {
           positionBranch(
             childId,
-            x - 200, // offset to the left
+            x - (nodeWidth / 2) - (horizontalGap / 2), // Adjusted for condition branch centering
             y + nodeHeight + verticalGap + (index * (nodeHeight + verticalGap / 2)),
             depth + 1,
             'true'
@@ -431,34 +435,41 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
         falsePathNodes.forEach((childId, index) => {
           positionBranch(
             childId,
-            x + 200, // offset to the right
+            x + (nodeWidth / 2) + (horizontalGap / 2), // Adjusted for condition branch centering
             y + nodeHeight + verticalGap + (index * (nodeHeight + verticalGap / 2)),
             depth + 1,
             'false'
           );
         });
       } else {
-        // For regular nodes, continue linearly
-        children.forEach((childId, index) => {
-          positionBranch(
-            childId,
-            x,
-            y + nodeHeight + verticalGap + (index * (nodeHeight + verticalGap / 2)),
-            depth + 1,
-            pathType
-          );
-        });
+        // For regular (non-condition) nodes
+        if (numChildren === 1) {
+          // Single child: position directly below the current node
+          const childId = children[0];
+          positionBranch(childId, x, y + nodeHeight + verticalGap, depth + 1, pathType);
+        } else if (numChildren > 1) {
+          // Multiple children: arrange horizontally, centered under the current node
+          const totalWidthOfChildren = (numChildren * nodeWidth) + ((numChildren - 1) * horizontalGap);
+          let currentChildX = (x + nodeWidth / 2) - (totalWidthOfChildren / 2);
+          const childrenY = y + nodeHeight + verticalGap;
+
+          children.forEach(childId => {
+            positionBranch(childId, currentChildX, childrenY, depth + 1, pathType);
+            currentChildX += nodeWidth + horizontalGap;
+          });
+        }
+        // If numChildren is 0, do nothing for children
       }
     };
     
     // Position each root node and its descendants
     rootNodes.forEach((rootNode, rootIndex) => {
-      const rootX = 400 + (rootIndex * (nodeWidth * 2));
-      positionBranch(rootNode.id, rootX, 100);
+      const rootX = 400 + (rootIndex * (nodeWidth * 2)); // Base X for root, can be adjusted
+      positionBranch(rootNode.id, rootX, 100); // Start Y at 100
     });
     
     // Apply the calculated positions to nodes
-    const updatedNodes = nodes.map(node => {
+    const updatedNodesLayout = currentNodes.map(node => {
       const newPos = nodePositions.get(node.id);
       if (newPos) {
         return { ...node, position: newPos };
@@ -466,9 +477,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
       return node;
     });
     
-    setNodes(updatedNodes);
+    setNodes(updatedNodesLayout);
     setHasChanges(true);
-  }, [nodes, edges, setNodes]);
+  }, [getNodes, getEdges, setNodes, setHasChanges, setUndoStack, nodeWidth, nodeHeight, horizontalGap, verticalGap]); // Added layout constants to dependencies
 
   // Undo the last action
   const handleUndo = useCallback(() => {
@@ -485,7 +496,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
     if (!selectedNode) return;
     
     // Save current state to undo stack
-    setUndoStack(prev => [...prev, { nodes, edges }]);
+    setUndoStack(prev => [...prev, { nodes, edges }]); // uses state `nodes` and `edges` here before deletion
     
     // Get incoming and outgoing edges for the selected node
     const incomingEdges = edges.filter(edge => edge.target === selectedNode.id);
@@ -530,9 +541,9 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
     onNodeSelect(null);
     setHasChanges(true);
     
-    // Auto-layout the workflow after deletion to clean up - Disabled for manual positioning
-    // setTimeout(() => autoLayoutWorkflow(), 50);
-  }, [selectedNode, nodes, edges, setNodes, setEdges, onNodeSelect, autoLayoutWorkflow]);
+    // Auto-layout the workflow after deletion to clean up
+    setTimeout(() => autoLayoutWorkflow(), 50);
+  }, [selectedNode, nodes, edges, setNodes, setEdges, onNodeSelect, setUndoStack, setHasChanges]); // Removed autoLayoutWorkflow from deps, added setUndoStack, setHasChanges
 
   // Save the workflow
   const saveWorkflow = useCallback(() => {

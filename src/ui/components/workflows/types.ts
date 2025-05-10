@@ -1,6 +1,7 @@
 import { Node } from 'reactflow';
 
 export interface NodeData {
+  id?: string;
   label: string;
   description?: string;
   icon?: React.ReactNode;
