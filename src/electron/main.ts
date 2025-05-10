@@ -474,71 +474,84 @@ app.on("ready", async () => {
         `);
 
         // Create workflow related tables
-        db.exec(`
-            -- Main workflow table
-            CREATE TABLE IF NOT EXISTS workflows (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                description TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT 1,
-                last_triggered_at DATETIME,
-                UNIQUE(name)
-            );
+        console.log("[DB Setup] Attempting to create workflow-related tables if they don't exist...");
+        try {
+            db.exec(`
+                -- Main workflow table
+                CREATE TABLE IF NOT EXISTS workflows (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT 1,
+                    last_triggered_at DATETIME,
+                    UNIQUE(name)
+                );
 
-            -- Workflow nodes table
-            CREATE TABLE IF NOT EXISTS workflow_nodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workflow_id INTEGER NOT NULL,
-                node_id TEXT NOT NULL,          -- ReactFlow node ID
-                node_type TEXT NOT NULL,        -- 'trigger' or 'action'
-                label TEXT NOT NULL,
-                description TEXT,
-                position_x REAL NOT NULL,
-                position_y REAL NOT NULL,
-                data JSON,                      -- Store additional node data as JSON
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
-                UNIQUE(workflow_id, node_id)
-            );
+                -- Workflow nodes table
+                CREATE TABLE IF NOT EXISTS workflow_nodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,          -- ReactFlow node ID
+                    node_type TEXT NOT NULL,        -- 'trigger' or 'action'
+                    label TEXT NOT NULL,
+                    description TEXT,
+                    position_x REAL NOT NULL,
+                    position_y REAL NOT NULL,
+                    data JSON,                      -- Store additional node data as JSON
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                    UNIQUE(workflow_id, node_id)
+                );
 
-            -- Workflow edges table
-            CREATE TABLE IF NOT EXISTS workflow_edges (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workflow_id INTEGER NOT NULL,
-                edge_id TEXT NOT NULL,          -- ReactFlow edge ID
-                source_node_id TEXT NOT NULL,   -- Source node ID
-                target_node_id TEXT NOT NULL,   -- Target node ID
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
-                UNIQUE(workflow_id, edge_id)
-            );
+                -- Workflow edges table
+                CREATE TABLE IF NOT EXISTS workflow_edges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL,
+                    edge_id TEXT NOT NULL,          -- ReactFlow edge ID
+                    source_node_id TEXT NOT NULL,   -- Source node ID
+                    target_node_id TEXT NOT NULL,   -- Target node ID
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                    UNIQUE(workflow_id, edge_id)
+                );
 
-            -- Workflow execution history
-            CREATE TABLE IF NOT EXISTS workflow_executions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workflow_id INTEGER NOT NULL,
-                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                completed_at DATETIME,
-                status TEXT CHECK( status IN ('running', 'completed', 'failed', 'cancelled') ),
-                error_message TEXT,
-                trigger_node_id TEXT NOT NULL,
-                execution_data JSON,            -- Store execution context/variables
-                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
-            );
-        `);
+                -- Workflow execution history
+                CREATE TABLE IF NOT EXISTS workflow_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL,
+                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    completed_at DATETIME,
+                    status TEXT CHECK( status IN ('running', 'completed', 'failed', 'cancelled') ),
+                    error_message TEXT,
+                    trigger_node_id TEXT NOT NULL,
+                    execution_data JSON,            -- Store execution context/variables
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+                );
+            `);
+            console.log("[DB Setup] Successfully executed CREATE TABLE IF NOT EXISTS for workflow tables.");
+        } catch (error) {
+            console.error("[DB Setup] ERROR creating workflow tables:", error);
+            // Potentially re-throw or handle critical error if app cannot function without these tables
+        }
 
         // Create triggers to update workflows.updated_at
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS update_workflow_timestamp 
-            AFTER UPDATE ON workflows
-            BEGIN
-                UPDATE workflows 
-                SET updated_at = CURRENT_TIMESTAMP 
-                WHERE id = NEW.id;
-            END;
-        `);
+        console.log("[DB Setup] Attempting to create trigger for workflows table...");
+        try {
+            db.exec(`
+                CREATE TRIGGER IF NOT EXISTS update_workflow_timestamp 
+                AFTER UPDATE ON workflows
+                BEGIN
+                    UPDATE workflows 
+                    SET updated_at = CURRENT_TIMESTAMP 
+                    WHERE id = NEW.id;
+                END;
+            `);
+            console.log("[DB Setup] Successfully executed CREATE TRIGGER for workflows table.");
+        } catch (error) {
+            console.error("[DB Setup] ERROR creating trigger for workflow table:", error);
+        }
 
         // Create hardware_info table
         db.exec(`
@@ -1640,12 +1653,345 @@ app.on("ready", async () => {
 
         // Set up IPC handlers for the scheduler
         setupSchedulerIpcHandlers();
+
+        // --- Added Handlers for Manual VRAM Override ---
+        ipcMain.handle("get-manual-gpu-vram", async (): Promise<number | null> => {
+            return store.get(MANUAL_GPU_VRAM_MB_KEY, null) as number | null;
+        });
+
+        // --- Workflow Management Handlers ---
+        ipcMain.handle('save-workflow', async (_event, workflow: { id: string, name: string, description?: string | null, nodes: Node[], edges: Edge[] }): Promise<any> => {
+            if (!db) {
+                throw new Error("Database not initialized. Cannot save workflow.");
+            }
+            
+            try {
+                const { id, name, description, nodes, edges } = workflow;
+                
+                console.log(`[Workflow] Attempting to save workflow: id=${id}, name=${name}, nodes=${nodes.length}, edges=${edges.length}`);
+                
+                const transaction = db.transaction(() => {
+                    try {
+                        const existingWorkflow = db.prepare('SELECT id FROM workflows WHERE name = ? AND id != ?').get(name, id);
+                        if (existingWorkflow) {
+                            throw new Error(`Workflow name "${name}" already exists.`);
+                        }
+
+                        const currentWorkflow = db.prepare('SELECT id FROM workflows WHERE id = ?').get(id);
+                        let workflowIdToUse = id;
+
+                        if (currentWorkflow) {
+                            console.log(`[Workflow] Updating existing workflow: ${id}`);
+                            db.prepare('UPDATE workflows SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+                                .run(name, description, workflowIdToUse);
+                            
+                            db.prepare('DELETE FROM workflow_nodes WHERE workflow_id = ?').run(workflowIdToUse);
+                            db.prepare('DELETE FROM workflow_edges WHERE workflow_id = ?').run(workflowIdToUse);
+                        } else {
+                            console.log(`[Workflow] Creating new workflow: ${id}`);
+                            const result = db.prepare('INSERT INTO workflows (id, name, description, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+                                .run(id, name, description);
+                            // workflowIdToUse remains `id` as passed in for a new workflow
+                            console.log(`[Workflow] New workflow created with result:`, result);
+                        }
+                        
+                        const insertNode = db.prepare(
+                            'INSERT INTO workflow_nodes (workflow_id, node_id, node_type, label, description, position_x, position_y, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        
+                        for (const node of nodes) {
+                            insertNode.run(
+                                workflowIdToUse,
+                                node.id,
+                                node.type || 'default',
+                                node.data?.label || '',
+                                node.data?.description || '',
+                                node.position.x,
+                                node.position.y,
+                                JSON.stringify(node.data || {})
+                            );
+                        }
+                        console.log(`[Workflow] Inserted ${nodes.length} nodes`);
+                        
+                        const insertEdge = db.prepare(
+                            'INSERT INTO workflow_edges (workflow_id, edge_id, source_node_id, target_node_id) VALUES (?, ?, ?, ?)'
+                        );
+                        
+                        for (const edge of edges) {
+                            insertEdge.run(
+                                workflowIdToUse,
+                                edge.id,
+                                edge.source,
+                                edge.target
+                            );
+                        }
+                        console.log(`[Workflow] Inserted ${edges.length} edges`);
+                        
+                        return { success: true, id: workflowIdToUse };
+                    } catch (txError) {
+                        console.error(`[Workflow] Transaction error:`, txError);
+                        throw txError; // Re-throw to rollback transaction
+                    }
+                });
+                
+                const result = transaction();
+                console.log(`[Workflow] Save completed successfully: ${id}`);
+                return result;
+            } catch (error) {
+                console.error(`[Workflow] Error saving workflow:`, error);
+                // Include more details in the error for debugging
+                if (error instanceof Error) {
+                    throw new Error(`Failed to save workflow: ${error.message}`);
+                } else {
+                    throw new Error(`Failed to save workflow: Unknown error`);
+                }
+            }
+        });
+        
+        ipcMain.handle('get-workflows', async (): Promise<any[]> => {
+            if (!db) {
+                throw new Error("Database not initialized. Cannot get workflows.");
+            }
+            
+            try {
+                return db.prepare('SELECT id, name, description, created_at, updated_at, is_active FROM workflows ORDER BY updated_at DESC').all();
+            } catch (error) {
+                console.error("Error getting workflows:", error);
+                throw error;
+            }
+        });
+        
+        ipcMain.handle('get-workflow', async (_event, workflowId: string): Promise<any> => {
+            if (!db) {
+                throw new Error("Database not initialized. Cannot get workflow.");
+            }
+            
+            try {
+                const workflow = db.prepare('SELECT id, name, description, created_at, updated_at, is_active FROM workflows WHERE id = ?').get(workflowId);
+                
+                if (!workflow) {
+                    // It's possible a new workflow is being created, so don't throw an error if not found.
+                    // The canvas will start with an empty state.
+                    return { id: workflowId, name: 'New Workflow', description: '', nodes: [], edges: [] };
+                }
+                
+                const nodes = db.prepare('SELECT node_id, node_type, label, description, position_x, position_y, data FROM workflow_nodes WHERE workflow_id = ?').all(workflowId);
+                const edges = db.prepare('SELECT edge_id, source_node_id, target_node_id FROM workflow_edges WHERE workflow_id = ?').all(workflowId);
+                
+                const formattedNodes = nodes.map((node: any) => ({
+                    id: node.node_id,
+                    type: node.node_type,
+                    position: { x: node.position_x, y: node.position_y },
+                    data: JSON.parse(node.data)
+                }));
+                
+                const formattedEdges = edges.map((edge: any) => ({
+                    id: edge.edge_id,
+                    source: edge.source_node_id,
+                    target: edge.target_node_id
+                }));
+                
+                return {
+                    ...workflow,
+                    nodes: formattedNodes,
+                    edges: formattedEdges
+                };
+            } catch (error) {
+                console.error(`Error getting workflow ${workflowId}:`, error);
+                throw error;
+            }
+        });
+        
+        ipcMain.handle('delete-workflow', async (_event, workflowId: string): Promise<boolean> => {
+            if (!db) {
+                throw new Error("Database not initialized. Cannot delete workflow.");
+            }
+            
+            try {
+                // Use a transaction to ensure atomicity
+                const deleteTransaction = db.transaction(() => {
+                    db.prepare('DELETE FROM workflow_nodes WHERE workflow_id = ?').run(workflowId);
+                    db.prepare('DELETE FROM workflow_edges WHERE workflow_id = ?').run(workflowId);
+                    const result = db.prepare('DELETE FROM workflows WHERE id = ?').run(workflowId);
+                    return result.changes > 0;
+                });
+                return deleteTransaction();
+            } catch (error) {
+                console.error(`Error deleting workflow ${workflowId}:`, error);
+                throw error;
+            }
+        });
+        // --- End Workflow Management Handlers ---
+
+        // Check and migrate workflow tables if needed
+        await checkAndMigrateWorkflowTables(db);
     } catch (err) {
         console.error(`Failed to initialize database at path: ${dbPath || 'Unknown'}:`, err);
         // Handle error appropriately - maybe show an error dialog to the user
         // For now, we'll let the app continue but DB functionality will be broken
     }
     // --- End Initialize Database ---
+
+    // Add near the top of the app.on("ready", async () => { handler, after database initialization
+    console.log("[IPC Setup] Starting to register IPC handlers...");
+
+    try {
+        // Register workflow-related IPC handlers
+        console.log("[IPC Setup] Registering workflow IPC handlers...");
+        ipcMain.handle('get-workflows', async () => {
+            if (!db) throw new Error("Database not initialized. Cannot get workflows.");
+            console.log("[IPC] Handling get-workflows request");
+            try {
+                return db.prepare('SELECT id, name, description, created_at, updated_at, is_active FROM workflows ORDER BY updated_at DESC').all();
+            } catch (error) {
+                console.error("[IPC] Error getting workflows:", error);
+                throw error;
+            }
+        });
+        
+        ipcMain.handle('get-workflow', async (_event, workflowId) => {
+            if (!db) throw new Error("Database not initialized. Cannot get workflow.");
+            console.log(`[IPC] Handling get-workflow request for ID: ${workflowId}`);
+            try {
+                const workflow = db.prepare('SELECT id, name, description, created_at, updated_at, is_active FROM workflows WHERE id = ?').get(workflowId);
+                
+                if (!workflow) {
+                    return { id: workflowId, name: 'New Workflow', description: '', nodes: [], edges: [] };
+                }
+                
+                const nodes = db.prepare('SELECT node_id, node_type, label, description, position_x, position_y, data FROM workflow_nodes WHERE workflow_id = ?').all(workflowId);
+                const edges = db.prepare('SELECT edge_id, source_node_id, target_node_id FROM workflow_edges WHERE workflow_id = ?').all(workflowId);
+                
+                const formattedNodes = nodes.map((node: any) => ({
+                    id: node.node_id,
+                    type: node.node_type,
+                    position: { x: node.position_x, y: node.position_y },
+                    data: JSON.parse(node.data)
+                }));
+                
+                const formattedEdges = edges.map((edge: any) => ({
+                    id: edge.edge_id,
+                    source: edge.source_node_id,
+                    target: edge.target_node_id
+                }));
+                
+                return {
+                    ...workflow,
+                    nodes: formattedNodes,
+                    edges: formattedEdges
+                };
+            } catch (error) {
+                console.error(`[IPC] Error getting workflow ${workflowId}:`, error);
+                throw error;
+            }
+        });
+        
+        ipcMain.handle('save-workflow', async (_event, workflow) => {
+            if (!db) throw new Error("Database not initialized. Cannot save workflow.");
+            
+            console.log(`[IPC] Handling save-workflow request for ID: ${workflow.id}, Name: ${workflow.name}`);
+            console.log(`[IPC] Workflow data: nodes=${workflow.nodes?.length || 0}, edges=${workflow.edges?.length || 0}`);
+            
+            try {
+                const { id, name, description, nodes, edges } = workflow;
+                
+                const transaction = db.transaction(() => {
+                    try {
+                        const existingWorkflow = db.prepare('SELECT id FROM workflows WHERE name = ? AND id != ?').get(name, id);
+                        if (existingWorkflow) {
+                            throw new Error(`Workflow name "${name}" already exists.`);
+                        }
+
+                        const currentWorkflow = db.prepare('SELECT id FROM workflows WHERE id = ?').get(id);
+                        let workflowIdToUse = id;
+
+                        if (currentWorkflow) {
+                            console.log(`[IPC] Updating existing workflow: ${id}`);
+                            db.prepare('UPDATE workflows SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+                                .run(name, description, workflowIdToUse);
+                            
+                            db.prepare('DELETE FROM workflow_nodes WHERE workflow_id = ?').run(workflowIdToUse);
+                            db.prepare('DELETE FROM workflow_edges WHERE workflow_id = ?').run(workflowIdToUse);
+                        } else {
+                            console.log(`[IPC] Creating new workflow: ${id}`);
+                            const result = db.prepare('INSERT INTO workflows (id, name, description, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+                                .run(id, name, description);
+                            console.log(`[IPC] New workflow created with result:`, result);
+                        }
+                        
+                        const insertNode = db.prepare(
+                            'INSERT INTO workflow_nodes (workflow_id, node_id, node_type, label, description, position_x, position_y, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                        );
+                        
+                        for (const node of nodes) {
+                            insertNode.run(
+                                workflowIdToUse,
+                                node.id,
+                                node.type || 'default',
+                                node.data?.label || '',
+                                node.data?.description || '',
+                                node.position.x,
+                                node.position.y,
+                                JSON.stringify(node.data || {})
+                            );
+                        }
+                        console.log(`[IPC] Inserted ${nodes.length} nodes`);
+                        
+                        const insertEdge = db.prepare(
+                            'INSERT INTO workflow_edges (workflow_id, edge_id, source_node_id, target_node_id) VALUES (?, ?, ?, ?)'
+                        );
+                        
+                        for (const edge of edges) {
+                            insertEdge.run(
+                                workflowIdToUse,
+                                edge.id,
+                                edge.source,
+                                edge.target
+                            );
+                        }
+                        console.log(`[IPC] Inserted ${edges.length} edges`);
+                        
+                        return { success: true, id: workflowIdToUse };
+                    } catch (txError) {
+                        console.error(`[IPC] Transaction error:`, txError);
+                        throw txError;
+                    }
+                });
+                
+                const result = transaction();
+                console.log(`[IPC] Save completed successfully: ${id}`);
+                return result;
+            } catch (error) {
+                console.error(`[IPC] Error saving workflow:`, error);
+                if (error instanceof Error) {
+                    throw new Error(`Failed to save workflow: ${error.message}`);
+                } else {
+                    throw new Error(`Failed to save workflow: Unknown error`);
+                }
+            }
+        });
+        
+        ipcMain.handle('delete-workflow', async (_event, workflowId) => {
+            if (!db) throw new Error("Database not initialized. Cannot delete workflow.");
+            console.log(`[IPC] Handling delete-workflow request for ID: ${workflowId}`);
+            try {
+                const deleteTransaction = db.transaction(() => {
+                    db.prepare('DELETE FROM workflow_nodes WHERE workflow_id = ?').run(workflowId);
+                    db.prepare('DELETE FROM workflow_edges WHERE workflow_id = ?').run(workflowId);
+                    const result = db.prepare('DELETE FROM workflows WHERE id = ?').run(workflowId);
+                    return result.changes > 0;
+                });
+                return deleteTransaction();
+            } catch (error) {
+                console.error(`[IPC] Error deleting workflow ${workflowId}:`, error);
+                throw error;
+            }
+        });
+        
+        console.log("[IPC Setup] Successfully registered workflow IPC handlers");
+    } catch (error) {
+        console.error("[IPC Setup] Error registering IPC handlers:", error);
+    }
 })
 
 // Quit when all windows are closed, except on macOS.
@@ -1866,4 +2212,224 @@ function setupSchedulerIpcHandlers() {
     store.set(key, value);
     return true;
   });
+}
+
+async function checkAndMigrateWorkflowTables(db: Database.Database): Promise<void> {
+    try {
+        console.log("[DB Migration] Checking if workflow tables need migration...");
+        
+        // First, check if workflows table exists and what schema it has
+        const schemaCheck = db.pragma("table_info(workflows)") as { name: string; type: string }[];
+        
+        // Check if id column is INTEGER or TEXT
+        const idColumn = schemaCheck.find((col) => col.name === 'id');
+        const needsMigration = idColumn && idColumn.type.toUpperCase() === 'INTEGER';
+        
+        if (needsMigration) {
+            console.log("[DB Migration] Found workflows table with INTEGER id, migrating to TEXT id...");
+            
+            // Get all existing workflows (if any)
+            interface WorkflowRow {
+                id: number;
+                name: string;
+                description: string | null;
+                created_at: string;
+                updated_at: string;
+                is_active: number;
+                last_triggered_at: string | null;
+            }
+            
+            interface NodeRow {
+                id: number;
+                workflow_id: number;
+                node_id: string;
+                node_type: string;
+                label: string;
+                description: string | null;
+                position_x: number;
+                position_y: number;
+                data: string;
+                created_at: string;
+                original_id?: number;
+            }
+            
+            interface EdgeRow {
+                id: number;
+                workflow_id: number;
+                edge_id: string;
+                source_node_id: string;
+                target_node_id: string;
+                created_at: string;
+                original_id?: number;
+            }
+            
+            let existingWorkflows: WorkflowRow[] = [];
+            try {
+                existingWorkflows = db.prepare('SELECT * FROM workflows').all() as WorkflowRow[];
+                console.log(`[DB Migration] Found ${existingWorkflows.length} existing workflows to migrate`);
+            } catch (error) {
+                console.log("[DB Migration] No existing workflows or could not retrieve them:", error);
+            }
+            
+            // Begin transaction
+            db.exec('BEGIN TRANSACTION;');
+            
+            try {
+                // Store nodes and edges
+                let nodes: NodeRow[] = [];
+                let edges: EdgeRow[] = [];
+                
+                // Backup existing data if possible
+                for (const workflow of existingWorkflows) {
+                    try {
+                        const workflowNodes = db.prepare('SELECT * FROM workflow_nodes WHERE workflow_id = ?').all(workflow.id) as NodeRow[];
+                        const workflowEdges = db.prepare('SELECT * FROM workflow_edges WHERE workflow_id = ?').all(workflow.id) as EdgeRow[];
+                        
+                        nodes = [...nodes, ...workflowNodes.map(node => ({...node, original_id: workflow.id}))];
+                        edges = [...edges, ...workflowEdges.map(edge => ({...edge, original_id: workflow.id}))];
+                    } catch (error) {
+                        console.error(`[DB Migration] Error backing up workflow ${workflow.id}:`, error);
+                    }
+                }
+                
+                // Drop existing tables
+                db.exec('DROP TABLE IF EXISTS workflow_executions;');
+                db.exec('DROP TABLE IF EXISTS workflow_edges;');
+                db.exec('DROP TABLE IF EXISTS workflow_nodes;');
+                db.exec('DROP TABLE IF EXISTS workflows;');
+                
+                // Recreate tables with TEXT id
+                db.exec(`
+                -- Main workflow table
+                CREATE TABLE workflows (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT 1,
+                    last_triggered_at DATETIME,
+                    UNIQUE(name)
+                );
+
+                -- Workflow nodes table
+                CREATE TABLE workflow_nodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,          -- ReactFlow node ID
+                    node_type TEXT NOT NULL,        -- 'trigger' or 'action'
+                    label TEXT NOT NULL,
+                    description TEXT,
+                    position_x REAL NOT NULL,
+                    position_y REAL NOT NULL,
+                    data JSON,                      -- Store additional node data as JSON
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                    UNIQUE(workflow_id, node_id)
+                );
+
+                -- Workflow edges table
+                CREATE TABLE workflow_edges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL,
+                    edge_id TEXT NOT NULL,          -- ReactFlow edge ID
+                    source_node_id TEXT NOT NULL,   -- Source node ID
+                    target_node_id TEXT NOT NULL,   -- Target node ID
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                    UNIQUE(workflow_id, edge_id)
+                );
+
+                -- Workflow execution history
+                CREATE TABLE workflow_executions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL,
+                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    completed_at DATETIME,
+                    status TEXT CHECK( status IN ('running', 'completed', 'failed', 'cancelled') ),
+                    error_message TEXT,
+                    trigger_node_id TEXT NOT NULL,
+                    execution_data JSON,            -- Store execution context/variables
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+                );`);
+                
+                // Restore data if there were existing workflows
+                if (existingWorkflows.length > 0) {
+                    const insertWorkflow = db.prepare(`
+                        INSERT INTO workflows (id, name, description, created_at, updated_at, is_active, last_triggered_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    `);
+                    
+                    for (const workflow of existingWorkflows) {
+                        // Convert INTEGER id to TEXT
+                        const textId = workflow.id.toString();
+                        insertWorkflow.run(
+                            textId,
+                            workflow.name,
+                            workflow.description,
+                            workflow.created_at,
+                            workflow.updated_at,
+                            workflow.is_active || 1,
+                            workflow.last_triggered_at
+                        );
+                        console.log(`[DB Migration] Restored workflow with TEXT id: ${textId}`);
+                    }
+                    
+                    // Restore nodes and edges, converting workflow_id to TEXT
+                    if (nodes.length > 0) {
+                        const insertNode = db.prepare(`
+                            INSERT INTO workflow_nodes (workflow_id, node_id, node_type, label, description, position_x, position_y, data)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        `);
+                        
+                        for (const node of nodes) {
+                            insertNode.run(
+                                node.original_id?.toString() || '', // Convert to TEXT
+                                node.node_id,
+                                node.node_type,
+                                node.label,
+                                node.description,
+                                node.position_x,
+                                node.position_y,
+                                node.data
+                            );
+                        }
+                        console.log(`[DB Migration] Restored ${nodes.length} workflow nodes`);
+                    }
+                    
+                    if (edges.length > 0) {
+                        const insertEdge = db.prepare(`
+                            INSERT INTO workflow_edges (workflow_id, edge_id, source_node_id, target_node_id)
+                            VALUES (?, ?, ?, ?)
+                        `);
+                        
+                        for (const edge of edges) {
+                            insertEdge.run(
+                                edge.original_id?.toString() || '', // Convert to TEXT
+                                edge.edge_id,
+                                edge.source_node_id,
+                                edge.target_node_id
+                            );
+                        }
+                        console.log(`[DB Migration] Restored ${edges.length} workflow edges`);
+                    }
+                }
+                
+                // Commit transaction
+                db.exec('COMMIT;');
+                console.log("[DB Migration] Workflow tables migration completed successfully");
+                
+            } catch (error) {
+                // Rollback on error
+                db.exec('ROLLBACK;');
+                console.error("[DB Migration] Migration failed, rolled back changes:", error);
+                throw error;
+            }
+        } else {
+            console.log("[DB Migration] Workflow tables already have the correct schema (TEXT id)");
+        }
+    } catch (error) {
+        console.error("[DB Migration] Error checking or migrating workflow tables:", error);
+        // Don't throw - allow app to continue even if migration fails
+    }
 }

@@ -182,11 +182,11 @@ type LocalElectronApi = {
     getConfigValue: (key: string) => Promise<any>;
     setConfigValue: (key: string, value: any) => Promise<boolean>;
     
-    // Removed workflow-related methods
-    // getWorkflows: () => Promise<Workflow[]>;
-    // getWorkflowDetails: (id: number) => Promise<WorkflowDetails | null>;
-    // saveWorkflow: (workflowData: { id?: number; name: string; description: string; nodes: Node[]; edges: Edge[] }) => Promise<number>;
-    // deleteWorkflow: (id: number) => Promise<{ changes: number }>;
+    // Workflow-related methods
+    getWorkflows: () => Promise<any[]>;
+    getWorkflow: (id: string) => Promise<any>;
+    saveWorkflow: (workflowData: { id: string; name: string; description?: string | null; nodes: Node[]; edges: Edge[] }) => Promise<any>;
+    deleteWorkflow: (id: string) => Promise<boolean>;
 
     // --- Encoding Presets --- 
     getPresets: () => Promise<EncodingPreset[]>;
@@ -255,11 +255,11 @@ electron.contextBridge.exposeInMainWorld("electron", {
     getConfigValue: (key) => ipcInvoke('scheduler:getConfigValue', key),
     setConfigValue: (key, value) => ipcInvoke('scheduler:setConfigValue', key, value),
     
-    // Remove workflow-related methods
-    // getWorkflows: () => ipcInvoke('get-workflows'),
-    // getWorkflowDetails: (id) => ipcInvoke('get-workflow-details', id),
-    // saveWorkflow: (workflowData: any) => ipcInvoke('save-workflow', workflowData),
-    // deleteWorkflow: (id) => ipcInvoke('delete-workflow', id),
+    // Workflow-related methods
+    getWorkflows: () => ipcInvoke('get-workflows'),
+    getWorkflow: (id: string) => ipcInvoke('get-workflow', id),
+    saveWorkflow: (workflowData: { id: string; name: string; description?: string | null; nodes: Node[]; edges: Edge[] }) => ipcInvoke('save-workflow', workflowData),
+    deleteWorkflow: (id: string) => ipcInvoke('delete-workflow', id),
     
     // --- Encoding Preset Implementations ---
     getPresets: () => ipcInvoke('get-presets'),

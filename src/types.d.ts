@@ -277,15 +277,12 @@ export interface IElectronAPI {
     updateHardwareEnabled: (deviceId: string, isEnabled: boolean) => Promise<void>;
     refreshHardwareInfo: () => Promise<void>;
     
-    // Workflow methods are disabled but kept for reference
-    /*
-    getWorkflows: () => Promise<Workflow[]>;
-    getWorkflowDetails: (id: number) => Promise<WorkflowDetails>;
-    saveWorkflow: (workflowData: WorkflowDetails) => Promise<void>;
-    deleteWorkflow: (id: number) => Promise<void>;
-    */
-    // --- End other existing API methods --- 
-
+    // Workflow methods
+    getWorkflows: () => Promise<any[]>;
+    getWorkflow: (id: string) => Promise<any>;
+    saveWorkflow: (workflowData: { id: string; name: string; description?: string | null; nodes: Node[]; edges: Edge[] }) => Promise<any>;
+    deleteWorkflow: (id: string) => Promise<boolean>;
+    
     // --- Logger API --- 
     subscribeToLogs: (callback: (logEntry: LocalLogEntry) => void) => UnsubscribeFunction;
     getInitialLogs: () => Promise<LocalLogEntry[]>;

@@ -52,9 +52,10 @@ const nodeTypes: NodeTypes = {
 interface WorkflowCanvasProps {
   onNodeSelect: (node: WorkflowNode | null) => void;
   selectedNode: WorkflowNode | null;
+  workflowId?: string; // Make this optional for backward compatibility
 }
 
-const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedNode }) => {
+const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedNode, workflowId }) => {
   // Workflow state
   const [nodes, setNodes, onNodesChange] = useNodesState<NodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -82,6 +83,28 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
   
   // Track if a trigger node exists (workflows must start with a trigger)
   const hasTriggerNode = nodes.some(node => node.type === 'trigger');
+  
+  // Load existing workflow if workflowId is provided
+  useEffect(() => {
+    const loadWorkflow = async () => {
+      if (!workflowId) return;
+      
+      try {
+        const workflow = await window.electron.getWorkflow(workflowId);
+        
+        if (workflow) {
+          setWorkflowName(workflow.name);
+          setNodes(workflow.nodes || []);
+          setEdges(workflow.edges || []);
+          setHasChanges(false);
+        }
+      } catch (error) {
+        console.error('Error loading workflow:', error);
+      }
+    };
+    
+    loadWorkflow();
+  }, [workflowId, setNodes, setEdges]);
   
   // Trigger selection dialog
   const openTriggerDialog = useCallback(() => {
@@ -514,21 +537,23 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
   // Save the workflow
   const saveWorkflow = useCallback(() => {
     const workflow = {
-      id: uuidv4(),
+      id: workflowId || uuidv4(),
       name: workflowName,
       nodes,
-      edges,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      edges
     };
 
-    // Save to local storage (for now)
-    const savedWorkflows = JSON.parse(localStorage.getItem('workflows') || '[]');
-    localStorage.setItem('workflows', JSON.stringify([...savedWorkflows, workflow]));
-    
-    toast.success('Workflow saved successfully');
-    setHasChanges(false);
-  }, [workflowName, nodes, edges]);
+    // Save workflow to the database using IPC
+    window.electron.saveWorkflow(workflow)
+      .then(() => {
+        toast.success('Workflow saved successfully');
+        setHasChanges(false);
+      })
+      .catch((error: Error) => {
+        console.error('Error saving workflow:', error);
+        toast.error('Failed to save workflow: ' + error.message);
+      });
+  }, [workflowName, nodes, edges, workflowId]);
 
   // Get appropriate node templates for a given node type
   const getNodeTemplates = useCallback((type: 'trigger' | 'action' | 'condition') => {
