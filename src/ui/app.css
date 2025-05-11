@@ -1,0 +1,315 @@
+@import "tailwindcss";
+
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light mode - updated to complement navy blue dark theme */
+    --background: hsl(210 33% 98%);
+    --foreground: hsl(217 47% 13%); /* Dark navy for text */
+    --card: hsl(210 40% 100%);
+    --card-foreground: hsl(217 47% 13%);
+    --popover: hsl(210 40% 100%);
+    --popover-foreground: hsl(217 47% 13%);
+    --primary: hsl(217 70% 45%); /* Navy blue for primary */
+    --primary-foreground: hsl(0 0% 100%);
+    --secondary: hsl(217 20% 90%);
+    --secondary-foreground: hsl(217 60% 35%);
+    --muted: hsl(217 20% 92%);
+    --muted-foreground: hsl(217 20% 40%);
+    --accent: hsl(217 85% 60%); /* Blue accent */
+    --accent-foreground: hsl(0 0% 100%);
+    --destructive: hsl(0 84% 60%);
+    --destructive-foreground: hsl(0 0% 98%);
+    --border: hsl(217 20% 85%);
+    --input: hsl(217 20% 85%);
+    --ring: hsl(217 75% 55%);
+    --chart-1: hsl(217 75% 55%);
+    --chart-2: hsl(240 60% 50%);
+    --chart-3: hsl(280 60% 50%);
+    --chart-4: hsl(340 70% 55%);
+    --chart-5: hsl(180 60% 40%);
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* Navy blue theme based on #111f31 */
+    --background: hsl(217 47% 13%); /* #111f31 navy blue */
+    --foreground: hsl(0 0% 98%);
+    --card: hsl(217 47% 15%); /* Slightly lighter navy */
+    --card-foreground: hsl(0 0% 98%);
+    --popover: hsl(217 47% 15%);
+    --popover-foreground: hsl(0 0% 98%);
+    --primary: hsl(0 0% 98%); /* White as primary */
+    --primary-foreground: hsl(217 47% 13%);
+    --secondary: hsl(217 47% 18%);
+    --secondary-foreground: hsl(0 0% 98%);
+    --muted: hsl(217 47% 18%);
+    --muted-foreground: hsl(215 5% 65%);
+    --accent: hsl(217 85% 70%); /* Light blue accent */
+    --accent-foreground: hsl(0 0% 98%);
+    --destructive: hsl(0 62.8% 30.6%);
+    --destructive-foreground: hsl(0 0% 98%);
+    --border: hsl(217 47% 20%);
+    --input: hsl(217 47% 18%);
+    --ring: hsl(217 85% 70%);
+    --chart-1: hsl(220 70% 50%);
+    --chart-2: hsl(160 60% 45%);
+    --chart-3: hsl(30 80% 55%);
+    --chart-4: hsl(280 65% 60%);
+    --chart-5: hsl(340 75% 55%);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+  
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.2; }
+    50% { opacity: 1; }
+  }
+  
+  @keyframes rotate {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+:root {
+  /* Light mode sidebar - updated to match new theme */
+  --sidebar: hsl(217 20% 95%);
+  --sidebar-foreground: hsl(217 50% 20%);
+  --sidebar-primary: hsl(217 70% 45%);
+  --sidebar-primary-foreground: hsl(0 0% 100%);
+  --sidebar-accent: hsl(217 20% 90%);
+  --sidebar-accent-foreground: hsl(217 60% 35%);
+  --sidebar-border: hsl(217 20% 85%);
+  --sidebar-ring: hsl(217 75% 55%);
+}
+
+.dark {
+  /* Update sidebar colors to match new navy theme */
+  --sidebar: hsl(217 47% 11%); /* Darker navy blue for sidebar */
+  --sidebar-foreground: hsl(217 10% 90%);
+  --sidebar-primary: hsl(0 0% 100%); /* White as primary */
+  --sidebar-primary-foreground: hsl(217 47% 13%);
+  --sidebar-accent: hsl(217 47% 18%);
+  --sidebar-accent-foreground: hsl(217 10% 90%);
+  --sidebar-border: hsl(217 47% 18%);
+  --sidebar-ring: hsl(217 85% 70%);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Starry background utility class */
+.bg-stars {
+  position: relative;
+  overflow: hidden;
+  z-index: 0; /* Ensure parent has a z-index */
+}
+
+/* Static starry background for all themes */
+.bg-stars::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    radial-gradient(1px 1px at 25% 15%, white, transparent),
+    radial-gradient(1px 1px at 50% 40%, white, transparent),
+    radial-gradient(2px 2px at 35% 25%, white, transparent),
+    radial-gradient(1px 1px at 65% 15%, white, transparent),
+    radial-gradient(1.5px 1.5px at 75% 50%, white, transparent),
+    radial-gradient(1px 1px at 85% 35%, white, transparent),
+    radial-gradient(1.5px 1.5px at 15% 70%, white, transparent),
+    radial-gradient(2px 2px at 40% 80%, white, transparent),
+    radial-gradient(1px 1px at 60% 60%, white, transparent),
+    radial-gradient(1.5px 1.5px at 80% 75%, white, transparent);
+  background-repeat: repeat;
+  background-size: 250px 250px;
+  opacity: 0.15;
+  z-index: -1; /* Place behind content */
+  pointer-events: none; /* Don't capture mouse events */
+}
+
+/* Light mode uses a different starry background with dark stars */
+.light .bg-stars::before {
+  background-image: 
+    radial-gradient(1px 1px at 25% 15%, hsl(217 47% 13%), transparent),
+    radial-gradient(1px 1px at 50% 40%, hsl(217 47% 13%), transparent),
+    radial-gradient(2px 2px at 35% 25%, hsl(217 47% 13%), transparent),
+    radial-gradient(1px 1px at 65% 15%, hsl(217 47% 13%), transparent),
+    radial-gradient(1.5px 1.5px at 75% 50%, hsl(217 47% 13%), transparent),
+    radial-gradient(1px 1px at 85% 35%, hsl(217 47% 13%), transparent),
+    radial-gradient(1.5px 1.5px at 15% 70%, hsl(217 47% 13%), transparent),
+    radial-gradient(2px 2px at 40% 80%, hsl(217 47% 13%), transparent),
+    radial-gradient(1px 1px at 60% 60%, hsl(217 47% 13%), transparent),
+    radial-gradient(1.5px 1.5px at 80% 75%, hsl(217 47% 13%), transparent);
+  opacity: 0.1;
+}
+
+/* Add twinkling animation to dark mode stars */
+.dark .bg-stars::before {
+  background-image: 
+    radial-gradient(1px 1px at 25% 15%, white, transparent),
+    radial-gradient(1px 1px at 50% 40%, white, transparent),
+    radial-gradient(1px 1px at 35% 25%, white, transparent),
+    radial-gradient(1px 1px at 65% 15%, white, transparent),
+    radial-gradient(1.5px 1.5px at 75% 50%, white, transparent),
+    radial-gradient(1px 1px at 85% 35%, white, transparent),
+    radial-gradient(1.5px 1.5px at 15% 70%, white, transparent),
+    radial-gradient(2px 2px at 40% 80%, white, transparent),
+    radial-gradient(1px 1px at 60% 60%, white, transparent),
+    radial-gradient(1.5px 1.5px at 80% 75%, white, transparent);
+  opacity: 0.15;
+  position: absolute;
+}
+
+/* Create separate layers of stars with different animation durations */
+.dark .bg-stars::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    radial-gradient(1.2px 1.2px at 20% 20%, white, transparent),
+    radial-gradient(1.5px 1.5px at 45% 45%, white, transparent),
+    radial-gradient(1px 1px at 70% 25%, white, transparent),
+    radial-gradient(1.3px 1.3px at 30% 65%, white, transparent),
+    radial-gradient(1.8px 1.8px at 65% 70%, white, transparent);
+  background-repeat: repeat;
+  background-size: 350px 350px;
+  opacity: 0;
+  animation: twinkle 5s ease-in-out infinite;
+  animation-delay: 1s;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Create a third layer with a different timing */
+.dark .bg-stars .twinkle-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    radial-gradient(1.5px 1.5px at 10% 50%, white, transparent),
+    radial-gradient(1px 1px at 55% 30%, white, transparent),
+    radial-gradient(1.7px 1.7px at 80% 60%, white, transparent),
+    radial-gradient(1px 1px at 35% 85%, white, transparent);
+  background-repeat: repeat;
+  background-size: 300px 300px;
+  opacity: 0;
+  animation: twinkle 7s ease-in-out infinite;
+  animation-delay: 3s;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Disable twinkling animation for the sidebar */
+.bg-sidebar.bg-stars::after,
+.bg-sidebar .bg-stars::after,
+.bg-sidebar .twinkle-layer {
+  animation: none;
+  opacity: 0;
+}
+
+/* Glowing element utility classes */
+.glow-white {
+  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.7));
+}
+
+.glow-blue {
+  filter: drop-shadow(0 0 10px rgba(79, 70, 229, 0.6));
+}
+
+/* Light mode glow classes */
+.light .glow-white {
+  filter: drop-shadow(0 0 8px rgba(217, 225, 255, 0.7));
+}
+
+.light .glow-blue {
+  filter: drop-shadow(0 0 10px rgba(45, 85, 155, 0.6));
+}
