@@ -25,5 +25,3 @@ Powershell Integration for Intel IGPU's and ARC (WARNING: MAY TRIGGER AV USE AT 
 1. To create a production for Linux run **```npm run dist:linux```**
 1. To create a production for Mac run **```npm run dist:mac```**
 
-**I hope you find this template useful!** If you want to support me you can-
-[<h1 align="center">!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)</h1>](buymeacoffee.com/rachelbastian)

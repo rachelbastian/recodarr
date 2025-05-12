@@ -59,6 +59,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator
 } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type Workflow = {
   id: string;
@@ -352,6 +353,9 @@ const Workflows: React.FC = () => {
   const [renameInputDescription, setRenameInputDescription] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
 
+  // State for active tab
+  const [activeTab, setActiveTab] = useState<string>("workflows");
+
   // Load workflows from the database
   const loadWorkflows = useCallback(async () => {
     try {
@@ -464,10 +468,39 @@ const Workflows: React.FC = () => {
     }
   }, [loadWorkflows]);
 
-  const handleRun = useCallback((id: string) => {
-    // This would trigger the workflow execution
-    console.log('Run workflow:', id);
-    // TODO: Implement workflow execution
+  const handleRun = useCallback(async (id: string) => {
+    console.log('Attempting to run workflow:', id);
+    try {
+      const workflow = await window.electron.getWorkflow(id);
+      if (!workflow || !workflow.nodes) {
+        toast.error('Could not load workflow details to run.');
+        return;
+      }
+
+      // Find the manual trigger node instance
+      // The template ID is stored in data.id, the instance ID is node.id
+      const manualTriggerNode = workflow.nodes.find(
+        (node: WorkflowNode) => node.data?.id === 'manual-trigger' && node.type === 'trigger'
+      );
+
+      if (manualTriggerNode) {
+        console.log('Found manual trigger node:', manualTriggerNode.id);
+        // Call the new IPC handler with the workflow ID and the *instance ID* of the manual trigger node
+        const result = await window.electron.executeManualWorkflow(id, manualTriggerNode.id);
+        if (result.success) {
+          toast.success(result.message || `Workflow "${workflow.name}" started (simulated).`);
+        } else {
+          toast.error(result.message || 'Failed to start manual workflow.');
+        }
+      } else {
+        toast.warning('This workflow does not have a manual trigger or is not configured correctly to be run manually.');
+        // TODO: Potentially implement execution for other trigger types if desired in the future
+        console.log('No manual trigger node found for this workflow. Current trigger(s):', workflow.nodes.filter((n:WorkflowNode) => n.type === 'trigger'));
+      }
+    } catch (error) {
+      console.error('Error running workflow:', error);
+      toast.error(error instanceof Error ? error.message : 'An unknown error occurred while trying to run the workflow.');
+    }
   }, []);
 
   const handleBack = useCallback(() => {
@@ -493,27 +526,51 @@ const Workflows: React.FC = () => {
       <div className="p-4 border-b flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-semibold">Workflows</h1>
-          <p className="text-muted-foreground">Create and manage your automation workflows</p>
+          <p className="text-muted-foreground">Create, manage, and monitor your automation workflows</p>
         </div>
-        <Button onClick={handleCreateNew} className="bg-white text-gray-800 hover:bg-gray-100 border border-gray-300">
-          <Plus className="mr-2 h-4 w-4" />
-          Create Workflow
-        </Button>
+        {activeTab === "workflows" && (
+          <Button onClick={handleCreateNew} className="bg-white text-gray-800 hover:bg-gray-100 border border-gray-300">
+            <Plus className="mr-2 h-4 w-4" />
+            Create Workflow
+          </Button>
+        )}
       </div>
 
-      <div className="flex-1 overflow-auto">
-        <ScrollArea className="h-full w-full">
-          <WorkflowsList
-            workflows={workflows}
-            isLoading={isLoading}
-            onCreateNew={handleCreateNew}
-            onEdit={handleEdit}
-            onDelete={handleDelete}
-            onRun={handleRun}
-            onRename={handleOpenRenameDialog}
-          />
-        </ScrollArea>
-      </div>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
+        <div className="px-4 pt-2 border-b">
+          <TabsList className="inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground md:w-[300px] w-full">
+            <TabsTrigger value="workflows" className="inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm flex-1">
+              Manage Workflows
+            </TabsTrigger>
+            <div className="h-4 w-px bg-slate-400 mx-1"></div>
+            <TabsTrigger value="logs" className="inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm flex-1">
+              Execution Logs
+            </TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent value="workflows" className="flex-1 overflow-auto mt-0 data-[state=inactive]:hidden">
+          <ScrollArea className="h-full w-full">
+            <WorkflowsList
+              workflows={workflows}
+              isLoading={isLoading}
+              onCreateNew={handleCreateNew}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
+              onRun={handleRun}
+              onRename={handleOpenRenameDialog}
+            />
+          </ScrollArea>
+        </TabsContent>
+
+        <TabsContent value="logs" className="flex-1 overflow-auto p-4 mt-0 data-[state=inactive]:hidden">
+          {/* Placeholder for Execution Logs Table */}
+          <div className="flex flex-col items-center justify-center h-full border-2 border-dashed border-muted rounded-lg">
+            <p className="text-muted-foreground">Execution logs will appear here.</p>
+            <p className="text-sm text-muted-foreground">This feature is under construction.</p>
+          </div>
+        </TabsContent>
+      </Tabs>
       
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
         <DialogContent>

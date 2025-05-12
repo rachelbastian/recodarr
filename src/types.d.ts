@@ -282,7 +282,8 @@ export interface IElectronAPI {
     getWorkflow: (id: string) => Promise<any>;
     saveWorkflow: (workflowData: { id: string; name: string; description?: string | null; nodes: Node[]; edges: Edge[] }) => Promise<any>;
     deleteWorkflow: (id: string) => Promise<boolean>;
-    
+    executeManualWorkflow: (workflowId: string, triggerNodeId: string) => Promise<{ success: boolean; message?: string }>;
+
     // --- Logger API --- 
     subscribeToLogs: (callback: (logEntry: LocalLogEntry) => void) => UnsubscribeFunction;
     getInitialLogs: () => Promise<LocalLogEntry[]>;

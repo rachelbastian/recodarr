@@ -65,14 +65,58 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
       const propertyValue = value;
       const propertyType = typeof propertyValue;
       
-      // Common label props
       const commonLabelProps = { className: "text-sm font-medium mb-1.5" };
       
-      // Infer field type from property value
       switch (propertyType) {
         case 'string':
-          // Special case for multi-line strings
-          if (propertyKey.includes('message') || propertyKey.includes('description')) {
+          // Special handling for 'type' and 'deliveryMethod' properties of the 'send-notification' node type
+          if (data.id === 'send-notification') {
+            if (propertyKey === 'type') {
+              return (
+                <div className="space-y-1" key={propertyKey}>
+                  <Label htmlFor={`node-prop-${propertyKey}`} {...commonLabelProps}>Notification Type</Label>
+                  <Select 
+                    value={propertyValue as string || 'info'} 
+                    onValueChange={(val) => handlePropertyChange(propertyKey, val)}
+                  >
+                    <SelectTrigger id={`node-prop-${propertyKey}`}>
+                      <SelectValue placeholder="Select notification type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="info">Info</SelectItem>
+                      <SelectItem value="success">Success</SelectItem>
+                      <SelectItem value="warning">Warning</SelectItem>
+                      <SelectItem value="error">Error</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Controls the appearance of in-app notifications.</p>
+                </div>
+              );
+            } else if (propertyKey === 'deliveryMethod') {
+              return (
+                <div className="space-y-1" key={propertyKey}>
+                  <Label htmlFor={`node-prop-${propertyKey}`} {...commonLabelProps}>Delivery Method</Label>
+                  <Select 
+                    value={propertyValue as string || 'in-app'} 
+                    onValueChange={(val) => handlePropertyChange(propertyKey, val)}
+                  >
+                    <SelectTrigger id={`node-prop-${propertyKey}`}>
+                      <SelectValue placeholder="Select delivery method" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="in-app">In-app Notification</SelectItem>
+                      <SelectItem value="native-electron">Native Electron Toast</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Choose how the notification is delivered.</p>
+                </div>
+              );
+            } // For other string properties of 'send-notification' like 'title' or 'message', they will fall through to general string handling below
+          }
+          
+          // General string property rendering (handles title, message, description, paths, etc. for all nodes)
+          // This will also catch any string properties of 'send-notification' not handled above (e.g. title, message)
+          if (propertyKey.includes('message') || propertyKey.includes('description') || propertyKey === 'title') {
             return (
               <div className="space-y-1" key={propertyKey}>
                 <Label htmlFor={propertyKey} {...commonLabelProps}>

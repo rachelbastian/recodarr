@@ -49,6 +49,17 @@ const nodeTypes: NodeTypes = {
   condition: ConditionNode,
 };
 
+// Define default edge options for consistent styling
+const defaultEdgeOptions = {
+  animated: false,
+  style: {
+    stroke: '#00CED1', 
+    strokeWidth: 2,
+    filter: 'drop-shadow(0 0 5px #7FFFD4) drop-shadow(0 0 10px #48D1CC)', 
+  },
+  markerEnd: { type: MarkerType.ArrowClosed, color: '#00CED1' },
+};
+
 interface WorkflowCanvasProps {
   onNodeSelect: (node: WorkflowNode | null) => void;
   selectedNode: WorkflowNode | null;
@@ -95,7 +106,8 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
         if (workflow) {
           setWorkflowName(workflow.name);
           setNodes(workflow.nodes || []);
-          setEdges(workflow.edges || []);
+          // Apply default styles to loaded edges
+          setEdges((workflow.edges || []).map((edge: Edge) => ({ ...defaultEdgeOptions, ...edge })));
           setHasChanges(false);
         }
       } catch (error) {
@@ -264,15 +276,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
       target: newNodeId,
       sourceHandle: parentHandleId || undefined,
       targetHandle: `${newNodeId}-in`,
-      animated: false, // Changed for solid lines
-      style: { 
-        stroke: '#00CED1', // Turquoise Blue
-        strokeWidth: 2,
-        filter: 'drop-shadow(0 0 3px #AFEEEE) drop-shadow(0 0 8px #40E0D0)', // Turquoise gradient glow
-      },
-      pathOptions: { borderRadius: 0 }, // Sharp corners for StepEdge
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#00CED1' }, // Turquoise Blue
-      type: ConnectionLineType.Step, // Changed for 90-degree lines
+      ...defaultEdgeOptions, // Spread default options
     };
     
     // Save current state to undo stack
@@ -310,15 +314,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
       setEdges(eds => 
         addEdge({
           ...connection,
-          animated: false, // Changed for solid lines
-          style: { 
-            stroke: '#00CED1', // Turquoise Blue
-            strokeWidth: 2,
-            filter: 'drop-shadow(0 0 3px #AFEEEE) drop-shadow(0 0 8px #40E0D0)', // Turquoise gradient glow
-          },
-          pathOptions: { borderRadius: 0 }, // Sharp corners for StepEdge
-          markerEnd: { type: MarkerType.ArrowClosed, color: '#00CED1' }, // Turquoise Blue
-          type: ConnectionLineType.Step, // Changed for 90-degree lines
+          ...defaultEdgeOptions, // Spread default options
         }, eds)
       );
       setHasChanges(true);
@@ -424,7 +420,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
         truePathNodes.forEach((childId, index) => {
           positionBranch(
             childId,
-            x - (nodeWidth / 2) - (horizontalGap / 2), // Adjusted for condition branch centering
+            x - (nodeWidth * 2.5 + horizontalGap * 2.5), // Increased offset for true branch to 2.5x
             y + nodeHeight + verticalGap + (index * (nodeHeight + verticalGap / 2)),
             depth + 1,
             'true'
@@ -435,7 +431,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
         falsePathNodes.forEach((childId, index) => {
           positionBranch(
             childId,
-            x + (nodeWidth / 2) + (horizontalGap / 2), // Adjusted for condition branch centering
+            x + (nodeWidth * 2.5 + horizontalGap * 2.5), // Increased offset for false branch to 2.5x
             y + nodeHeight + verticalGap + (index * (nodeHeight + verticalGap / 2)),
             depth + 1,
             'false'
@@ -517,15 +513,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
         target: outgoingEdge.target,
         sourceHandle: incomingEdge.sourceHandle || `${incomingEdge.source}-out`,
         targetHandle: outgoingEdge.targetHandle || `${outgoingEdge.target}-in`,
-        animated: false,
-        style: { 
-          stroke: '#00CED1', // Turquoise Blue
-          strokeWidth: 2,
-          filter: 'drop-shadow(0 0 3px #AFEEEE) drop-shadow(0 0 8px #40E0D0)', // Turquoise gradient glow
-        },
-        pathOptions: { borderRadius: 0 }, // Sharp corners for StepEdge
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#00CED1' }, // Turquoise Blue
-        type: ConnectionLineType.Step,
+        ...defaultEdgeOptions, // Spread default options
       });
     }
     
@@ -584,7 +572,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
         nodeTypes={nodeTypes}
         fitView
         snapToGrid
-        connectionLineType={ConnectionLineType.Step} // Changed for 90-degree lines
+        connectionLineType={ConnectionLineType.Bezier} // Changed for curved lines during creation
         snapGrid={[20, 20]}
         defaultViewport={{ x: 0, y: 0, zoom: 1 }}
         minZoom={0.1}

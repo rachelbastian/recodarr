@@ -102,7 +102,8 @@ export const ALL_NODES = [
     properties: {
       title: '',
       message: '',
-      type: 'info' // info, success, warning, error
+      type: 'info', // info, success, warning, error
+      deliveryMethod: 'in-app' // new property: 'in-app' or 'native-electron'
     }
   },
   
