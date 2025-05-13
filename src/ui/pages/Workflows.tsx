@@ -41,7 +41,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatInTimeZone } from 'date-fns-tz';
 import { v4 as uuidv4 } from 'uuid';
@@ -60,6 +60,23 @@ import {
   DropdownMenuSeparator
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { 
+    ColumnDef,
+    flexRender,
+    getCoreRowModel,
+    useReactTable,
+    SortingState,
+    getSortedRowModel,
+} from '@tanstack/react-table';
 
 type Workflow = {
   id: string;
@@ -68,6 +85,18 @@ type Workflow = {
   created_at: string;
   updated_at: string;
   is_active: boolean;
+};
+
+// Define type for execution logs based on backend handler
+type ExecutionLog = {
+  id: string; // Execution ID (UUID)
+  workflow_id: string;
+  workflow_name: string;
+  started_at: string;
+  completed_at: string | null;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  error_message: string | null;
+  trigger_node_id: string;
 };
 
 const WorkflowEditor: React.FC<{
@@ -337,6 +366,94 @@ const WorkflowsList: React.FC<{
   );
 };
 
+// Helper function to calculate duration
+const calculateDuration = (start: string, end: string | null): string => {
+  if (!end) return '-';
+  const startDate = new Date(start + 'Z'); // Assume UTC if no timezone
+  const endDate = new Date(end + 'Z');
+  const diffMs = endDate.getTime() - startDate.getTime();
+  if (diffMs < 0) return '-';
+
+  const seconds = Math.floor(diffMs / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+
+  if (hours > 0) return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+  if (seconds > 0) return `${seconds}s`;
+  return `${diffMs}ms`; // Show milliseconds for very short durations
+};
+
+// Define columns for the Execution Logs table
+const executionLogColumns: ColumnDef<ExecutionLog>[] = [
+  {
+    accessorKey: 'status',
+    header: 'Status',
+    cell: info => {
+      const status = info.getValue<string>();
+      let variant: "default" | "secondary" | "destructive" | "outline" = 'secondary';
+      if (status === 'completed') variant = 'default';
+      if (status === 'failed' || status === 'error') variant = 'destructive';
+      if (status === 'running') variant = 'outline';
+
+      return <Badge variant={variant} className="capitalize">{status}</Badge>;
+    },
+    size: 100,
+  },
+  {
+    accessorKey: 'workflow_name',
+    header: 'Workflow Name',
+    cell: info => <span className="font-medium">{info.getValue<string>()}</span>,
+    size: 250,
+  },
+  {
+    accessorKey: 'started_at',
+    header: 'Started At',
+    cell: info => {
+      const userTimeZone = 'America/Chicago'; // Consider making this configurable
+      return formatInTimeZone(new Date(info.getValue<string>() + 'Z'), userTimeZone, 'MMM d, hh:mm:ss a');
+    },
+    size: 180,
+  },
+  {
+    id: 'duration',
+    header: 'Duration',
+    accessorFn: row => calculateDuration(row.started_at, row.completed_at),
+    cell: info => info.getValue(),
+    size: 100,
+  },
+  {
+    accessorKey: 'error_message',
+    header: 'Result / Error',
+    cell: info => {
+        const error = info.getValue<string | null>();
+        return error ? (
+            <TooltipProvider>
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <span className="text-red-600 truncate block cursor-help" title={error}>
+                            {error}
+                        </span>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-md break-words">
+                        <p>{error}</p>
+                    </TooltipContent>
+                </Tooltip>
+            </TooltipProvider>
+        ) : (
+            <span className="text-green-600">Completed</span>
+        );
+    },
+    size: 300, // Allow more space for errors
+  },
+  {
+    accessorKey: 'id',
+    header: 'Execution ID',
+    cell: info => <span className="text-xs text-muted-foreground font-mono" title={info.getValue<string>()}>{info.getValue<string>().substring(0, 8)}...</span>,
+    size: 120,
+  },
+];
+
 const Workflows: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -345,16 +462,18 @@ const Workflows: React.FC = () => {
   const [newWorkflowName, setNewWorkflowName] = useState('');
   const [newWorkflowDescription, setNewWorkflowDescription] = useState('');
   const [isSaving, setIsSaving] = useState(false);
-
-  // State for Rename Dialog
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [renamingWorkflow, setRenamingWorkflow] = useState<Workflow | null>(null);
   const [renameInputName, setRenameInputName] = useState('');
   const [renameInputDescription, setRenameInputDescription] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
-
-  // State for active tab
   const [activeTab, setActiveTab] = useState<string>("workflows");
+  const [executionLogs, setExecutionLogs] = useState<ExecutionLog[]>([]);
+  const [isLogsLoading, setIsLogsLoading] = useState<boolean>(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [logSorting, setLogSorting] = useState<SortingState>([
+    { id: 'started_at', desc: true } // Default sort by start time descending
+  ]);
 
   // Load workflows from the database
   const loadWorkflows = useCallback(async () => {
@@ -372,6 +491,40 @@ const Workflows: React.FC = () => {
   useEffect(() => {
     loadWorkflows();
   }, [loadWorkflows]);
+
+  // Fetch execution logs when the logs tab is active
+  useEffect(() => {
+    const fetchLogs = async () => {
+      if (activeTab === 'logs') {
+        setIsLogsLoading(true);
+        setLogsError(null);
+        try {
+          const logs = await window.electron.getWorkflowExecutions(100); // Fetch last 100 executions
+          setExecutionLogs(logs);
+        } catch (error) {
+          console.error("Error fetching execution logs:", error);
+          setLogsError(error instanceof Error ? error.message : "Failed to load execution logs.");
+          setExecutionLogs([]); // Clear logs on error
+        }
+        setIsLogsLoading(false);
+      }
+    };
+
+    fetchLogs();
+  }, [activeTab]); // Re-run when activeTab changes
+
+  // Instantiate the table for Execution Logs
+  const logsTable = useReactTable({
+    data: executionLogs,
+    columns: executionLogColumns,
+    state: {
+      sorting: logSorting,
+    },
+    onSortingChange: setLogSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    manualSorting: false, // Frontend sorting is fine for moderate log counts
+  });
 
   const handleCreateNew = useCallback(() => {
     setNewWorkflowName('');
@@ -563,12 +716,64 @@ const Workflows: React.FC = () => {
           </ScrollArea>
         </TabsContent>
 
-        <TabsContent value="logs" className="flex-1 overflow-auto p-4 mt-0 data-[state=inactive]:hidden">
-          {/* Placeholder for Execution Logs Table */}
-          <div className="flex flex-col items-center justify-center h-full border-2 border-dashed border-muted rounded-lg">
-            <p className="text-muted-foreground">Execution logs will appear here.</p>
-            <p className="text-sm text-muted-foreground">This feature is under construction.</p>
-          </div>
+        <TabsContent value="logs" className="flex-1 overflow-auto mt-0 data-[state=inactive]:hidden">
+          {isLogsLoading ? (
+            <div className="flex items-center justify-center h-full">
+              <p>Loading logs...</p>
+            </div>
+          ) : logsError ? (
+            <div className="flex items-center justify-center h-full text-red-600">
+              <p>Error: {logsError}</p>
+            </div>
+          ) : executionLogs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full border-2 border-dashed border-muted rounded-lg">
+              <p className="text-muted-foreground">No execution logs found.</p>
+            </div>
+          ) : (
+            <div className="p-4 h-full">
+              <ScrollArea className="h-full w-full rounded-md border">
+                <Table>
+                  <TableHeader>
+                    {logsTable.getHeaderGroups().map(headerGroup => (
+                      <TableRow key={headerGroup.id}>
+                        {headerGroup.headers.map(header => (
+                          <TableHead 
+                            key={header.id}
+                            style={{ width: header.getSize() !== 150 ? header.getSize() : undefined }} // Use size if not default
+                            className={`sticky top-0 bg-muted ${header.column.getCanSort() ? 'cursor-pointer select-none' : ''}`}
+                            onClick={header.column.getToggleSortingHandler()}
+                          >
+                            {header.isPlaceholder
+                              ? null
+                              : flexRender(
+                                  header.column.columnDef.header,
+                                  header.getContext()
+                                )}
+                            {{
+                              asc: ' ▲',
+                              desc: ' ▼',
+                            }[header.column.getIsSorted() as string] ?? null}
+                          </TableHead>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableHeader>
+                  <TableBody>
+                    {logsTable.getRowModel().rows.map(row => (
+                      <TableRow key={row.id}>
+                        {row.getVisibleCells().map(cell => (
+                          <TableCell key={cell.id} style={{ width: cell.column.getSize() !== 150 ? cell.column.getSize() : undefined }}>
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <ScrollBar orientation="vertical" />
+              </ScrollArea>
+            </div>
+          )}
         </TabsContent>
       </Tabs>
       
@@ -631,11 +836,10 @@ const Workflows: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Rename Workflow Dialog */}
       {renamingWorkflow && (
         <Dialog open={showRenameDialog} onOpenChange={(isOpen) => {
           if (!isOpen) {
-            setRenamingWorkflow(null); // Clear selection when dialog is closed
+            setRenamingWorkflow(null);
           }
           setShowRenameDialog(isOpen);
         }}>

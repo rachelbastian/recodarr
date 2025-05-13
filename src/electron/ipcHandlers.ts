@@ -295,20 +295,31 @@ export function registerAppIpcHandlers(
     ipcMainInstance.handle('execute-manual-workflow', async (_event, workflowId: string, triggerNodeId: string) => {
         console.log(`Manual run request received: workflow=${workflowId}, trigger=${triggerNodeId}`);
         const currentDb = getDbInstance();
+        const executionId = crypto.randomUUID(); // Generate a unique ID for this execution
 
         try {
-            // Call the dedicated workflow executor
-            const result = await executeWorkflow(workflowId, triggerNodeId, currentDb, mainWindowInstance);
-            console.log(`Workflow execution result: Success=${result.success}, Message=${result.message}`);
-            return result; // Return the result from the executor
+            // Call the dedicated workflow executor, now passing the executionId
+            const result = await executeWorkflow(workflowId, triggerNodeId, currentDb, mainWindowInstance, executionId);
+            console.log(`Workflow execution result: Success=${result.success}, Message=${result.message}, ExecutionID=${executionId}`);
+            return { ...result, executionId }; // Return the result from the executor, including executionId
 
         } catch (error) {
             // Catch any unexpected errors during the executor call itself
             const errorMsg = error instanceof Error ? error.message : String(error);
-            console.error(`Critical error during manual workflow execution for ${workflowId}:`, error);
+            console.error(`Critical error during manual workflow execution for ${workflowId} (ExecutionID: ${executionId}):`, error);
+            
+            // Attempt to log failure to DB even if executeWorkflow itself failed catastrophically before it could log
+            try {
+                currentDb.prepare(
+                    'INSERT INTO workflow_executions (id, workflow_id, trigger_node_id, started_at, completed_at, status, error_message) VALUES (?, ?, ?, datetime(\'now\'), datetime(\'now\'), ?, ?)'
+                ).run(executionId, workflowId, triggerNodeId, 'error', `Critical executor error: ${errorMsg}`);
+            } catch (dbError) {
+                console.error(`Failed to log critical executor error to DB for ExecutionID ${executionId}:`, dbError);
+            }
+
             // Attempt to notify UI if possible
-            mainWindowInstance?.webContents.send('workflow-status', { workflowId, status: 'error', message: `Critical Error: ${errorMsg}` });
-            return { success: false, message: `Critical error executing workflow: ${errorMsg}` };
+            mainWindowInstance?.webContents.send('workflow-status', { workflowId, executionId, status: 'error', message: `Critical Error: ${errorMsg}` });
+            return { success: false, message: `Critical error executing workflow: ${errorMsg}`, executionId };
         }
     });
 

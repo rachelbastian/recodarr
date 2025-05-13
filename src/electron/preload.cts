@@ -189,6 +189,9 @@ type LocalElectronApi = {
     deleteWorkflow: (id: string) => Promise<boolean>;
     executeManualWorkflow: (workflowId: string, triggerNodeId: string) => Promise<{ success: boolean; message?: string }>;
 
+    // --- Workflow Execution Logs ---
+    getWorkflowExecutions: (limit?: number) => Promise<any[]>;
+
     // --- Encoding Presets --- 
     getPresets: () => Promise<EncodingPreset[]>;
     savePreset: (preset: EncodingPreset) => Promise<string>;
@@ -262,6 +265,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
     saveWorkflow: (workflowData: { id: string; name: string; description?: string | null; nodes: Node[]; edges: Edge[] }) => ipcInvoke('save-workflow', workflowData),
     deleteWorkflow: (id: string) => ipcInvoke('delete-workflow', id),
     executeManualWorkflow: (workflowId: string, triggerNodeId: string) => ipcInvoke('execute-manual-workflow', workflowId, triggerNodeId),
+
+    // --- Workflow Execution Logs ---
+    getWorkflowExecutions: (limit: number = 50) => ipcInvoke('get-workflow-executions', limit),
     
     // --- Encoding Preset Implementations ---
     getPresets: () => ipcInvoke('get-presets'),

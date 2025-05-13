@@ -136,8 +136,8 @@ async function checkAndMigrateWorkflowTables(db: Database.Database): Promise<voi
 
                 -- Workflow execution history
                 CREATE TABLE workflow_executions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    workflow_id TEXT NOT NULL, -- Changed to TEXT
+                    id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL,
                     started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     completed_at DATETIME,
                     status TEXT CHECK( status IN ('running', 'completed', 'failed', 'cancelled') ),
@@ -342,10 +342,52 @@ export async function initializeDatabase(appGetPath: GetPathFn): Promise<Databas
         console.log("[DB Setup] Ensuring workflow-related tables (migration will handle specifics)...");
         // Initial minimal creation, migration handles the rest
         newDb.exec(`
-            CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, name TEXT);
-            CREATE TABLE IF NOT EXISTS workflow_nodes (id INTEGER PRIMARY KEY, workflow_id TEXT);
-            CREATE TABLE IF NOT EXISTS workflow_edges (id INTEGER PRIMARY KEY, workflow_id TEXT);
-            CREATE TABLE IF NOT EXISTS workflow_executions (id INTEGER PRIMARY KEY, workflow_id TEXT);
+            CREATE TABLE IF NOT EXISTS workflows (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT 1,
+                last_triggered_at DATETIME,
+                UNIQUE(name)
+            );
+            CREATE TABLE IF NOT EXISTS workflow_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                node_type TEXT NOT NULL,
+                label TEXT NOT NULL,
+                description TEXT,
+                position_x REAL NOT NULL,
+                position_y REAL NOT NULL,
+                data JSON,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                UNIQUE(workflow_id, node_id)
+            );
+            CREATE TABLE IF NOT EXISTS workflow_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workflow_id TEXT NOT NULL,
+                edge_id TEXT NOT NULL,
+                source_node_id TEXT NOT NULL,
+                target_node_id TEXT NOT NULL,
+                source_handle TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                UNIQUE(workflow_id, edge_id)
+            );
+            CREATE TABLE IF NOT EXISTS workflow_executions (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_at DATETIME,
+                status TEXT CHECK( status IN ('running', 'completed', 'failed', 'cancelled') ),
+                error_message TEXT,
+                trigger_node_id TEXT NOT NULL,
+                execution_data JSON,
+                FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+            );
         `);
 
 
