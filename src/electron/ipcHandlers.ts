@@ -88,11 +88,36 @@ export function registerAppIpcHandlers(
 
     ipcMainInstance.handle('remove-watched-folder', async (_event, folderPath: string): Promise<void> => {
         const currentFolders = storeInstance.get('watchedFolders', []) as WatchedFolder[];
+        const folderToRemove = currentFolders.find(f => f.path === folderPath);
+
+        if (!folderToRemove) {
+            console.warn(`Attempted to remove non-existent watched folder: ${folderPath}`);
+            return;
+        }
+
+        const libraryNameToRemove = folderToRemove.libraryName;
+
         const updatedFolders = currentFolders.filter(f => f.path !== folderPath);
-        if (currentFolders.length === updatedFolders.length) { console.warn(`Attempted to remove non-existent watched folder: ${folderPath}`); return; }
         storeInstance.set('watchedFolders', updatedFolders);
-        if (fileWatcherRef.instance) fileWatcherRef.instance.unwatchPath(folderPath);
-        console.log(`Removed watched folder: ${folderPath}`);
+
+        if (fileWatcherRef.instance) {
+            fileWatcherRef.instance.unwatchPath(folderPath);
+        }
+        console.log(`Removed watched folder from store and watcher: ${folderPath}`);
+
+        // Now, remove associated media items from the database
+        if (libraryNameToRemove) {
+            try {
+                const currentDb = getDbInstance(); // Ensure you have access to the DB instance
+                const result = currentDb.prepare('DELETE FROM media WHERE libraryName = ?').run(libraryNameToRemove);
+                console.log(`Removed ${result.changes} media items from database for library: ${libraryNameToRemove}`);
+            } catch (dbError) {
+                console.error(`Error removing media items from database for library ${libraryNameToRemove}:`, dbError);
+                // Decide if you want to throw an error here or just log it
+            }
+        } else {
+            console.warn(`Could not determine libraryName for folderPath: ${folderPath}. Media items in DB might not be cleaned up if they were associated with a different name structure.`);
+        }
     });
 
     // GPU and System Settings

@@ -114,6 +114,10 @@ const WorkflowEditor: React.FC<{
         ...selectedNode,
         data,
       });
+      // Dispatch an event that WorkflowCanvas can listen to
+      window.dispatchEvent(new CustomEvent('nodeDataChanged', {
+        detail: { nodeId, data }
+      }));
     }
   };
 
@@ -492,6 +496,50 @@ const Workflows: React.FC = () => {
     loadWorkflows();
   }, [loadWorkflows]);
 
+  // Effect to listen for toast notifications from the main process
+  useEffect(() => {
+    const unsubscribe = window.electron.subscribeToLogs((logEntry: any) => {
+      // This is an example if you had a generic log subscription
+      // For specific toast, we need a dedicated listener or a type check on logEntry
+    });
+
+    // Dedicated listener for toast notifications
+    const handleShowToast = ({ title, type, message }: { title: string; type: 'info' | 'success' | 'warning' | 'error'; message: string }) => {
+      console.log(`[Workflows.tsx] Received toast: ${type} - ${title}: ${message}`);
+      switch (type) {
+        case 'success':
+          toast.success(message, { description: title });
+          break;
+        case 'error':
+          toast.error(message, { description: title });
+          break;
+        case 'warning':
+          toast.warning(message, { description: title });
+          break;
+        case 'info':
+        default:
+          toast.info(message, { description: title });
+          break;
+      }
+    };
+
+    // Assuming you have a generic way to subscribe to IPC events or a specific one for this toast
+    // For now, let's assume a generic `on` method on window.electron or a specific new method needs to be added to preload
+    // If window.electron.on is not available, this needs to be setup in preload.cts
+    // Example using a hypothetical window.electron.on method:
+    // const unsubscribeToast = window.electron.on('show-toast-notification', handleShowToast);
+
+    // If you create a specific subscription method in preload.cts like subscribeToToastNotifications:
+    const unsubscribeToast = window.electron.onShowToastNotification(handleShowToast);
+
+
+    return () => {
+      unsubscribe(); // Cleanup generic log subscription if it was used
+      // if (unsubscribeToast) unsubscribeToast(); // Cleanup specific toast subscription
+      unsubscribeToast(); // Cleanup specific toast subscription
+    };
+  }, []);
+
   // Fetch execution logs when the logs tab is active
   useEffect(() => {
     const fetchLogs = async () => {
@@ -669,7 +717,7 @@ const Workflows: React.FC = () => {
           workflowId={activeWorkflowId} 
           onBack={handleBack}
         />
-        <Toaster position="bottom-right" />
+        {/* <Toaster position="bottom-right" /> */}
       </ReactFlowProvider>
     );
   }

@@ -56,12 +56,20 @@ export async function addMediaToDb(
         audioChannels = audioStream?.channels ?? null;
     }
 
+    // --- NEW LOGIC TO CHECK FOR OUR METADATA TAG ---
+    let determinedEncodingJobId: string | null = null;
+    if (probeData.format.tags && probeData.format.tags.PROCESSED_BY === 'Recodarr') {
+        determinedEncodingJobId = 'APP_ENCODED_TAG'; // This will mark it as "Processed"
+        console.log(`[Scanner] File ${filePath} contains PROCESSED_BY Recodarr tag. Setting encodingJobId.`);
+    }
+    // --- END OF NEW LOGIC ---
+
     try {
         // First check if the file already exists in the database
-        const existingFile = db.prepare('SELECT id, originalSize FROM media WHERE filePath = ?').get(filePath) as { id: number; originalSize: number } | undefined;
+        const existingFile = db.prepare('SELECT id, originalSize, encodingJobId FROM media WHERE filePath = ?').get(filePath) as { id: number; originalSize: number; encodingJobId: string | null } | undefined;
 
         if (existingFile) {
-            // Update currentSize and lastSizeCheckAt for existing file
+            // Update currentSize, lastSizeCheckAt, and potentially encodingJobId for existing file
             const updateSql = `
                 UPDATE media 
                 SET currentSize = ?, 
@@ -70,20 +78,23 @@ export async function addMediaToDb(
                     audioCodec = ?,
                     resolutionWidth = ?,
                     resolutionHeight = ?,
-                    audioChannels = ?
+                    audioChannels = ?,
+                    encodingJobId = ? 
                 WHERE id = ?
             `;
             const updateStmt = db.prepare(updateSql);
-            updateStmt.run(fileSize, videoCodec, audioCodec, resolutionWidth, resolutionHeight, audioChannels, existingFile.id);
-            console.log(`Updated size for existing file: ${title}`);
+            // Only update encodingJobId if it's newly determined or if the existing one is null
+            const finalEncodingJobId = determinedEncodingJobId ?? existingFile.encodingJobId;
+            updateStmt.run(fileSize, videoCodec, audioCodec, resolutionWidth, resolutionHeight, audioChannels, finalEncodingJobId, existingFile.id);
+            console.log(`Updated existing file: ${title} - encodingJobId set to: ${finalEncodingJobId}`);
         } else {
             // Insert new file with both originalSize and currentSize set to the current size
             const insertSql = `
                 INSERT INTO media (
                     title, filePath, originalSize, currentSize,
                     videoCodec, audioCodec, libraryName, libraryType,
-                    resolutionWidth, resolutionHeight, audioChannels
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    resolutionWidth, resolutionHeight, audioChannels, encodingJobId
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
             const insertStmt = db.prepare(insertSql);
             const info = insertStmt.run(
@@ -97,7 +108,8 @@ export async function addMediaToDb(
                 libraryType,
                 resolutionWidth,
                 resolutionHeight,
-                audioChannels
+                audioChannels,
+                determinedEncodingJobId // Use the determined value here
             );
             if (info.changes > 0) {
                 console.log(`Added to DB: ${title} (${libraryName})`);

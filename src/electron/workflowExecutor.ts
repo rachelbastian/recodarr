@@ -1,31 +1,39 @@
 import Database from 'better-sqlite3';
 import { BrowserWindow } from 'electron';
-import { getDbInstance } from './dbUtils.js'; // Assuming dbUtils exports this
-import { Node, Edge } from 'reactflow';
 
-// Define interfaces for workflow elements (could be shared)
+// Define interfaces for workflow elements
 interface WorkflowNodeData {
-    id: string;         // Template ID (e.g., 'manual-trigger', 'encode-h265')
+    id: string;         // Template ID (e.g., 'manual-trigger', 'send-notification')
     label: string;
     description?: string;
-    icon?: any; // Or specific type
-    type: 'trigger' | 'action' | 'condition';
+    icon?: any; 
+    type: 'trigger' | 'action' | 'condition'; // This is the template node type, not ReactFlow's
     properties: Record<string, any>;
 }
 
 interface WorkflowNode {
-    id: string;         // Instance ID (unique within the workflow)
-    type: 'trigger' | 'action' | 'condition';
-    position: { x: number; y: number };
-    data: WorkflowNodeData;
+    id: string;         // Instance ID (unique within the workflow, used by ReactFlow)
+    type?: string;       // Node type for ReactFlow (e.g., 'customTrigger', 'customAction') - can be different from data.type
+    position: { x: number; y: number }; // Use inline type definition
+    data: WorkflowNodeData; // Our custom data payload
+    // ReactFlow specific optional properties (add if used, e.g. from reactflow's Node type)
+    sourcePosition?: string; // e.g., 'bottom' | 'top' | 'left' | 'right'
+    targetPosition?: string; 
+    draggable?: boolean;
+    selectable?: boolean;
+    connectable?: boolean;
+    // ... other ReactFlow Node properties as needed
 }
 
 interface WorkflowEdge {
     id: string;
-    source: string;
-    target: string;
+    source: string;         // Source node instance ID
+    target: string;         // Target node instance ID
     sourceHandle?: string | null;
     targetHandle?: string | null;
+    type?: string;           // Edge type for ReactFlow (e.g., 'customEdge')
+    animated?: boolean;
+    // ... other ReactFlow Edge properties as needed
 }
 
 interface WorkflowExecutionResult {
@@ -37,78 +45,88 @@ interface WorkflowExecutionResult {
 }
 
 interface ExecutionContext {
-    // Data passed between nodes can be stored here
-    // For example: filePath, encodingOptions, etc.
     [key: string]: any;
+    errors: string[]; 
 }
 
-// Define a more specific type for workflow data if possible
 interface WorkflowData {
     id: string;
     name: string;
-    nodes: Node[];
-    edges: Edge[];
-    // other properties like description, created_at, etc.
+    nodes: WorkflowNode[];
+    edges: WorkflowEdge[];
 }
 
 interface ExecutionResult {
     success: boolean;
     message: string;
-    executionId: string; // Added executionId here
+    executionId: string;
 }
 
-// Placeholder for actual node action execution
-async function executeNodeAction(node: WorkflowNode, context: ExecutionContext, db: Database.Database, mainWindow: BrowserWindow | null): Promise<ExecutionContext> {
-    console.log(`[Workflow Executor] Executing action for node ${node.id} (Type: ${node.data.id}, Label: "${node.data.label}")`);
-    // --- Actual Action Logic Would Go Here ---
-    // Based on node.data.id, perform the specific action (e.g., start encoding, check condition)
-    // Update the context object with results if necessary
+// Refined executeNodeAction
+async function executeNodeAction(
+    node: WorkflowNode, // Use the revised WorkflowNode type
+    context: ExecutionContext,
+    _db: Database.Database, 
+    mainWindow: BrowserWindow | null
+): Promise<ExecutionContext> {
+    console.log(`[WorkflowExecutor] Executing action for node ${node.id} (Template ID: ${node.data.id}, Label: "${node.data.label}")`);
+    const newContext = { ...context };
 
-    // Example: Simulate an action based on node ID
-    switch (node.data.id) {
-        case 'manual-trigger':
-            console.log(`   Action: Manual trigger initiated.`);
-            // Add initial context if needed, e.g., context.triggerTime = new Date();
-            break;
-        case 'encode-h265': // Example action ID
-            console.log(`   Action: Simulate H.265 encoding.`);
-            // context.outputFilePath = "simulated/output/path.mkv";
-            await new Promise(resolve => setTimeout(resolve, 500)); // Simulate work
-            break;
-        case 'log-message': // Example action ID
-            console.log(`   Action: Log message - ${node.data.properties?.message || 'No message configured'}`);
-            break;
-        // Add cases for other node types (conditions, other actions)
-        default:
-            console.warn(`   Action: No specific action implemented for node type "${node.data.id}". Skipping.`);
+    try {
+        // Access properties from node.data.properties
+        // Access template ID from node.data.id
+        switch (node.data.id) { // Switch on the template ID
+            case 'manual-trigger':
+                console.log(`   Action: Manual trigger processed for workflow.`);
+                break;
+
+            case 'send-notification':
+                const { 
+                    message = 'Default notification message',
+                    type = 'info', 
+                    title = 'Workflow Notification'
+                } = node.data.properties || {};
+                
+                console.log(`   Action: Sending notification - Title: "${title}", Type: ${type}, Message: "${message}"`);
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('show-toast-notification', { title, type, message });
+                }
+                break;
+            
+            default:
+                console.warn(`   Action: No specific action implemented for template ID "${node.data.id}". Skipping.`);
+                newContext.errors.push(`No action for template ID ${node.data.id} (Node Label: ${node.data.label})`);
+        }
+    } catch (actionError) {
+        console.error(`   Error executing action for node ${node.id} (${node.data.label}):`, actionError);
+        newContext.errors.push(`Action failed for ${node.data.label}: ${(actionError as Error).message}`);
     }
-
-    // Simulate potential failure for testing
-    if (node.data.properties?.simulateError) {
-         throw new Error(`Simulated error in node "${node.data.label}" (${node.id})`);
-    }
-
-    return context; // Return updated context
+    
+    return newContext;
 }
 
-// Mock function for getting workflow details - replace with actual DB call
 async function getWorkflowDetailsFromDb(workflowId: string, db: Database.Database): Promise<WorkflowData | null> {
     const workflowRow = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as any;
     if (!workflowRow) return null;
 
+    // In db, node_type is the ReactFlow type (e.g. 'trigger', 'action')
+    // node.data.type is the template node type ('trigger', 'action', 'condition')
     const nodesRaw = db.prepare('SELECT node_id, node_type, position_x, position_y, data FROM workflow_nodes WHERE workflow_id = ?').all(workflowId) as any[];
-    const edgesRaw = db.prepare('SELECT edge_id, source_node_id, target_node_id FROM workflow_edges WHERE workflow_id = ?').all(workflowId) as any[];
+    const edgesRaw = db.prepare('SELECT edge_id, source_node_id, target_node_id, source_handle FROM workflow_edges WHERE workflow_id = ?').all(workflowId) as any[];
 
-    const nodes: Node[] = nodesRaw.map(n => ({
-        id: n.node_id,
-        type: n.node_type,
-        position: { x: n.position_x, y: n.position_y },
-        data: JSON.parse(n.data || '{}')
+    const nodes: WorkflowNode[] = nodesRaw.map(n => ({
+        id: n.node_id,       // This is the instance ID for ReactFlow
+        type: n.node_type,    // This is the ReactFlow node type (e.g., 'triggerNode', 'actionNode')
+        position: { x: Number(n.position_x), y: Number(n.position_y) }, // Still cast to number
+        data: JSON.parse(n.data || '{}') as WorkflowNodeData, // Contains templateId, label, properties, etc.
     }));
-    const edges: Edge[] = edgesRaw.map(e => ({
+
+    const edges: WorkflowEdge[] = edgesRaw.map(e => ({
         id: e.edge_id,
         source: e.source_node_id,
         target: e.target_node_id,
+        sourceHandle: e.source_handle || undefined,
+        // type: e.edge_type, // if you store custom edge types
     }));
 
     return {
@@ -122,14 +140,13 @@ async function getWorkflowDetailsFromDb(workflowId: string, db: Database.Databas
 export async function executeWorkflow(
     workflowId: string,
     triggerNodeId: string,
-    db: Database.Database, // Assuming DB is passed
+    db: Database.Database,
     mainWindow: BrowserWindow | null,
-    executionId: string // New parameter
+    executionId: string
 ): Promise<ExecutionResult> {
     console.log(`[WorkflowExecutor] Starting execution for workflow: ${workflowId}, trigger: ${triggerNodeId}, execution ID: ${executionId}`);
     mainWindow?.webContents.send('workflow-status', { workflowId, executionId, status: 'starting', message: 'Workflow starting...' });
 
-    // Log start of execution
     try {
         db.prepare(
             `INSERT INTO workflow_executions (id, workflow_id, trigger_node_id, started_at, status)
@@ -137,73 +154,99 @@ export async function executeWorkflow(
         ).run(executionId, workflowId, triggerNodeId);
     } catch (dbError) {
         console.error(`[WorkflowExecutor] DB Error logging start for ${executionId}:`, dbError);
-        // If we can't even log the start, it's a critical issue with DB or setup
         return { success: false, message: `Database error on execution start: ${(dbError as Error).message}`, executionId };
     }
 
-    let finalStatus: 'running' | 'completed' | 'failed' | 'error' = 'error'; // Default to error, adjusted type
+    let finalStatus: 'running' | 'completed' | 'failed' | 'error' = 'error';
     let finalMessage: string = 'Workflow execution failed due to an unexpected error.';
+    let executionContext: ExecutionContext = { errors: [] };
 
     try {
         const workflow = await getWorkflowDetailsFromDb(workflowId, db);
         if (!workflow) {
-            finalMessage = `Workflow with ID ${workflowId} not found.`;
-            console.error(`[WorkflowExecutor] ${finalMessage} (Execution ID: ${executionId})`);
-            throw new Error(finalMessage);
+            throw new Error(`Workflow with ID ${workflowId} not found.`);
         }
 
         const triggerNode = workflow.nodes.find(node => node.id === triggerNodeId);
         if (!triggerNode) {
-            finalMessage = `Trigger node ${triggerNodeId} not found in workflow ${workflowId}.`;
-            console.error(`[WorkflowExecutor] ${finalMessage} (Execution ID: ${executionId})`);
-            throw new Error(finalMessage);
+            throw new Error(`Trigger node ${triggerNodeId} not found in workflow ${workflowId}.`);
         }
-
+        // Validate against node.data.id (template ID) and node.type (ReactFlow type from DB)
         if (triggerNode.data?.id !== 'manual-trigger' || triggerNode.type !== 'trigger') {
-            finalMessage = `Node ${triggerNodeId} is not a valid manual trigger for workflow ${workflowId}.`;
-            console.error(`[WorkflowExecutor] ${finalMessage} (Execution ID: ${executionId})`);
-            throw new Error(finalMessage);
+            throw new Error(`Node ${triggerNodeId} (Template: ${triggerNode.data?.id}, Type: ${triggerNode.type}) is not a valid manual trigger.`);
         }
 
         console.log(`[WorkflowExecutor] Successfully validated manual trigger ${triggerNodeId} for workflow ${workflow.name} (Execution ID: ${executionId}).`);
         mainWindow?.webContents.send('workflow-status', { workflowId, executionId, status: 'running', message: `Executing workflow: ${workflow.name}...` });
 
-        // --- Placeholder for actual workflow execution logic ---
-        // This is where you would iterate through nodes, execute actions, etc.
-        // For now, we'll simulate a successful execution.
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate work
+        let currentNode: WorkflowNode | undefined = triggerNode;
+        const visitedNodeIds = new Set<string>();
+
+        while (currentNode) {
+            if (visitedNodeIds.has(currentNode.id)) {
+                console.warn(`[WorkflowExecutor] Loop detected at node ${currentNode.id}. Stopping branch.`);
+                executionContext.errors.push(`Loop detected at node ${currentNode.data.label || currentNode.id}`);
+                break;
+            }
+            visitedNodeIds.add(currentNode.id);
+
+            executionContext = await executeNodeAction(currentNode, executionContext, db, mainWindow);
+            
+            if (executionContext.errors.length > 0 && nodeIsCritical(currentNode)) {
+                console.error(`[WorkflowExecutor] Critical error after node ${currentNode.data.label || currentNode.id}. Workflow may be unstable.`);
+            }
+
+            const outgoingEdges = workflow.edges.filter(edge => edge.source === currentNode?.id);
+            
+            if (outgoingEdges.length > 0) {
+                const nextEdge = outgoingEdges[0];
+                currentNode = workflow.nodes.find(node => node.id === nextEdge.target);
+                if (!currentNode) {
+                    console.warn(`[WorkflowExecutor] Next node ID ${nextEdge.target} found in edge, but node data is missing.`);
+                    executionContext.errors.push(`Dangling edge: target node ${nextEdge.target} not found.`);
+                }
+            } else {
+                console.log(`[WorkflowExecutor] Node ${currentNode.id} is an end node for this path.`);
+                currentNode = undefined;
+            }
+        }
+
+        if (executionContext.errors.length > 0) {
+            finalStatus = 'failed';
+            finalMessage = `Workflow "${workflow.name}" completed with errors: ${executionContext.errors.join('; ')}`;
+            console.warn(`[WorkflowExecutor] ${finalMessage} (Execution ID: ${executionId})`);
+        } else {
+            finalStatus = 'completed';
+            finalMessage = `Workflow "${workflow.name}" executed successfully.`;
+            console.log(`[WorkflowExecutor] ${finalMessage} (Execution ID: ${executionId})`);
+        }
         
-        // Example: If an action node fails:
-        // throw new Error("Simulated action node failure during execution.");
-
-        console.log(`[WorkflowExecutor] Placeholder execution logic completed for ${workflow.name}. (Execution ID: ${executionId})`);
-        // --- End of placeholder ---
-
-        finalStatus = 'completed'; // Use 'completed' to match schema constraint
-        finalMessage = `Workflow "${workflow.name}" executed successfully (simulated).`;
-        mainWindow?.webContents.send('workflow-status', { workflowId, executionId, status: 'completed', message: finalMessage }); // Send 'completed' status
-        console.log(`[WorkflowExecutor] ${finalMessage} (Execution ID: ${executionId})`);
-        return { success: true, message: finalMessage, executionId };
+        mainWindow?.webContents.send('workflow-status', { workflowId, executionId, status: finalStatus, message: finalMessage });
+        return { success: finalStatus === 'completed', message: finalMessage, executionId };
 
     } catch (error) {
-        finalStatus = 'error';
+        finalStatus = 'failed'; 
         finalMessage = error instanceof Error ? error.message : String(error);
         console.error(`[WorkflowExecutor] Error during workflow ${workflowId} (Execution ID: ${executionId}):`, error);
-        mainWindow?.webContents.send('workflow-status', { workflowId, executionId, status: 'error', message: finalMessage });
+        mainWindow?.webContents.send('workflow-status', { workflowId, executionId, status: finalStatus, message: finalMessage });
         return { success: false, message: finalMessage, executionId };
     } finally {
-        // Log completion/failure of execution
         try {
             db.prepare(
                 `UPDATE workflow_executions
                  SET completed_at = datetime('now'), status = ?, error_message = ?
                  WHERE id = ?`
-            ).run(finalStatus, finalStatus === 'error' ? finalMessage : null, executionId);
+            ).run(finalStatus, (finalStatus === 'failed' || finalStatus === 'error') ? finalMessage : null, executionId);
             console.log(`[WorkflowExecutor] Logged final status '${finalStatus}' for execution ID ${executionId}.`);
         } catch (dbError) {
             console.error(`[WorkflowExecutor] DB Error logging completion for ${executionId}:`, dbError);
-            // This is problematic as the execution might have finished but logging failed.
-            // The primary return to IPC handler will still reflect workflow outcome.
         }
     }
+}
+
+function nodeIsCritical(node: WorkflowNode): boolean {
+    // Example: A trigger node's successful processing might be considered critical.
+    // The `type` here refers to the ReactFlow node type (e.g., 'trigger', 'action')
+    // The `node.data.type` refers to the template's type.
+    return node.type === 'trigger'; 
 }

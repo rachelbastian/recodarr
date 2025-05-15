@@ -82,6 +82,7 @@ export interface EncodingOptions {
     logDirectoryPath?: string;
     // Internal callback
     progressCallback?: (progress: EncodingProgress) => void;
+    metadataOutput?: string[]; // Added for custom output metadata
 }
 
 export interface EncodingResult {
@@ -298,6 +299,9 @@ export interface IElectronAPI {
     getPresets: () => Promise<EncodingPreset[]>;
     savePreset: (preset: EncodingPreset) => Promise<EncodingPreset>;
     deletePreset: (id: string) => Promise<{ changes: number }>;
+
+    // --- Toast Notifications ---
+    onShowToastNotification: (callback: (data: { title: string; type: 'info' | 'success' | 'warning' | 'error'; message: string }) => void) => () => void; // Returns an unsubscribe function
 }
 
 // --- Add LogEntry type definition --- 

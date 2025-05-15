@@ -42,6 +42,28 @@ import {
   SelectValue 
 } from '@/components/ui/select';
 
+// Simple debounce utility function
+function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+
+  const debounced = (...args: Parameters<F>) => {
+    if (timeout !== null) {
+      clearTimeout(timeout);
+      timeout = null;
+    }
+    timeout = setTimeout(() => func(...args), waitFor);
+  };
+
+  debounced.cancel = () => {
+    if (timeout !== null) {
+      clearTimeout(timeout);
+      timeout = null;
+    }
+  };
+
+  return debounced;
+}
+
 // Import custom node types
 const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
@@ -98,7 +120,14 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
   // Load existing workflow if workflowId is provided
   useEffect(() => {
     const loadWorkflow = async () => {
-      if (!workflowId) return;
+      if (!workflowId) {
+        // For new workflows, ensure name is 'New Workflow' and nodes/edges are empty
+        setWorkflowName('New Workflow');
+        setNodes([]);
+        setEdges([]);
+        setHasChanges(false); // No changes initially for a new workflow
+        return;
+      }
       
       try {
         const workflow = await window.electron.getWorkflow(workflowId);
@@ -116,7 +145,75 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
     };
     
     loadWorkflow();
-  }, [workflowId, setNodes, setEdges]);
+  }, [workflowId, setNodes, setEdges, setWorkflowName]);
+  
+  // Core logic for saving the workflow
+  const internalSaveWorkflow = useCallback((isAutoSave: boolean = false) => {
+    if (!workflowId && isAutoSave) {
+      // Do not auto-save a brand new workflow that hasn't been manually saved once.
+      // The manual save button will handle creating the initial ID.
+      console.log("Auto-save skipped for new, unsaved workflow. Please save manually first.");
+      return;
+    }
+
+    const currentWorkflowId = workflowId || uuidv4(); // Use existing or generate new for first manual save
+
+    const flowToSave = {
+      id: currentWorkflowId,
+      name: workflowName, // Ensure workflowName is up-to-date
+      nodes: getNodes(),   // Use getNodes() to fetch the most current state from ReactFlow
+      edges: getEdges(),   // Use getEdges() for the same reason
+    };
+
+    console.log(`${isAutoSave ? '[AutoSave]' : '[ManualSave]'} Saving workflow:`, flowToSave.id, flowToSave.name);
+    window.electron.saveWorkflow(flowToSave)
+      .then(() => {
+        if (!isAutoSave) {
+          toast.success(`Workflow '${flowToSave.name}' saved successfully!`);
+        } else {
+          console.log(`Workflow '${flowToSave.name}' auto-saved.`);
+        }
+        setHasChanges(false);
+        // If it was a new workflow that just got saved manually,
+        // the parent (Workflows.tsx) needs to update its activeWorkflowId,
+        // which will re-render this component with the new workflowId prop.
+        // This part is handled by Workflows.tsx's handleCreateWorkflow.
+      })
+      .catch((error: Error) => {
+        console.error(`Error ${isAutoSave ? 'auto-saving' : 'saving'} workflow:`, error);
+        toast.error(`Failed to ${isAutoSave ? 'auto-save' : 'save'} workflow: ${error.message}`);
+      });
+  }, [workflowId, workflowName, getNodes, getEdges, setHasChanges]);
+
+  const debouncedAutoSave = useRef(debounce(internalSaveWorkflow, 1500)).current;
+
+  // ADD THIS EFFECT TO HANDLE NODE DATA CHANGES FROM PROPERTIES PANEL
+  useEffect(() => {
+    const handleNodeDataUpdate = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const { nodeId, data: newNodeData } = customEvent.detail;
+
+      setNodes((currentNodes) =>
+        currentNodes.map((node) =>
+          node.id === nodeId
+            ? { ...node, data: newNodeData } // Update the data for the specific node
+            : node
+        )
+      );
+      setHasChanges(true); // Mark that there are changes to be saved
+      // Trigger debounced auto-save if workflowId exists (meaning it's not a brand new, unsaved workflow)
+      if (workflowId) {
+        debouncedAutoSave(true); // Pass true to indicate it's an auto-save
+      }
+    };
+
+    window.addEventListener('nodeDataChanged', handleNodeDataUpdate);
+
+    return () => {
+      window.removeEventListener('nodeDataChanged', handleNodeDataUpdate);
+      debouncedAutoSave.cancel(); // Cancel any pending debounced saves on unmount
+    };
+  }, [setNodes, setHasChanges, debouncedAutoSave, workflowId]);
   
   // Trigger selection dialog
   const openTriggerDialog = useCallback(() => {
@@ -531,28 +628,12 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
     
     // Auto-layout the workflow after deletion to clean up
     setTimeout(() => autoLayoutWorkflow(), 50);
-  }, [selectedNode, nodes, edges, setNodes, setEdges, onNodeSelect, setUndoStack, setHasChanges]); // Removed autoLayoutWorkflow from deps, added setUndoStack, setHasChanges
+  }, [selectedNode, nodes, edges, setNodes, setEdges, onNodeSelect, setUndoStack, setHasChanges, autoLayoutWorkflow]); // Added autoLayoutWorkflow
 
-  // Save the workflow
-  const saveWorkflow = useCallback(() => {
-    const workflow = {
-      id: workflowId || uuidv4(),
-      name: workflowName,
-      nodes,
-      edges
-    };
-
-    // Save workflow to the database using IPC
-    window.electron.saveWorkflow(workflow)
-      .then(() => {
-        toast.success('Workflow saved successfully');
-        setHasChanges(false);
-      })
-      .catch((error: Error) => {
-        console.error('Error saving workflow:', error);
-        toast.error('Failed to save workflow: ' + error.message);
-      });
-  }, [workflowName, nodes, edges, workflowId]);
+  // Save the workflow (manual save button in the panel)
+  const handleManualSave = useCallback(() => {
+    internalSaveWorkflow(false); // Pass false to indicate it's a manual save
+  }, [internalSaveWorkflow]);
 
   // Get appropriate node templates for a given node type
   const getNodeTemplates = useCallback((type: 'trigger' | 'action' | 'condition') => {
@@ -630,7 +711,7 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
                   <Button
                     variant="outline"
                     size="icon"
-                    onClick={saveWorkflow}
+                    onClick={handleManualSave}
                     className={`h-8 w-8 ${hasChanges ? 'border-indigo-500 text-indigo-500' : ''}`}
                   >
                     <Save className="h-4 w-4" />

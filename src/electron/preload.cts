@@ -192,6 +192,9 @@ type LocalElectronApi = {
     // --- Workflow Execution Logs ---
     getWorkflowExecutions: (limit?: number) => Promise<any[]>;
 
+    // --- Toast Notifications ---
+    onShowToastNotification: (callback: (data: { title: string; type: 'info' | 'success' | 'warning' | 'error'; message: string }) => void) => UnsubscribeFunction;
+
     // --- Encoding Presets --- 
     getPresets: () => Promise<EncodingPreset[]>;
     savePreset: (preset: EncodingPreset) => Promise<string>;
@@ -269,6 +272,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
     // --- Workflow Execution Logs ---
     getWorkflowExecutions: (limit: number = 50) => ipcInvoke('get-workflow-executions', limit),
     
+    // --- Toast Notifications ---
+    onShowToastNotification: (callback) => ipcOn('show-toast-notification', callback),
+
     // --- Encoding Preset Implementations ---
     getPresets: () => ipcInvoke('get-presets'),
     savePreset: (preset) => ipcInvoke('save-preset', preset),

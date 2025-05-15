@@ -28,6 +28,8 @@ export function buildEncodingOptions(
     overwriteInput,
     // Hardware acceleration from preset
     hwAccel: preset?.hwAccel !== 'none' ? preset?.hwAccel : undefined,
+    // Add our custom metadata tag
+    metadataOutput: ['RECODARR_ENCODED_BY_APP=true'],
   };
 
   // --- Handle Video Options ---
