@@ -302,6 +302,9 @@ export interface IElectronAPI {
 
     // --- Toast Notifications ---
     onShowToastNotification: (callback: (data: { title: string; type: 'info' | 'success' | 'warning' | 'error'; message: string }) => void) => () => void; // Returns an unsubscribe function
+
+    // --- Performance History ---
+    getPerformanceHistory: (startDate: string, endDate: string) => Promise<PerformanceHistoryRecord[]>;
 }
 
 // --- Add LogEntry type definition --- 
@@ -380,3 +383,12 @@ interface EncodingPreset {
     subtitleTypeOrder?: string[]; // Ordered array of subtitle types (forced, sdh, cc, etc.) in priority order
 }
 // --- End EncodingPreset type definition --- 
+
+// Define PerformanceHistoryRecord (if not already defined globally elsewhere)
+// Ensure this matches the definition in preload.cts and Dashboard.tsx
+interface PerformanceHistoryRecord {
+    timestamp: string;
+    cpu_load: number | null;
+    gpu_load: number | null;
+    memory_load: number | null;
+} 

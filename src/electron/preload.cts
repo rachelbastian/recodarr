@@ -147,6 +147,14 @@ interface FinalizeEncodedFileResult {
     error?: string;
 }
 
+// Define PerformanceHistoryRecord interface (can be moved to types.d.ts later)
+interface PerformanceHistoryRecord {
+    timestamp: string;
+    cpu_load: number | null;
+    gpu_load: number | null;
+    memory_load: number | null;
+}
+
 // Define the API structure locally using locally defined types
 type LocalElectronApi = {
     // Keep existing working methods
@@ -225,6 +233,9 @@ type LocalElectronApi = {
     openEncodingLog: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     replaceFile: (sourcePath: string, destinationPath: string) => Promise<boolean>;
     deleteFile: (filePath: string) => Promise<boolean>;
+
+    // --- Performance History ---
+    getPerformanceHistory: (startDate: string, endDate: string) => Promise<PerformanceHistoryRecord[]>;
 };
 
 // Expose methods using the locally defined types
@@ -319,6 +330,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
     openEncodingLog: (jobId) => ipcInvoke('open-encoding-log', jobId),
     replaceFile: (sourcePath, destinationPath) => ipcInvoke('replace-file', sourcePath, destinationPath),
     deleteFile: (filePath) => ipcInvoke('delete-file', filePath),
+
+    // --- Performance History ---
+    getPerformanceHistory: (startDate: string, endDate: string) => ipcInvoke<PerformanceHistoryRecord[]>('get-performance-history', startDate, endDate),
 
 } satisfies LocalElectronApi); // Satisfy against the local type
 

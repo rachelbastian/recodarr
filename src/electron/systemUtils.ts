@@ -3,6 +3,7 @@ import Store from 'electron-store';
 import { exec } from 'child_process';
 import { Buffer } from 'buffer';
 import { BrowserWindow } from 'electron';
+import { getDbInstance, insertPerformanceRecord, pruneOldPerformanceRecords } from './dbUtils.js';
 
 // --- Types (copied from main.ts or a shared types file) ---
 interface SystemStats { 
@@ -18,6 +19,7 @@ interface SystemStats {
 // --- Module-level variables ---
 let systemStatsTimer: NodeJS.Timeout | null = null;
 let storeInstance: Store | null = null;
+let performanceHistoryTimer: NodeJS.Timeout | null = null;
 
 // Constants used by system utils - these should match what's in main.ts or be passed in
 const ENABLE_PS_GPU_KEY = 'enablePsGpuMonitoring';
@@ -118,20 +120,61 @@ export function startSystemStatsPolling(window: BrowserWindow | null) {
         return;
     }
     if (systemStatsTimer) clearInterval(systemStatsTimer);
+    if (performanceHistoryTimer) clearInterval(performanceHistoryTimer);
     
-    console.log("[SystemUtils] Starting system stats polling.");
+    console.log("[SystemUtils] Starting system stats polling for UI updates.");
     systemStatsTimer = setInterval(async () => { 
         const stats = await getSystemStatsInternal(); 
         if (window && !window.isDestroyed()) {
             window.webContents.send("system-stats-update", stats);
         }
-    }, 2000); // Poll every 2 seconds
+    }, 2000);
+
+    console.log("[SystemUtils] Starting performance history logging (every 15 seconds).");
+    performanceHistoryTimer = setInterval(async () => {
+        try {
+            const db = getDbInstance();
+            if (!db) {
+                console.error("[SystemUtils] DB instance not available for performance history logging.");
+                return;
+            }
+            const stats = await getSystemStatsInternal();
+            if (stats.error) {
+                console.warn("[SystemUtils] Skipping performance history record due to error in stats retrieval:", stats.error);
+                return;
+            }
+            const cpuLoad = typeof stats.cpuLoad === 'number' ? stats.cpuLoad : null;
+            const systemMemLoad = typeof stats.memLoad === 'number' ? stats.memLoad : null;
+            const gpuEngineLoad = typeof stats.gpuLoad === 'number' ? stats.gpuLoad : null;
+
+            insertPerformanceRecord(db, cpuLoad, gpuEngineLoad, systemMemLoad);
+        } catch (error) {
+            console.error("[SystemUtils] Error logging performance history:", error);
+        }
+    }, 15000);
+
+    setTimeout(() => {
+        try {
+            const db = getDbInstance();
+            if (db) {
+                console.log("[SystemUtils] Performing initial prune of performance records.");
+                pruneOldPerformanceRecords(db, 7);
+            }
+        } catch (error) {
+            console.error("[SystemUtils] Error during initial pruning:", error);
+        }
+    }, 60000);
 }
 
 export function stopSystemStatsPolling() {
     if (systemStatsTimer) {
         clearInterval(systemStatsTimer);
         systemStatsTimer = null;
-        console.log("[SystemUtils] Stopped system stats polling.");
+        console.log("[SystemUtils] Stopped system stats polling for UI.");
+    }
+    if (performanceHistoryTimer) {
+        clearInterval(performanceHistoryTimer);
+        performanceHistoryTimer = null;
+        console.log("[SystemUtils] Stopped performance history logging.");
     }
 }

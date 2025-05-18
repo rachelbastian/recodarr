@@ -6,6 +6,7 @@ import * as fs from 'fs/promises';
 import fsSync from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { pruneOldPerformanceRecords } from './dbUtils.js';
 
 const execAsync = promisify(exec);
 
@@ -16,7 +17,7 @@ export interface ScheduledTask {
     id: string;
     name: string;
     description?: string;
-    type: 'scan' | 'cleanup' | 'custom';
+    type: 'scan' | 'cleanup' | 'custom' | 'performance_data_pruning';
     frequency: TaskFrequency;
     enabled: boolean;
     lastRun?: Date;
@@ -124,6 +125,9 @@ export class TaskScheduler {
                 )
             `);
 
+            // Ensure default performance data pruning task exists
+            await this.ensureDefaultPerformancePruningTask();
+
             // Load and schedule all enabled tasks
             await this.loadTasks();
             this.isInitialized = true;
@@ -223,10 +227,10 @@ export class TaskScheduler {
     /**
      * Add a new scheduled task
      */
-    public addTask(task: Omit<ScheduledTask, 'id' | 'createdAt' | 'updatedAt'>): ScheduledTask {
+    public addTask(task: Omit<ScheduledTask, 'id' | 'createdAt' | 'updatedAt'>, predefinedId?: string): ScheduledTask {
         try {
-            // Generate a unique ID
-            const id = `task_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+            // Generate a unique ID or use predefined
+            const id = predefinedId || `task_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
             const now = new Date();
 
             // Create the complete task object
@@ -604,18 +608,38 @@ export class TaskScheduler {
      * Execute a task based on its type
      */
     private async executeTask(task: ScheduledTask): Promise<void> {
-        switch (task.type) {
-            case 'scan':
-                await this.executeScanTask(task);
-                break;
-            case 'cleanup':
-                await this.executeCleanupTask(task);
-                break;
-            case 'custom':
-                await this.executeCustomTask(task);
-                break;
-            default:
-                throw new Error(`Unknown task type: ${task.type}`);
+        console.log(`[Scheduler] Executing task: ${task.name} (ID: ${task.id}, Type: ${task.type})`);
+        try {
+            switch (task.type) {
+                case 'scan':
+                    await this.executeScanTask(task);
+                    break;
+                case 'cleanup':
+                    await this.executeCleanupTask(task);
+                    break;
+                case 'custom':
+                    await this.executeCustomTask(task);
+                    break;
+                case 'performance_data_pruning':
+                    await this.executePerformancePruningTask(task);
+                    break;
+                default:
+                    console.warn(`[Scheduler] Unknown task type: ${task.type}`);
+            }
+            this.updateLastRunTime(task.id);
+            // Recalculate next run for the job instance
+            const job = this.jobs.get(task.id);
+            if (job) {
+                const nextRun = job.nextInvocation();
+                 console.log(`[Scheduler] Task ${task.name} completed. Next run: ${nextRun ? nextRun.toISOString() : 'N/A'}`);
+                // Update task in DB with next run time if needed (optional, node-schedule handles it internally)
+            } else {
+                console.log(`[Scheduler] Task ${task.name} completed. No job instance found to get next run.`);
+            }
+            this.notifyUI('task-completed', { taskId: task.id, name: task.name, nextRun: job?.nextInvocation()?.toISOString() });
+        } catch (error) {
+            console.error(`[Scheduler] Error executing task ${task.id}:`, error);
+            this.notifyUI('task-error', { taskId: task.id, name: task.name, error: error instanceof Error ? error.message : String(error) });
         }
     }
 
@@ -641,14 +665,22 @@ export class TaskScheduler {
      * Execute a cleanup task to remove deleted files from database
      */
     private async executeCleanupTask(task: ScheduledTask): Promise<void> {
-        // Example implementation - actual implementation would depend on your existing cleanup functionality
         console.log(`[Scheduler] Executing cleanup task: ${task.name}`);
-        
-        // This is a placeholder - you would typically call into your existing cleanup functionality
-        // For example: await fileWatcher.cleanupDeletedFiles();
-        
-        // For now, we'll just log it
-        console.log(`[Scheduler] Cleanup task ${task.id} completed`);
+        // Example: Clean up old log files or temporary data
+        // Access task.parameters for specific cleanup settings
+
+        if (task.parameters?.directory && task.parameters?.daysOlder) {
+            const dirPath = task.parameters.directory as string;
+            const days = task.parameters.daysOlder as number;
+            console.log(`[Scheduler] Attempting to clean files older than ${days} days in ${dirPath}`);
+            // Implement actual file cleanup logic here
+            // For example, list files, check modification date, and delete
+        } else {
+            console.warn("[Scheduler] Cleanup task parameters (directory, daysOlder) not fully specified.");
+        }
+        // Simulate work
+        await new Promise(resolve => setTimeout(resolve, 2000)); 
+        console.log(`[Scheduler] Cleanup task ${task.name} finished.`);
     }
 
     /**
@@ -661,6 +693,28 @@ export class TaskScheduler {
         // Custom task logic would go here, based on task.parameters
         
         console.log(`[Scheduler] Custom task ${task.id} completed`);
+    }
+
+    /**
+     * Executes a performance data pruning task.
+     * @param task The performance data pruning task to execute.
+     */
+    private async executePerformancePruningTask(task: ScheduledTask): Promise<void> {
+        console.log(`[Scheduler] Executing performance data pruning task: ${task.name}`);
+        try {
+            const db = this.db; // Assuming this.db is the getDbInstance() or equivalent
+            if (!db) {
+                console.error("[Scheduler] Database instance not available for performance pruning task.");
+                throw new Error("Database instance not available for pruning.");
+            }
+            // The pruneOldPerformanceRecords function defaults to 7 days
+            // If a different retention period is ever needed, it could be a parameter in task.parameters
+            pruneOldPerformanceRecords(db, 7); 
+            console.log(`[Scheduler] Performance data pruning task ${task.name} finished successfully.`);
+        } catch (error) {
+            console.error(`[Scheduler] Error during performance data pruning task ${task.name}:`, error);
+            throw error; // Re-throw to be caught by executeTask
+        }
     }
 
     /**
@@ -765,6 +819,30 @@ export class TaskScheduler {
     private notifyUI(event: string, data: any): void {
         if (this.mainWindow && !this.mainWindow.isDestroyed()) {
             this.mainWindow.webContents.send(`scheduler-${event}`, data);
+        }
+    }
+
+    /**
+     * Ensures the default weekly performance data pruning task exists.
+     */
+    private async ensureDefaultPerformancePruningTask(): Promise<void> {
+        const performancePruningTaskId = 'default_performance_pruning';
+        try {
+            const existingTask = this.db.prepare('SELECT id FROM scheduled_tasks WHERE id = ?').get(performancePruningTaskId);
+            if (!existingTask) {
+                const task: Omit<ScheduledTask, 'id' | 'createdAt' | 'updatedAt'> = {
+                    name: 'Weekly Performance Data Pruning',
+                    description: 'Prunes performance history data older than 7 days.',
+                    type: 'performance_data_pruning',
+                    frequency: 'weekly',
+                    enabled: true,
+                    parameters: { dayOfWeek: 0, hour: 0, minute: 5 } // Sunday, 00:05
+                };
+                this.addTask(task, performancePruningTaskId); // Pass the specific ID
+                console.log('[Scheduler] Created default weekly performance data pruning task.');
+            }
+        } catch (error) {
+            console.error('[Scheduler] Error ensuring default performance pruning task:', error);
         }
     }
 }

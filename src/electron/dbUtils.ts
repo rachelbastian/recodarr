@@ -308,6 +308,67 @@ export async function updateMediaAfterEncoding(db: Database.Database, probeData:
 }
 // --- END: Moved updateMediaAfterEncoding ---
 
+// --- START: Performance History Functions (NEW ADDITIONS) ---
+function initializePerformanceHistoryTable(db: Database.Database): void {
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS performance_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            cpu_load REAL,
+            gpu_load REAL,
+            memory_load REAL
+        );
+    `);
+    // Create an index on timestamp for faster queries and pruning
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_performance_history_timestamp ON performance_history (timestamp);`);
+    console.log("[DB Init] Performance history table initialized.");
+}
+
+export function insertPerformanceRecord(db: Database.Database, cpuLoad: number | null, gpuLoad: number | null, memoryLoad: number | null): void {
+    try {
+        const stmt = db.prepare(`
+            INSERT INTO performance_history (cpu_load, gpu_load, memory_load)
+            VALUES (?, ?, ?)
+        `);
+        stmt.run(cpuLoad, gpuLoad, memoryLoad);
+    } catch (error) {
+        console.error("[DB] Error inserting performance record:", error);
+    }
+}
+
+export function getPerformanceHistory(db: Database.Database, startDate: string, endDate: string): any[] {
+    try {
+        const stmt = db.prepare(`
+            SELECT timestamp, cpu_load, gpu_load, memory_load
+            FROM performance_history
+            WHERE timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC
+        `);
+        return stmt.all(startDate, endDate);
+    } catch (error) {
+        console.error("[DB] Error retrieving performance history:", error);
+        return [];
+    }
+}
+
+export function pruneOldPerformanceRecords(db: Database.Database, daysToKeep: number = 7): void {
+    try {
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+        const cutoffIsoString = cutoffDate.toISOString();
+
+        const stmt = db.prepare(`
+            DELETE FROM performance_history
+            WHERE timestamp < ?
+        `);
+        const result = stmt.run(cutoffIsoString);
+        console.log(`[DB] Pruned ${result.changes} old performance records older than ${cutoffIsoString}.`);
+    } catch (error) {
+        console.error("[DB] Error pruning old performance records:", error);
+    }
+}
+// --- END: Performance History Functions ---
+
 export async function initializeDatabase(appGetPath: GetPathFn): Promise<Database.Database> {
     let dbPath: string | undefined;
     try {
@@ -432,6 +493,9 @@ export async function initializeDatabase(appGetPath: GetPathFn): Promise<Databas
         await initializePresetTable(newDb); // From presetDatabase.js
         await checkAndMigrateWorkflowTables(newDb); // Call the local/moved function to ensure schema is correct
 
+        // Initialize performance_history table (NEW ADDITION)
+        initializePerformanceHistoryTable(newDb);
+
         dbInstance = newDb;
         console.log("[DB Setup] Database instance configured.");
         return dbInstance;
@@ -471,4 +535,15 @@ export function registerDbIpcHandlers(ipcMain: IpcMain) {
         }
     });
     console.log("[DB IPC] 'db-query' handler registered.");
+
+    // IPC handler for getting performance history (NEW ADDITION)
+    ipcMain.handle('get-performance-history', async (_event, startDate: string, endDate: string) => {
+        if (!dbInstance) {
+            console.error("[IPC Get Performance History] Database not initialized.");
+            throw new Error("Database not initialized.");
+        }
+        return getPerformanceHistory(dbInstance, startDate, endDate);
+    });
+    // Potentially add a new console.log here if desired, or modify the existing one
+    // For example: console.log("[DB IPC] 'db-query' and 'get-performance-history' handlers registered.");
 }
