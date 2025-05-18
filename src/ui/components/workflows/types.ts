@@ -43,8 +43,9 @@ export const ALL_NODES = [
     description: 'Run on a schedule',
     icon: '⏰',
     properties: {
-      schedule: '0 0 * * *', // Default to midnight (cron syntax)
-      timezone: 'UTC'
+      scheduledDays: [], // e.g., ['mon', 'tue']
+      startTime: '09:00', // HH:mm format
+      endTime: '17:00',   // HH:mm format
     }
   },
   

@@ -51,6 +51,10 @@ export const useQueue = (callbacks?: Partial<QueueEventCallbacks>) => {
       onQueuePaused: () => {
         setIsProcessing(false);
         callbacks?.onQueuePaused?.();
+      },
+      onHistoryCleared: () => {
+        setJobs(queueService.getAllJobs());
+        callbacks?.onHistoryCleared?.();
       }
     };
     
@@ -114,6 +118,13 @@ export const useQueue = (callbacks?: Partial<QueueEventCallbacks>) => {
   };
   
   /**
+   * Clears all completed and failed jobs from the history.
+   */
+  const clearJobHistory = (): void => {
+    queueService.clearCompletedAndFailedJobs();
+  };
+  
+  /**
    * Update queue configuration
    */
   const updateQueueConfig = (config: { maxParallelJobs?: number; autoStart?: boolean }) => {
@@ -144,7 +155,8 @@ export const useQueue = (callbacks?: Partial<QueueEventCallbacks>) => {
     pauseQueue,
     updateQueueConfig,
     getJobCounts,
-    getJob: queueService.getJob
+    getJob: queueService.getJob,
+    clearJobHistory
   };
 };
 

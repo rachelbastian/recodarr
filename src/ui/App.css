@@ -36,6 +36,12 @@
     --chart-4: hsl(340 70% 55%);
     --chart-5: hsl(180 60% 40%);
     --radius: 0.5rem;
+    
+    /* Scrollbar variables - light mode */
+    --scrollbar-track: hsl(217 20% 95%);
+    --scrollbar-thumb: hsl(217 20% 75%);
+    --scrollbar-thumb-hover: hsl(217 70% 65%);
+    --scrollbar-width: 8px;
   }
 
   .dark {
@@ -64,6 +70,11 @@
     --chart-3: hsl(30 80% 55%);
     --chart-4: hsl(280 65% 60%);
     --chart-5: hsl(340 75% 55%);
+    
+    /* Scrollbar variables - dark mode */
+    --scrollbar-track: hsl(217 47% 16%);
+    --scrollbar-thumb: hsl(217 47% 25%);
+    --scrollbar-thumb-hover: hsl(217 85% 50%);
   }
 }
 
@@ -142,6 +153,48 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* Enable smooth scrolling for the entire app */
+    scroll-behavior: smooth;
+  }
+  
+  /* Modern scrollbar styling */
+  ::-webkit-scrollbar {
+    width: var(--scrollbar-width);
+    height: var(--scrollbar-width);
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+    border-radius: 8px;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 8px;
+    transition: background-color 0.2s ease;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+  
+  /* Hide scrollbar corners */
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  
+  /* Firefox scrollbar styling (limited support) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  }
+  
+  /* Hide scrollbars for mobile but keep functionality */
+  @media (max-width: 640px) {
+    ::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
   }
 }
 
@@ -312,4 +365,65 @@
 
 .light .glow-blue {
   filter: drop-shadow(0 0 10px rgba(45, 85, 155, 0.6));
+}
+
+/* Special scrollbar styling for specific components */
+.scrollbar-minimal::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-minimal::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none; /* Chrome, Safari and Opera */
+}
+
+/* Custom indigo scrollbar variant */
+.scrollbar-indigo::-webkit-scrollbar-thumb {
+  background: hsl(240, 67%, 50%);
+}
+
+.scrollbar-indigo::-webkit-scrollbar-thumb:hover {
+  background: hsl(240, 77%, 60%);
+}
+
+/* Implement subtle fade effect for scrollable containers */
+.scroll-fade-bottom {
+  position: relative;
+}
+
+.scroll-fade-bottom::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 20px;
+  background: linear-gradient(to top, var(--background), transparent);
+  pointer-events: none;
+}
+
+.scroll-fade-top {
+  position: relative;
+}
+
+.scroll-fade-top::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 20px;
+  background: linear-gradient(to bottom, var(--background), transparent);
+  pointer-events: none;
+  z-index: 1;
 }

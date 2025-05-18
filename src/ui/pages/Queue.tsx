@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Play, Pause, Trash2, FileX, SkipForward, Settings, AlertCircle, CheckCircle, PlayCircle, Clock, FileText } from 'lucide-react';
@@ -14,8 +14,18 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { EncodingJob, JobStatus } from "../../services/queueService";
-import queueService from "../../services/queueService";
+import { useQueue } from '../../hooks/useQueue';
 import { getJobLog, openJobLog, formatJobLogForDisplay, associateLogWithJob, getAllLogMappings } from "../../utils/jobLogUtil";
+
+// TanStack Table imports
+import {
+    ColumnDef,
+    flexRender,
+    getCoreRowModel,
+    useReactTable,
+    SortingState,
+    getSortedRowModel,
+} from '@tanstack/react-table';
 
 // Status icon mapping
 const StatusIcon: React.FC<{ status: JobStatus }> = ({ status }) => {
@@ -156,13 +166,11 @@ const JobLogDialog: React.FC<{ job: EncodingJob, isOpen: boolean, onClose: () =>
 };
 
 // Job details component
-const JobDetails: React.FC<{ job: EncodingJob }> = ({ job }) => {
-  // Force refresh on job progress changes
+const JobDetails: React.FC<{ job: EncodingJob, onRemove?: (jobId: string) => void }> = ({ job, onRemove }) => {
   const [localProgress, setLocalProgress] = useState(job.progress);
   const [lastUpdate, setLastUpdate] = useState(Date.now());
   const [isLogDialogOpen, setIsLogDialogOpen] = useState(false);
 
-  // Update local state when job progress changes
   useEffect(() => {
     if (Math.abs(job.progress - localProgress) > 0.5) {
       console.log(`JobDetails: Updating progress for job ${job.id} from ${localProgress.toFixed(1)}% to ${job.progress.toFixed(1)}%`);
@@ -171,7 +179,6 @@ const JobDetails: React.FC<{ job: EncodingJob }> = ({ job }) => {
     }
   }, [job.progress, localProgress, job.id]);
 
-  // Extract filename from path, handling both forward and backslashes
   const getFilename = (path: string) => {
     return path.split(/[\/\\]/).pop() || path;
   };
@@ -255,39 +262,19 @@ const JobDetails: React.FC<{ job: EncodingJob }> = ({ job }) => {
         </div>
       </CardContent>
       <CardFooter className="py-2 flex gap-2">
-        {job.status === 'queued' && (
-          <Button 
-            variant="outline" 
-            size="sm" 
-            className="ml-auto"
-            onClick={() => queueService.removeJob(job.id)}
-          >
-            <Trash2 className="h-4 w-4 mr-1" />
-            Remove
+        {job.status === 'queued' && onRemove && (
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => onRemove(job.id)}>
+            <Trash2 className="h-4 w-4 mr-1" /> Remove
           </Button>
         )}
         
-        {/* Add View Log button for completed, failed, and processing jobs */}
         {(job.status === 'completed' || job.status === 'failed' || job.status === 'processing') && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="ml-auto"
-            onClick={() => setIsLogDialogOpen(true)}
-          >
-            <FileText className="h-4 w-4 mr-1" />
-            View Log
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => setIsLogDialogOpen(true)}>
+            <FileText className="h-4 w-4 mr-1" /> View Log
           </Button>
         )}
         
-        {/* Log Dialog */}
-        {isLogDialogOpen && (
-          <JobLogDialog 
-            job={job} 
-            isOpen={isLogDialogOpen}
-            onClose={() => setIsLogDialogOpen(false)}
-          />
-        )}
+        {isLogDialogOpen && <JobLogDialog job={job} isOpen={isLogDialogOpen} onClose={() => setIsLogDialogOpen(false)} />}
       </CardFooter>
     </Card>
   );
@@ -325,125 +312,214 @@ const QueueSettings: React.FC<{ maxJobs: number, onMaxJobsChange: (value: number
   );
 };
 
+// Helper to extract filename for table display
+const getFilenameFromPath = (path: string) => path.split(/[\\/]/).pop() || path;
+
+// Define columns for the TanStack Jobs Table
+const jobTableColumns: ColumnDef<EncodingJob>[] = [
+    {
+        accessorKey: 'id',
+        header: 'ID',
+        cell: ({ row }) => <span className="text-xs font-mono">{row.original.id.substring(0, 8)}...</span>,
+        size: 80,
+    },
+    {
+        accessorKey: 'inputPath',
+        header: 'Input File',
+        cell: ({ row }) => (
+            <TooltipProvider delayDuration={100}> <Tooltip>
+                <TooltipTrigger className="truncate text-left block w-full max-w-[180px] hover:underline">
+                    <span className="text-xs">{getFilenameFromPath(row.original.inputPath)}</span>
+                </TooltipTrigger>
+                <TooltipContent side="top" align="start" className="max-w-xs break-words"><p className="text-xs">{row.original.inputPath}</p></TooltipContent>
+            </Tooltip></TooltipProvider>
+        ),
+        size: 200,
+    },
+    {
+        accessorKey: 'status',
+        header: 'Status',
+        cell: ({ row }) => <StatusBadge status={row.original.status} />,
+        size: 100,
+    },
+    {
+        accessorKey: 'progress',
+        header: 'Progress',
+        cell: ({ row }) => {
+            if (row.original.status === 'processing' || row.original.status === 'completed') {
+                return (
+                    <div className="flex items-center w-full max-w-[120px]">
+                        <Progress value={row.original.progress} className="w-16 h-1.5 mr-1.5 flex-shrink-0" />
+                        <span className="text-xs whitespace-nowrap">{row.original.progress.toFixed(0)}%</span>
+                    </div>
+                );
+            }
+            if (row.original.status === 'queued' && row.original.priority > 0) {
+                 return <Badge variant="outline" className="text-xs">Priority {row.original.priority}</Badge>;
+            }
+            return <span className="text-xs">-</span>;
+        },
+        size: 120,
+    },
+    {
+        accessorFn: (row) => row.preset?.name, // Use accessorFn for potentially undefined nested prop
+        id: 'presetName',
+        header: 'Preset',
+        cell: info => <span className="text-xs">{info.getValue<string>() || 'Custom'}</span>,
+        size: 100,
+    },
+    {
+        accessorKey: 'addedAt',
+        header: 'Queued',
+        cell: ({ row }) => <span className="text-xs">{new Date(row.original.addedAt).toLocaleDateString()} {new Date(row.original.addedAt).toLocaleTimeString()}</span>,
+        size: 130,
+    },
+    {
+        id: 'actions',
+        header: () => <div className="text-right">Log</div>,
+        cell: ({ row }) => {
+            // eslint-disable-next-line react-hooks/rules-of-hooks
+            const [isLogDialogOpen, setIsLogDialogOpen] = useState(false);
+            const job = row.original;
+            if (job.status === 'completed' || job.status === 'failed' || job.status === 'processing' || job.status === 'verifying') {
+                return (
+                    <div className="text-right">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setIsLogDialogOpen(true)}>
+                            <FileText className="h-3.5 w-3.5" />
+                        </Button>
+                        {isLogDialogOpen && (
+                            <JobLogDialog job={job} isOpen={isLogDialogOpen} onClose={() => setIsLogDialogOpen(false)} />
+                        )}
+                    </div>
+                );
+            }
+            return <div className="text-right"><span className="text-xs">-</span></div>;
+        },
+        size: 50,
+    }
+];
+
 const Queue: React.FC = () => {
-  const [jobs, setJobs] = useState<EncodingJob[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [maxParallelJobs, setMaxParallelJobs] = useState(2);
   const [refreshTimestamp, setRefreshTimestamp] = useState(Date.now());
   const [statusFilter, setStatusFilter] = useState<JobStatus | 'all'>('all');
+
+  // Define callbacks with useCallback to ensure stable identity
+  const onJobProgressCallback = useCallback((_job: EncodingJob) => {
+    // console.log("Queue.tsx: onJobProgress callback triggered, setting refresh timestamp");
+    setRefreshTimestamp(Date.now());
+  }, []); // setRefreshTimestamp is stable, so empty dependency array is fine
+
+  const onHistoryClearedCallback = useCallback(() => {
+    // console.log("Queue.tsx: onHistoryCleared callback triggered, setting refresh timestamp");
+    setRefreshTimestamp(Date.now());
+  }, []); // setRefreshTimestamp is stable
+
+  // Memoize the callbacks object to pass to useQueue
+  const queueEventCallbacks = useMemo(() => ({
+    onJobProgress: onJobProgressCallback,
+    onHistoryCleared: onHistoryClearedCallback,
+  }), [onJobProgressCallback, onHistoryClearedCallback]);
+
+  // Use the useQueue hook with memoized callbacks
+  const {
+    jobs: allJobs,
+    isProcessing,
+    queueConfig,
+    startQueue,
+    pauseQueue,
+    updateQueueConfig,
+    getJobCounts,
+    clearJobHistory,
+    removeFromQueue
+  } = useQueue(queueEventCallbacks);
   
-  // Stats
-  const processingCount = jobs.filter(job => job.status === 'processing').length;
-  const queuedCount = jobs.filter(job => job.status === 'queued').length;
-  const completedCount = jobs.filter(job => job.status === 'completed').length;
-  const failedCount = jobs.filter(job => job.status === 'failed' || job.status === 'cancelled').length;
-  
-  // Filter jobs based on selected status
+  // Stats from useQueue hook or calculated from allJobs
+  const counts = getJobCounts();
+  const processingCount = counts.processing;
+  const queuedCount = counts.queued;
+  const completedCount = counts.completed;
+  const failedCount = counts.failed; // This now includes historical failed/cancelled until cleared
+
+  // Filter jobs based on selected status from ALL jobs (including history)
   const filteredJobs = statusFilter === 'all' 
-    ? jobs 
-    : jobs.filter(job => 
+    ? allJobs 
+    : allJobs.filter(job => 
         statusFilter === 'failed' 
           ? job.status === 'failed' || job.status === 'cancelled'
           : job.status === statusFilter
       );
+
+  // Sort the filtered jobs: active first, then historical by time
+  const statusOrder: JobStatus[] = ['processing', 'verifying', 'queued', 'completed', 'failed', 'cancelled'];
+  const sortedAndFilteredJobs = [...filteredJobs].sort((a, b) => {
+    const statusIndexA = statusOrder.indexOf(a.status);
+    const statusIndexB = statusOrder.indexOf(b.status);
+
+    if (statusIndexA !== statusIndexB) {
+        return statusIndexA - statusIndexB;
+    }
+
+    if (a.status === 'queued' || a.status === 'processing' || a.status === 'verifying') {
+        return new Date(a.addedAt).getTime() - new Date(b.addedAt).getTime(); // Oldest active first
+    } else { 
+        const timeA = a.processingEndTime ? new Date(a.processingEndTime).getTime() : new Date(a.addedAt).getTime();
+        const timeB = b.processingEndTime ? new Date(b.processingEndTime).getTime() : new Date(a.addedAt).getTime();
+        return timeB - timeA; // Newest historical jobs first
+    }
+  });
   
-  // Periodic refresh for progress updates
+  // Periodic refresh for progress updates - This might be simplified if useQueue handles all updates reliably
   useEffect(() => {
-    // Set up a refresh interval to poll for updates
     const refreshInterval = setInterval(() => {
-      if (processingCount > 0) {
-        // Only force refresh if there are processing jobs
-        console.log(`Queue: Polling for updates (${processingCount} jobs processing)`);
-        
-        // Also manually refresh jobs from queue service
-        const currentJobs = queueService.getAllJobs();
-        
-        // Check if there are meaningful progress changes to report
-        const processingJobs = currentJobs.filter(job => job.status === 'processing');
-        if (processingJobs.length > 0) {
-          console.log(`Queue: Processing jobs progress:`, 
-            processingJobs.map(job => `${job.id}: ${job.progress.toFixed(1)}%`).join(', '));
-        }
-        
-        setJobs(currentJobs);
-        setRefreshTimestamp(Date.now());
+      if (processingCount > 0) { // Only actively poll if jobs are processing
+        // console.log(`Queue: Polling for updates (${processingCount} jobs processing)`);
+        // useQueue handles job updates from the service, this is more of a failsafe UI refresh
+        // The `allJobs` state is managed by the useQueue hook based on service events.
+        // This polling `useEffect` primarily serves to force re-renders if local component state
+        // needs to react to time-based changes not directly tied to job data updates (e.g. relative time displays)
+        // or as a redundant check if there are concerns about useQueue updates not always triggering UI refresh.
+        setRefreshTimestamp(Date.now()); 
       }
-    }, 500); // Check for updates more frequently (every 500ms)
+    }, 1000); // Check for updates (e.g. every second for active jobs)
     
     return () => clearInterval(refreshInterval);
   }, [processingCount]);
   
-  // Subscribe to queue events
-  useEffect(() => {
-    // Set up event handling
-    queueService.setEventCallbacks({
-      onJobAdded: (job) => {
-        setJobs(current => [...current, job]);
-      },
-      onJobStarted: (job) => {
-        setJobs(current => current.map(j => j.id === job.id ? job : j));
-      },
-      onJobProgress: (job) => {
-        setJobs(current => current.map(j => j.id === job.id ? job : j));
-        setRefreshTimestamp(Date.now()); // Update refresh timestamp to trigger rerenders
-      },
-      onJobCompleted: (job) => {
-        setJobs(current => current.map(j => j.id === job.id ? job : j));
-      },
-      onJobFailed: (job) => {
-        setJobs(current => current.map(j => j.id === job.id ? job : j));
-      },
-      onJobRemoved: (jobId) => {
-        setJobs(current => current.filter(j => j.id !== jobId));
-      },
-      onQueueStarted: () => {
-        setIsProcessing(true);
-      },
-      onQueuePaused: () => {
-        setIsProcessing(false);
-      }
-    });
-    
-    // Initial load of jobs
-    setJobs(queueService.getAllJobs());
-    
-    // Get current processing state
-    const currentConfig = queueService.getConfig?.();
-    if (currentConfig) {
-      setMaxParallelJobs(currentConfig.maxParallelJobs);
-    }
-    
-    // Cleanup on unmount
-    return () => {
-      queueService.setEventCallbacks({});
-    };
-  }, []);
+  // Subscribe to queue events - Handled by useQueue hook
+  // useEffect(() => { ... subscriber logic removed ... }, []);
   
   const handleMaxJobsChange = (value: number) => {
-    setMaxParallelJobs(value);
-    queueService.updateConfig({ maxParallelJobs: value });
+    updateQueueConfig({ maxParallelJobs: value });
   };
   
-  const startQueue = () => {
-    queueService.startProcessing();
+  // Start and Pause queue are directly from useQueue hook
+  // const startQueue = () => { ... };
+  // const pauseQueue = () => { ... };
+  
+  const handleClearHistory = () => {
+    clearJobHistory(); // Use the function from the hook
   };
   
-  const pauseQueue = () => {
-    queueService.pauseProcessing();
-  };
-  
-  const clearCompletedJobs = () => {
-    // Filter out completed jobs and remove them
-    jobs.forEach(job => {
-      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
-        queueService.removeJob(job.id);
-      }
-    });
-  };
+  // Split jobs for card and table display
+  const LATEST_CARD_COUNT = 3;
+  const latestJobsForCards = sortedAndFilteredJobs.slice(0, LATEST_CARD_COUNT);
+  const olderJobsForTable = sortedAndFilteredJobs.slice(LATEST_CARD_COUNT);
+
+  // TanStack Table setup for older jobs
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const tableInstance = useReactTable({
+    data: olderJobsForTable,
+    columns: jobTableColumns,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
   
   return (
-    <div className="p-6 h-screen overflow-y-auto">
+    // Remove fixed height constraints, let it flow naturally with the app's layout
+    <div className="p-6">
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold">Encoding Queue</h1>
@@ -476,10 +552,12 @@ const Queue: React.FC = () => {
               <DialogHeader>
                 <DialogTitle>Queue Settings</DialogTitle>
               </DialogHeader>
-              <QueueSettings 
-                maxJobs={maxParallelJobs} 
-                onMaxJobsChange={handleMaxJobsChange} 
-              />
+              {queueConfig && (
+                <QueueSettings 
+                  maxJobs={queueConfig.maxParallelJobs} 
+                  onMaxJobsChange={handleMaxJobsChange} 
+                />
+              )}
               <DialogFooter>
                 <DialogClose asChild>
                   <Button>Close</Button>
@@ -508,112 +586,121 @@ const Queue: React.FC = () => {
       </div>
       
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <Card 
-          className={`cursor-pointer transition-colors ${statusFilter === 'processing' ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
-          onClick={() => setStatusFilter(statusFilter === 'processing' ? 'all' : 'processing')}
-        >
-          <CardContent className="p-4 flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">Processing</p>
-              <p className="text-2xl font-bold">{processingCount}</p>
-            </div>
-            <PlayCircle className="h-8 w-8 text-indigo-500" />
-          </CardContent>
-        </Card>
-        <Card 
-          className={`cursor-pointer transition-colors ${statusFilter === 'queued' ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
-          onClick={() => setStatusFilter(statusFilter === 'queued' ? 'all' : 'queued')}
-        >
-          <CardContent className="p-4 flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">Queued</p>
-              <p className="text-2xl font-bold">{queuedCount}</p>
-            </div>
-            <Clock className="h-8 w-8 text-slate-400" />
-          </CardContent>
-        </Card>
-        <Card 
-          className={`cursor-pointer transition-colors ${statusFilter === 'completed' ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
-          onClick={() => setStatusFilter(statusFilter === 'completed' ? 'all' : 'completed')}
-        >
-          <CardContent className="p-4 flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">Completed</p>
-              <p className="text-2xl font-bold">{completedCount}</p>
-            </div>
-            <CheckCircle className="h-8 w-8 text-green-500" />
-          </CardContent>
-        </Card>
-        <Card 
-          className={`cursor-pointer transition-colors ${statusFilter === 'failed' ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
-          onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')}
-        >
-          <CardContent className="p-4 flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">Failed</p>
-              <p className="text-2xl font-bold">{failedCount}</p>
-            </div>
-            <AlertCircle className="h-8 w-8 text-red-500" />
-          </CardContent>
-        </Card>
+        {[
+          { title: 'Processing', count: processingCount, Icon: PlayCircle, filter: 'processing' as JobStatus, color: 'text-indigo-500' },
+          { title: 'Queued', count: queuedCount, Icon: Clock, filter: 'queued' as JobStatus, color: 'text-slate-400' },
+          { title: 'Completed', count: completedCount, Icon: CheckCircle, filter: 'completed' as JobStatus, color: 'text-green-500' },
+          { title: 'Failed', count: failedCount, Icon: AlertCircle, filter: 'failed' as JobStatus, color: 'text-red-500' },
+        ].map(stat => (
+            <Card key={stat.title}
+              className={`cursor-pointer transition-colors ${statusFilter === stat.filter ? 'border-indigo-500 bg-indigo-900 bg-opacity-10' : ''}`}
+              onClick={() => setStatusFilter(statusFilter === stat.filter ? 'all' : stat.filter)}
+            >
+              <CardContent className="p-4 flex items-center justify-between">
+                <div><p className="text-sm font-medium text-muted-foreground">{stat.title}</p><p className="text-2xl font-bold">{stat.count}</p></div>
+                <stat.Icon className={`h-8 w-8 ${stat.color}`} />
+              </CardContent>
+            </Card>
+        ))}
       </div>
       
-      {/* Actions bar */}
       {(completedCount > 0 || failedCount > 0) && (
         <div className="flex justify-end mb-4">
-          <Button variant="outline" onClick={clearCompletedJobs}>
+          <Button variant="outline" onClick={handleClearHistory}>
             <Trash2 className="h-4 w-4 mr-2" />
             Clear Completed & Failed
           </Button>
         </div>
       )}
       
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredJobs.length === 0 ? (
-          <Card className="col-span-full p-8 text-center">
-            <CardContent>
-              <div className="flex flex-col items-center justify-center space-y-3">
-                {statusFilter !== 'all' ? (
-                  <>
-                    <div className="mb-2">
-                      <StatusIcon status={statusFilter as JobStatus} />
-                    </div>
-                    <p className="text-lg font-medium">No {statusFilter} Jobs</p>
-                    <p className="text-sm text-muted-foreground">
-                      {statusFilter === 'processing' && "No jobs are currently processing."}
-                      {statusFilter === 'queued' && "No jobs are currently in the queue."}
-                      {statusFilter === 'completed' && "No jobs have been completed yet."}
-                      {statusFilter === 'failed' && "No jobs have failed."}
-                      <Button 
-                        variant="link" 
-                        className="ml-1 p-0 h-auto"
-                        onClick={() => setStatusFilter('all')}
-                      >
-                        Show all jobs
-                      </Button>
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <Clock className="h-8 w-8 text-muted-foreground" />
-                    <p className="text-lg font-medium">No Encoding Jobs</p>
-                    <p className="text-sm text-muted-foreground">
-                      Add files to the queue from the Media or Encoding pages.
-                    </p>
-                  </>
-                )}
+      {sortedAndFilteredJobs.length === 0 ? (
+        <Card className="p-8 text-center">
+          <CardContent>
+            <div className="flex flex-col items-center justify-center space-y-3">
+              {statusFilter !== 'all' ? (
+                <>
+                  <div className="mb-2">
+                    <StatusIcon status={statusFilter as JobStatus} />
+                  </div>
+                  <p className="text-lg font-medium">No {statusFilter} Jobs</p>
+                  <p className="text-sm text-muted-foreground">
+                    {statusFilter === 'processing' && "No jobs are currently processing."}
+                    {statusFilter === 'queued' && "No jobs are currently in the queue."}
+                    {statusFilter === 'completed' && "No jobs have been completed yet."}
+                    {statusFilter === 'failed' && "No jobs have failed."}
+                    <Button 
+                      variant="link" 
+                      className="ml-1 p-0 h-auto"
+                      onClick={() => setStatusFilter('all')}
+                    >
+                      Show all jobs
+                    </Button>
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Clock className="h-8 w-8 text-muted-foreground" />
+                  <p className="text-lg font-medium">No Encoding Jobs</p>
+                  <p className="text-sm text-muted-foreground">
+                    Add files to the queue from the Media or Encoding pages.
+                  </p>
+                </>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {/* Latest Jobs as Cards */}
+          {latestJobsForCards.length > 0 && (
+            <div className="mb-8">
+              <h2 className="text-xl font-semibold mb-3">Active & Recent</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {latestJobsForCards.map(job => (
+                  <JobDetails key={job.id} job={job} onRemove={removeFromQueue} />
+                ))}
               </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <>
-            {/* Switch to use filteredJobs instead of different status groups */}
-            {filteredJobs.map(job => (
-              <JobDetails key={job.id} job={job} />
-            ))}
-          </>
-        )}
-      </div>
+            </div>
+          )}
+
+          {/* Older Jobs in Table - no constraints */}
+          {olderJobsForTable.length > 0 && (
+            <div className="mb-4">
+              <h2 className="text-xl font-semibold mb-3">Job History</h2>
+              <div className="border rounded-lg">
+                <Table>
+                  <TableHeader>
+                    {tableInstance.getHeaderGroups().map(headerGroup => (
+                      <TableRow key={headerGroup.id}>
+                        {headerGroup.headers.map(header => (
+                          <TableHead key={header.id} style={{ width: header.getSize() }}
+                            onClick={header.column.getToggleSortingHandler()}
+                            className={header.column.getCanSort() ? 'cursor-pointer select-none' : ''}
+                          >
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                            {{ asc: ' ▲', desc: ' ▼' }[header.column.getIsSorted() as string] ?? null}
+                          </TableHead>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableHeader>
+                  <TableBody>
+                    {tableInstance.getRowModel().rows.map(row => (
+                      <TableRow key={row.id}>
+                        {row.getVisibleCells().map(cell => (
+                          <TableCell key={cell.id} style={{ width: cell.column.getSize() }}>
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 };

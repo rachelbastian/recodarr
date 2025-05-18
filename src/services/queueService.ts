@@ -49,6 +49,7 @@ export interface QueueEventCallbacks {
   onQueueEmpty?: () => void;
   onQueueStarted?: () => void;
   onQueuePaused?: () => void;
+  onHistoryCleared?: () => void;
 }
 
 class EncodingQueueService {
@@ -86,19 +87,28 @@ class EncodingQueueService {
       
       if (savedData && Array.isArray(savedData.jobs)) {
         // Convert dates from strings back to Date objects
-        const restoredJobs = savedData.jobs.map((job: any) => ({
-          ...job,
-          addedAt: new Date(job.addedAt)
-        }));
+        const restoredJobs = savedData.jobs.map((job: any) => {
+          let status = job.status;
+          let error = job.error;
+          // If a job was processing or verifying, mark it as failed due to interruption
+          if (status === 'processing' || status === 'verifying') {
+            status = 'failed';
+            error = job.error ? `${job.error}; Job was interrupted due to application restart.` : 'Job was interrupted due to application restart.';
+            console.warn(`QueueService: Job ${job.id} (was ${job.status}) marked as failed due to restart.`);
+          }
+          return {
+            ...job,
+            status,
+            error,
+            addedAt: new Date(job.addedAt),
+            // Ensure progress is reset for interrupted jobs if they are requeued or similar logic is added later
+            // For now, just ensure status reflects interruption.
+            progress: (job.status === 'processing' || job.status === 'verifying') ? job.progress : job.progress,
+          };
+        });
         
-        // Restore only non-completed jobs with status 'queued' 
-        // (we don't want to restore 'processing' jobs that weren't properly completed)
-        const queuedJobs = restoredJobs.filter((job: EncodingJob) => 
-          job.status === 'queued'
-        );
-        
-        this.queue = queuedJobs;
-        console.log(`QueueService: Restored ${queuedJobs.length} queued jobs`);
+        this.queue = restoredJobs; // Restore ALL jobs for history
+        console.log(`QueueService: Restored ${restoredJobs.length} jobs (including historical)`);
         
         // Restore queue config if available
         if (savedData.config) {
@@ -146,7 +156,7 @@ class EncodingQueueService {
       }
       
       // Only persist queued jobs, not completed/failed/processing
-      const jobsToSave = this.queue.filter(job => job && job.status === 'queued');
+      const jobsToSave = this.queue.filter(job => !!job); // Save ALL jobs for history
       
       // Prepare valid data structure
       const dataToSave = {
@@ -998,6 +1008,30 @@ class EncodingQueueService {
     
     // Force check for queued jobs
     this.forceProcessQueue();
+  }
+
+  /**
+   * Clear all completed, failed, and cancelled jobs from the queue.
+   */
+  public clearCompletedAndFailedJobs(): void {
+    const initialCount = this.queue.length;
+    // Keep only jobs that are queued, processing, or verifying
+    this.queue = this.queue.filter(job => 
+      job.status === 'queued' || 
+      job.status === 'processing' || 
+      job.status === 'verifying'
+    );
+    const removedCount = initialCount - this.queue.length;
+
+    if (removedCount > 0) {
+      console.log(`QueueService: Cleared ${removedCount} completed, failed, or cancelled jobs from history.`);
+      this.saveQueueState(); // Save the modified queue
+      if (this.eventCallbacks.onHistoryCleared) {
+        this.eventCallbacks.onHistoryCleared();
+      }
+    } else {
+      console.log("QueueService: No completed, failed, or cancelled jobs to clear.");
+    }
   }
 }
 
