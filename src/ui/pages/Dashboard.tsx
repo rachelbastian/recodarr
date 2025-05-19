@@ -29,6 +29,14 @@ import {
     Area,
     AreaChart
 } from 'recharts'; // Import Recharts components
+import { Badge } from "@/components/ui/badge";
+import { 
+    Tooltip as UITooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Film, Music, Maximize2, FileVideo, FileAudio, FolderOpen } from 'lucide-react';
 
 // Helper to format bytes
 function formatBytes(bytes: number | null, decimals = 2): string {
@@ -56,6 +64,10 @@ interface LargestFileData {
     title: string;
     filePath: string;
     currentSize: number;
+    videoCodec?: string | null;
+    audioCodec?: string | null;
+    resolutionWidth?: number | null;
+    resolutionHeight?: number | null;
 }
 
 // Interface for calculated dashboard stats
@@ -104,6 +116,122 @@ const defaultMediaStats: DashboardMediaStats = {
 
 const DATA_REFRESH_INTERVAL = 60000; // Refresh historical data every 60 seconds
 const MEDIA_STATS_REFRESH_INTERVAL = 300000; // Refresh media stats every 5 minutes (example)
+
+// Resolution icon component
+const ResolutionIcon: React.FC<{ height: number | null }> = ({ height }) => {
+    if (!height) return null;
+    
+    if (height >= 4320) {
+        return <span className="font-bold text-[8px] bg-purple-500/20 text-purple-500 px-1 rounded">8K</span>;
+    } else if (height >= 2160) {
+        return <span className="font-bold text-[8px] bg-indigo-500/20 text-indigo-500 px-1 rounded">4K</span>;
+    } else if (height >= 1440) {
+        return <span className="font-bold text-[8px] bg-blue-500/20 text-blue-500 px-1 rounded">2K</span>;
+    } else if (height >= 1080) {
+        return <span className="font-bold text-[8px] bg-green-500/20 text-green-500 px-1 rounded">HD</span>;
+    } else if (height >= 720) {
+        return <span className="font-bold text-[8px] bg-yellow-500/20 text-yellow-500 px-1 rounded">HD</span>;
+    } else if (height >= 480) {
+        return <span className="font-bold text-[8px] bg-orange-500/20 text-orange-500 px-1 rounded">SD</span>;
+    } else {
+        return <span className="font-bold text-[8px] bg-red-500/20 text-red-500 px-1 rounded">SD</span>;
+    }
+};
+
+// Audio codec icon component
+const AudioCodecIcon: React.FC<{ codec: string | null }> = ({ codec }) => {
+    if (!codec) return null;
+    
+    const upperCodec = codec.toUpperCase();
+    
+    // Dolby formats
+    if (upperCodec.includes('EAC3') || upperCodec.includes('AC3') || upperCodec.includes('TRUEHD') || upperCodec.includes('DOLBY')) {
+        return (
+            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-500 border-blue-500/20">
+                <FileAudio className="h-3 w-3 mr-1" />
+                Dolby
+            </Badge>
+        );
+    }
+    
+    // DTS formats
+    if (upperCodec.includes('DTS')) {
+        return (
+            <Badge variant="outline" className="text-xs bg-indigo-500/10 text-indigo-500 border-indigo-500/20">
+                <FileAudio className="h-3 w-3 mr-1" />
+                DTS
+            </Badge>
+        );
+    }
+    
+    if (upperCodec === 'AAC') {
+        return (
+            <Badge variant="outline" className="text-xs bg-green-500/10 text-green-500 border-green-500/20">
+                <FileAudio className="h-3 w-3 mr-1" />
+                AAC
+            </Badge>
+        );
+    }
+    
+    // Default for other codecs
+    return (
+        <Badge variant="outline" className="text-xs bg-gray-500/10 text-gray-500 border-gray-500/20">
+            <FileAudio className="h-3 w-3 mr-1" />
+            {upperCodec.slice(0, 4)}
+        </Badge>
+    );
+};
+
+// Video codec icon component
+const VideoCodecIcon: React.FC<{ codec: string | null }> = ({ codec }) => {
+    if (!codec) return null;
+    
+    const upperCodec = codec.toUpperCase();
+    
+    if (upperCodec.includes('HEVC') || upperCodec.includes('H265')) {
+        return (
+            <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-500 border-purple-500/20">
+                <FileVideo className="h-3 w-3 mr-1" />
+                HEVC
+            </Badge>
+        );
+    }
+    
+    if (upperCodec.includes('AVC') || upperCodec.includes('H264')) {
+        return (
+            <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-500 border-blue-500/20">
+                <FileVideo className="h-3 w-3 mr-1" />
+                AVC
+            </Badge>
+        );
+    }
+    
+    if (upperCodec.includes('AV1')) {
+        return (
+            <Badge variant="outline" className="text-xs bg-indigo-500/10 text-indigo-500 border-indigo-500/20">
+                <FileVideo className="h-3 w-3 mr-1" />
+                AV1
+            </Badge>
+        );
+    }
+    
+    if (upperCodec.includes('VP9')) {
+        return (
+            <Badge variant="outline" className="text-xs bg-cyan-500/10 text-cyan-500 border-cyan-500/20">
+                <FileVideo className="h-3 w-3 mr-1" />
+                VP9
+            </Badge>
+        );
+    }
+    
+    // Default for other codecs
+    return (
+        <Badge variant="outline" className="text-xs bg-gray-500/10 text-gray-500 border-gray-500/20">
+            <FileVideo className="h-3 w-3 mr-1" />
+            {upperCodec.slice(0, 4)}
+        </Badge>
+    );
+};
 
 // Custom tooltip for performance chart
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -179,8 +307,17 @@ const Dashboard: React.FC = () => {
                 totalSavedSize: totalSavedSize || null,     
                 percentageSaved: totalOriginalSize > 0 ? percentageSaved : null
             });
+            
+            // Updated query to include codec and resolution information
             const largestFilesResults = await window.electron.dbQuery(
-                'SELECT id, title, filePath, currentSize FROM media WHERE currentSize IS NOT NULL ORDER BY currentSize DESC LIMIT 10', 
+                `SELECT 
+                    m.id, m.title, m.filePath, m.currentSize, 
+                    m.videoCodec, m.audioCodec, 
+                    m.resolutionWidth, m.resolutionHeight
+                FROM media AS m
+                WHERE m.currentSize IS NOT NULL 
+                ORDER BY m.currentSize DESC 
+                LIMIT 10`, 
                 []
             );
             setLargestFiles(largestFilesResults as LargestFileData[]);
@@ -444,7 +581,7 @@ const Dashboard: React.FC = () => {
             </div>
           </div>
 
-          {/* Largest Files Section */}
+          {/* Largest Files Section - Updated with modern card-based layout */}
           <div className="space-y-4">
             <h2 className="text-xl font-semibold tracking-tight">Largest Files</h2>
             <div className="rounded-xl border bg-card/30 p-6 backdrop-blur-sm">
@@ -454,38 +591,98 @@ const Dashboard: React.FC = () => {
                 </div>
               ) : largestFiles.length > 0 ? (
                 <ScrollArea className="h-[400px] rounded-lg">
-                  <Table>
-                    <TableHeader className="bg-card/50 backdrop-blur-sm sticky top-0 z-10">
-                      {table.getHeaderGroups().map(headerGroup => (
-                        <TableRow key={headerGroup.id} className="border-b border-border/50">
-                          {headerGroup.headers.map(header => (
-                            <TableHead key={header.id} className="text-muted-foreground font-medium">
-                              {header.isPlaceholder
-                                ? null
-                                : flexRender(
-                                    header.column.columnDef.header,
-                                    header.getContext()
-                                  )}
-                            </TableHead>
-                          ))}
-                        </TableRow>
-                      ))}
-                    </TableHeader>
-                    <TableBody>
-                      {table.getRowModel().rows.map(row => (
-                        <TableRow 
-                          key={row.id}
-                          className="transition-colors hover:bg-primary/5 border-b border-border/40"
-                        >
-                          {row.getVisibleCells().map(cell => (
-                            <TableCell key={cell.id}>
-                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                  <div className="flex flex-col gap-2">
+                    {largestFiles.map((file) => (
+                      <div key={file.id} className="border border-border/40 rounded-lg p-3 hover:bg-card/50 transition-colors">
+                        <div className="flex justify-between">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center mb-2">
+                              <span className="font-medium truncate max-w-[500px]" title={file.title}>
+                                {file.title}
+                              </span>
+                            </div>
+                            
+                            <div className="text-xs text-muted-foreground mb-2 truncate" title={file.filePath}>
+                              <FolderOpen className="inline-block h-3 w-3 mr-1" />
+                              {file.filePath.split(/[/\\]/).slice(0, -1).join('/')}
+                            </div>
+                            
+                            <div className="flex flex-wrap gap-1.5">
+                              <TooltipProvider delayDuration={200}>
+                                <UITooltip>
+                                  <TooltipTrigger asChild>
+                                    <Badge variant="secondary" className="text-xs bg-card/70">
+                                      <Film className="h-3 w-3 mr-1" />
+                                      {file.resolutionWidth && file.resolutionHeight ? `${file.resolutionWidth}×${file.resolutionHeight}` : 'Unknown'}
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" className="text-xs bg-card">
+                                    <p>Resolution: {file.resolutionWidth && file.resolutionHeight ? `${file.resolutionWidth}×${file.resolutionHeight}` : 'Unknown'}</p>
+                                  </TooltipContent>
+                                </UITooltip>
+                                
+                                {file.resolutionHeight && (
+                                  <UITooltip>
+                                    <TooltipTrigger asChild>
+                                      <Badge variant="outline" className="text-xs bg-card/70">
+                                        <Maximize2 className="h-3 w-3 mr-1" />
+                                        {file.resolutionHeight >= 4320 ? '8K' :
+                                          file.resolutionHeight >= 2160 ? '4K' :
+                                          file.resolutionHeight >= 1440 ? '2K' :
+                                          file.resolutionHeight >= 1080 ? 'HD' :
+                                          file.resolutionHeight >= 720 ? 'HD' : 'SD'}
+                                      </Badge>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="text-xs bg-card">
+                                      <p>Quality: {file.resolutionHeight >= 4320 ? '8K' :
+                                        file.resolutionHeight >= 2160 ? '4K' :
+                                        file.resolutionHeight >= 1440 ? '2K' :
+                                        file.resolutionHeight >= 1080 ? 'Full HD' :
+                                        file.resolutionHeight >= 720 ? 'HD' : 'Standard Definition'}</p>
+                                    </TooltipContent>
+                                  </UITooltip>
+                                )}
+                                
+                                {file.videoCodec && (
+                                  <UITooltip>
+                                    <TooltipTrigger asChild>
+                                      <div className="inline-flex">
+                                        <VideoCodecIcon codec={file.videoCodec} />
+                                      </div>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="text-xs bg-card">
+                                      <p>Video Codec: {file.videoCodec}</p>
+                                    </TooltipContent>
+                                  </UITooltip>
+                                )}
+                                
+                                {file.audioCodec && (
+                                  <UITooltip>
+                                    <TooltipTrigger asChild>
+                                      <div className="inline-flex">
+                                        <AudioCodecIcon codec={file.audioCodec} />
+                                      </div>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top" className="text-xs bg-card">
+                                      <p>Audio Codec: {file.audioCodec}</p>
+                                    </TooltipContent>
+                                  </UITooltip>
+                                )}
+                              </TooltipProvider>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center ml-4">
+                            <div className="bg-primary px-3 py-1.5 rounded-md text-primary-foreground shadow-sm ring-1 ring-primary/20 transition-all hover:ring-primary/40" style={{ boxShadow: '0 0 10px rgba(99, 102, 241, 0.3)' }}>
+                              <span className="text-sm font-mono font-bold">
+                                {formatBytes(file.currentSize)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </ScrollArea>
               ) : (
                 <div className="flex h-[400px] items-center justify-center">

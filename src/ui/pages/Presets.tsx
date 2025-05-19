@@ -15,11 +15,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { defaultPresetValues, getPresetSummary, loadPresets as loadPresetsUtil } from '@/utils/presetUtil.js';
+import { defaultPresetValues, getPresetSummary, loadPresets as loadPresetsUtil, deriveHardwareAndFormat, deriveFfmpegCodec, HardwarePlatformUtil, TargetVideoFormatUtil } from '@/utils/presetUtil.js';
 
-// --- Constants from ManualEncode (adjust as needed) ---
-const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
-type VideoCodec = typeof VIDEO_CODECS[number];
+// Constants for FFMPEG options that are still part of the form
 const VIDEO_PRESETS = ['veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast', 'ultrafast'] as const;
 type VideoPreset = typeof VIDEO_PRESETS[number];
 const VIDEO_RESOLUTIONS = ['original', '480p', '720p', '1080p', '1440p', '2160p'] as const;
@@ -445,6 +443,36 @@ const SubtitleTypeOrderSelector: React.FC<SubtitleTypeOrderSelectorProps> = ({ o
 };
 // --- END Subtitle Type Order Selector Component ---
 
+// --- New Hardware and Format Selections ---
+const HARDWARE_PLATFORMS = [
+  { id: 'INTEL_GPU', label: 'Intel GPU (QuickSync Video)' },
+  { id: 'NVIDIA_GPU', label: 'Nvidia GPU (NVENC)' },
+  { id: 'CPU_SOFTWARE', label: 'CPU / Software Encoder' },
+  { id: 'NONE', label: 'None (for Copy)'},
+] as const;
+type HardwarePlatform = HardwarePlatformUtil;
+
+const TARGET_VIDEO_FORMATS = [
+  { id: 'AV1',  label: 'AV1',               description: 'Smallest File Size' },
+  { id: 'H265', label: 'H.265 (HEVC)',      description: 'Good Compression, Wide Support' },
+  { id: 'H264', label: 'H.264 (AVC)',       description: 'Best Compatibility, Larger Files' },
+  { id: 'COPY', label: 'Keep Original',     description: 'Fastest, No Quality Loss' },
+] as const;
+type TargetVideoFormat = TargetVideoFormatUtil;
+
+// Define the comprehensive FFMPEG codec type based on supported values.
+// This should be the single source of truth for VideoCodec in this file.
+const ALL_FFMPEG_VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'hevc_nvenc', 'h264_nvenc', 'av1_nvenc', 'libx265', 'libx264', 'copy'] as const;
+type VideoCodec = typeof ALL_FFMPEG_VIDEO_CODECS[number];
+
+interface PresetFormDataWithoutId extends Omit<EncodingPreset, 'id' | 'videoCodec'> {
+  hardwarePlatform: HardwarePlatform;
+  targetVideoFormat: TargetVideoFormat;
+}
+// This type is for the form's state. It includes UI-specific fields.
+// Other fields from EncodingPreset (like name, videoPreset, etc.) are implicitly partial.
+type PresetFormDataType = Partial<PresetFormDataWithoutId> & { name?: string } & Pick<PresetFormDataWithoutId, 'hardwarePlatform' | 'targetVideoFormat'>;
+
 const Presets: React.FC = () => {
     const [presets, setPresets] = useState<EncodingPreset[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -453,7 +481,18 @@ const Presets: React.FC = () => {
     // State for Dialog and Form
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [editingPreset, setEditingPreset] = useState<EncodingPreset | null>(null);
-    const [formData, setFormData] = useState<Partial<Omit<EncodingPreset, 'id'>>>(defaultPresetValues);
+    const [formData, setFormData] = useState<PresetFormDataType>(() => {
+        const initialMapped = deriveHardwareAndFormat(defaultPresetValues.videoCodec);
+        return { 
+            ...defaultPresetValues, // Spread all defaults from presetUtil
+            name: defaultPresetValues.name || '', // Ensure name is definitely a string
+            hardwarePlatform: initialMapped.hardwarePlatform, 
+            targetVideoFormat: initialMapped.targetVideoFormat,
+            audioLanguageOrder: defaultPresetValues.audioLanguageOrder ?? [],
+            subtitleLanguageOrder: defaultPresetValues.subtitleLanguageOrder ?? [],
+            subtitleTypeOrder: defaultPresetValues.subtitleTypeOrder ?? [],
+        };
+    });
     const [formError, setFormError] = useState<string | null>(null);
 
     // Load presets on mount
@@ -474,32 +513,79 @@ const Presets: React.FC = () => {
         loadPresets();
     }, []);
 
-    const handleInputChange = (field: keyof Omit<EncodingPreset, 'id'>, value: any) => {
+    const handleInputChange = (field: keyof PresetFormDataType, value: any) => {
         const processedValue = value === '' ? undefined : value;
-        setFormData(prev => ({
-            ...prev,
-            [field]: processedValue
-        }));
-        setFormError(null);
+        
+        setFormData(prev => {
+            const newState: PresetFormDataType = { ...prev, [field]: processedValue };
+
+            // --- Interdependent field logic ---
+            if (field === 'targetVideoFormat') {
+                const newFormat = value as TargetVideoFormat;
+                if (newFormat === 'COPY') {
+                    newState.hardwarePlatform = 'NONE';
+                } else if (prev.hardwarePlatform === 'NONE' && newFormat !== 'COPY') {
+                    newState.hardwarePlatform = 'INTEL_GPU'; // Default back if un-copying
+                }
+            }
+            
+            if (field === 'hardwarePlatform') {
+                const newHardware = value as HardwarePlatform;
+                if (newHardware === 'NONE' && newState.targetVideoFormat !== 'COPY') {
+                    newState.targetVideoFormat = 'COPY';
+                }
+                // If hardware changes and format was COPY, but new hardware is not NONE, set a default format
+                else if (newHardware !== 'NONE' && newState.targetVideoFormat === 'COPY') {
+                     newState.targetVideoFormat = 'H265'; // Default to H265 if hardware is selected
+                }
+            }
+
+            // Prevent AV1 selection if CPU_SOFTWARE is chosen and AV1 is selected
+            if (newState.hardwarePlatform === 'CPU_SOFTWARE' && newState.targetVideoFormat === 'AV1') {
+                // Fallback: change AV1 to H.265 for CPU
+                newState.targetVideoFormat = 'H265';
+                // Consider setting a formError or notification to inform the user
+                // setFormError("AV1 is not recommended for CPU encoding with current options; defaulted to H.265.");
+            }
+            
+            return newState;
+        });
+        setFormError(null); // Clear global form error on any change
     };
 
-    const handleSliderChange = (field: keyof Omit<EncodingPreset, 'id'>, value: number[]) => {
+    const handleSliderChange = (field: keyof PresetFormDataType, value: number[]) => {
         handleInputChange(field, value[0]);
     };
 
     const openCreateDialog = () => {
         setEditingPreset(null);
-        setFormData({ ...defaultPresetValues, audioLanguageOrder: defaultPresetValues.audioLanguageOrder ?? [] });
+        const initialMapped = deriveHardwareAndFormat(defaultPresetValues.videoCodec);
+        setFormData({ 
+            ...defaultPresetValues, 
+            name: defaultPresetValues.name || '',
+            hardwarePlatform: initialMapped.hardwarePlatform,
+            targetVideoFormat: initialMapped.targetVideoFormat,
+            audioLanguageOrder: defaultPresetValues.audioLanguageOrder ?? [],
+            subtitleLanguageOrder: defaultPresetValues.subtitleLanguageOrder ?? [],
+            subtitleTypeOrder: defaultPresetValues.subtitleTypeOrder ?? [],
+        });
         setFormError(null);
         setIsDialogOpen(true);
     };
 
     const openEditDialog = (preset: EncodingPreset) => {
         setEditingPreset(preset);
+        const mapped = deriveHardwareAndFormat(preset.videoCodec);
+        // Ensure all fields from preset are spread, then override with derived/defaulted
         setFormData({ 
-            ...defaultPresetValues, // Start with defaults
-            ...preset, // Override with actual preset values
-            audioLanguageOrder: preset.audioLanguageOrder ?? [] // Ensure it's an array
+            ...defaultPresetValues, // Start with a full default structure
+            ...preset,             // Spread the actual preset values over defaults
+            name: preset.name || '', // Ensure name is string
+            hardwarePlatform: mapped.hardwarePlatform, // Override with derived values
+            targetVideoFormat: mapped.targetVideoFormat, // Override with derived values
+            audioLanguageOrder: preset.audioLanguageOrder ?? [], 
+            subtitleLanguageOrder: preset.subtitleLanguageOrder ?? [],
+            subtitleTypeOrder: preset.subtitleTypeOrder ?? [],
         }); 
         setFormError(null);
         setIsDialogOpen(true);
@@ -511,18 +597,48 @@ const Presets: React.FC = () => {
             setFormError("Preset name cannot be empty.");
             return; 
         }
+        // hardwarePlatform and targetVideoFormat are guaranteed by PresetFormDataType's Pick
+        // but could be undefined if not initialized correctly initially. The state init should prevent this.
+        if (!formData.hardwarePlatform || !formData.targetVideoFormat) {
+             setFormError("Hardware platform and video format must be selected.");
+             return;
+        }
+
+        const finalVideoCodec = deriveFfmpegCodec(formData.hardwarePlatform, formData.targetVideoFormat);
 
         try {
-            // Ensure audioLanguageOrder is defined before saving
-            const presetToSave: EncodingPreset = {
-                ...(editingPreset ? { ...editingPreset, ...formData } : { ...formData, id: Date.now().toString() }),
-                audioLanguageOrder: formData.audioLanguageOrder ?? [], // Ensure it's an array
-            } as EncodingPreset;
+            // Create a new object for saving, excluding UI-specific fields from formData
+            // and ensuring all EncodingPreset fields are correctly typed.
+            const presetToSavePayload: Omit<EncodingPreset, 'id'> = {
+                name: formData.name, // Definitely present and trimmed
+                // videoCodec will be set below
+                videoPreset: formData.videoPreset || defaultPresetValues.videoPreset,
+                videoQuality: formData.videoQuality ?? defaultPresetValues.videoQuality,
+                videoResolution: formData.videoResolution || defaultPresetValues.videoResolution,
+                hwAccel: formData.hwAccel || defaultPresetValues.hwAccel, // Keep hwAccel for now
+                audioCodecConvert: formData.audioCodecConvert || defaultPresetValues.audioCodecConvert,
+                audioBitrate: formData.audioBitrate || defaultPresetValues.audioBitrate,
+                selectedAudioLayout: formData.selectedAudioLayout || defaultPresetValues.selectedAudioLayout,
+                audioLanguageOrder: formData.audioLanguageOrder ?? [],
+                subtitleCodecConvert: formData.subtitleCodecConvert || defaultPresetValues.subtitleCodecConvert,
+                subtitleLanguageOrder: formData.subtitleLanguageOrder ?? [],
+                subtitleTypeOrder: formData.subtitleTypeOrder ?? [],
+            };
+            
+            const completePresetToSave: EncodingPreset = {
+                ...presetToSavePayload,
+                id: editingPreset ? editingPreset.id : Date.now().toString(),
+                videoCodec: finalVideoCodec,
+            };
+            
 
-            const savedPreset = await electronAPI.savePreset(presetToSave);
-
-            // Ensure the preset returned from save has the array format
-            const sanitizedSavedPreset = { ...savedPreset, audioLanguageOrder: savedPreset.audioLanguageOrder ?? [] };
+            const savedPreset = await electronAPI.savePreset(completePresetToSave);
+            const sanitizedSavedPreset = { 
+                ...savedPreset, 
+                audioLanguageOrder: savedPreset.audioLanguageOrder ?? [],
+                subtitleLanguageOrder: savedPreset.subtitleLanguageOrder ?? [],
+                subtitleTypeOrder: savedPreset.subtitleTypeOrder ?? [],
+            };
 
             if (editingPreset) {
                 setPresets(prev => prev.map(p => p.id === sanitizedSavedPreset.id ? sanitizedSavedPreset : p));
@@ -580,7 +696,7 @@ const Presets: React.FC = () => {
                             <CardTitle className="text-xl">Your Presets</CardTitle>
                             <CardDescription>View, edit, or delete your saved presets</CardDescription>
                         </div>
-                        <Button onClick={openCreateDialog} size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white">
+                        <Button onClick={openCreateDialog} size="sm">
                             <PlusCircle className="mr-2 h-4 w-4" /> Create Preset
                         </Button>
                     </CardHeader>
@@ -641,51 +757,119 @@ const Presets: React.FC = () => {
 
                         <h4 className="font-medium text-lg -mb-2">Video</h4>
                         <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="videoCodec" className="text-right">Codec</Label>
-                            <Select value={formData.videoCodec} onValueChange={(v: VideoCodec) => handleInputChange('videoCodec', v)} >
-                                <SelectTrigger className="col-span-3"><SelectValue placeholder="Select video codec..." /></SelectTrigger>
-                                <SelectContent>{VIDEO_CODECS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                            </Select>
-                        </div>
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="videoPreset" className="text-right">Preset</Label>
-                            <Select value={formData.videoPreset} onValueChange={(v: VideoPreset) => handleInputChange('videoPreset', v)} disabled={formData.videoCodec === 'copy'}>
-                                <SelectTrigger className="col-span-3"><SelectValue placeholder="Select preset..." /></SelectTrigger>
-                                <SelectContent>{VIDEO_PRESETS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
-                            </Select>
-                        </div>
-                         <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="videoQuality" className="text-right">Quality</Label>
-                            <div className="col-span-3 flex items-center gap-4">
-                                <Slider 
-                                    id="videoQuality"
-                                    value={[Number(formData.videoQuality ?? defaultPresetValues.videoQuality)]} 
-                                    min={18} 
-                                    max={38} 
-                                    step={1} 
-                                    onValueChange={(v) => handleSliderChange('videoQuality', v)} 
-                                    disabled={formData.videoCodec === 'copy'}
-                                    className="flex-1 [&>span]:bg-indigo-600"
-                                />
-                                <span className="text-sm w-8 text-right">{formData.videoQuality ?? defaultPresetValues.videoQuality}</span>
-                            </div>
-                        </div>
-                        <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="videoResolution" className="text-right">Resolution</Label>
-                            <Select value={formData.videoResolution} onValueChange={(v: VideoResolution) => handleInputChange('videoResolution', v)} disabled={formData.videoCodec === 'copy'}>
-                                <SelectTrigger className="col-span-3"><SelectValue placeholder="Select resolution..." /></SelectTrigger>
+                            <Label htmlFor="hardwarePlatform" className="text-right">Hardware</Label>
+                            <Select 
+                                value={formData.hardwarePlatform} 
+                                onValueChange={(v: HardwarePlatform) => handleInputChange('hardwarePlatform', v)}
+                                disabled={formData.targetVideoFormat === 'COPY'} // Disable if format is COPY
+                            >
+                                <SelectTrigger className="col-span-3 justify-start text-left">
+                                    <SelectValue placeholder="Select hardware...">
+                                        {/* Custom renderer for selected value - only show the label */}
+                                        {formData.hardwarePlatform && 
+                                            HARDWARE_PLATFORMS.find(p => p.id === formData.hardwarePlatform)?.label
+                                        }
+                                    </SelectValue>
+                                </SelectTrigger>
                                 <SelectContent>
-                                    {VIDEO_RESOLUTIONS.map(r => <SelectItem key={r} value={r}>{r === 'original' ? 'Original' : r.toUpperCase()}</SelectItem>)}
+                                    {HARDWARE_PLATFORMS.map(p => 
+                                        <SelectItem 
+                                            key={p.id} 
+                                            value={p.id} 
+                                            disabled={p.id === 'NONE' && formData.targetVideoFormat !== 'COPY'}
+                                            textValue={p.label}
+                                        >
+                                            {p.label}
+                                        </SelectItem>
+                                    )}
                                 </SelectContent>
                             </Select>
                         </div>
                         <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="hwAccel" className="text-right">HW Accel</Label>
-                            <Select value={formData.hwAccel} onValueChange={(v: HwAccel) => handleInputChange('hwAccel', v)}>
-                                <SelectTrigger className="col-span-3"><SelectValue placeholder="Select HW Accel..." /></SelectTrigger>
-                                <SelectContent>{HW_ACCEL_OPTIONS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
+                            <Label htmlFor="targetVideoFormat" className="text-right">Video Format</Label>
+                            <Select 
+                                value={formData.targetVideoFormat} 
+                                onValueChange={(v: TargetVideoFormat) => handleInputChange('targetVideoFormat', v)} 
+                            >
+                                <SelectTrigger className="col-span-3 justify-start text-left">
+                                    <SelectValue placeholder="Select video format...">
+                                        {/* Custom renderer for selected value - only show the label */}
+                                        {formData.targetVideoFormat && 
+                                            TARGET_VIDEO_FORMATS.find(f => f.id === formData.targetVideoFormat)?.label
+                                        }
+                                    </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {TARGET_VIDEO_FORMATS.map(f => 
+                                        <SelectItem 
+                                            key={f.id} 
+                                            value={f.id}
+                                            // Disable AV1 if CPU is selected
+                                            disabled={(f.id === 'AV1' && formData.hardwarePlatform === 'CPU_SOFTWARE')}
+                                        >
+                                            <div className="flex items-start justify-between w-full">
+                                                <span>{f.label}</span>
+                                                <span className="text-xs text-muted-foreground ml-2">{f.description}</span>
+                                            </div>
+                                        </SelectItem>
+                                    )}
+                                </SelectContent>
                             </Select>
                         </div>
+                        
+                        {(() => {
+                            const currentDerivedCodec = formData.hardwarePlatform && formData.targetVideoFormat ? 
+                                deriveFfmpegCodec(formData.hardwarePlatform, formData.targetVideoFormat) : 
+                                defaultPresetValues.videoCodec; // Fallback to default if not fully selected
+
+                            const isCopy = currentDerivedCodec === 'copy';
+                            // Video Preset and Quality typically apply to software encoders or when not copying.
+                            // For hardware encoders, their effect might vary. For simplicity, enable unless 'copy'.
+                            const disablePresetQuality = isCopy; 
+                        
+                            return (<>
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="videoPreset" className="text-right">Preset</Label>
+                                    <Select 
+                                        value={formData.videoPreset} 
+                                        onValueChange={(v: VideoPreset) => handleInputChange('videoPreset', v)} 
+                                        disabled={disablePresetQuality}
+                                    >
+                                        <SelectTrigger className="col-span-3"><SelectValue placeholder="Select preset..." /></SelectTrigger>
+                                        <SelectContent>{VIDEO_PRESETS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="videoQuality" className="text-right">Quality</Label>
+                                    <div className="col-span-3 flex items-center gap-4">
+                                        <Slider 
+                                            id="videoQuality"
+                                            value={[Number(formData.videoQuality ?? defaultPresetValues.videoQuality)]} 
+                                            min={18} 
+                                            max={38} 
+                                            step={1} 
+                                            onValueChange={(v) => handleSliderChange('videoQuality', v as unknown as number[])} 
+                                            disabled={disablePresetQuality}
+                                            className="flex-1 [&>span]:bg-accent"
+                                        />
+                                        <span className="text-sm w-8 text-right">{formData.videoQuality ?? defaultPresetValues.videoQuality}</span>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <Label htmlFor="videoResolution" className="text-right">Resolution</Label>
+                                    <Select 
+                                        value={formData.videoResolution} 
+                                        onValueChange={(v: VideoResolution) => handleInputChange('videoResolution', v)} 
+                                        disabled={isCopy}
+                                    >
+                                        <SelectTrigger className="col-span-3"><SelectValue placeholder="Select resolution..." /></SelectTrigger>
+                                        <SelectContent>
+                                            {VIDEO_RESOLUTIONS.map(r => <SelectItem key={r} value={r}>{r === 'original' ? 'Original' : r.toUpperCase()}</SelectItem>)}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </>);
+                        })()}
 
                         <Separator />
 
@@ -772,7 +956,7 @@ const Presets: React.FC = () => {
                         <DialogClose asChild>
                              <Button type="button" variant="outline">Cancel</Button>
                         </DialogClose>
-                        <Button type="button" onClick={handleSavePreset} className="bg-indigo-600 hover:bg-indigo-700 text-white">Save Preset</Button>
+                        <Button type="button" onClick={handleSavePreset}>Save Preset</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

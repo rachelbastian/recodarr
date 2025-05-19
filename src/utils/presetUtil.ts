@@ -1,8 +1,12 @@
 import { IElectronAPI, EncodingPreset, StreamInfo } from '../types.js';
 
 // Constants from ManualEncode/Presets
-const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
+const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'hevc_nvenc', 'h264_nvenc', 'av1_nvenc', 'libx265', 'libx264', 'copy'] as const;
 type VideoCodec = typeof VIDEO_CODECS[number];
+
+// For utility functions
+export type HardwarePlatformUtil = 'INTEL_GPU' | 'NVIDIA_GPU' | 'CPU_SOFTWARE' | 'NONE';
+export type TargetVideoFormatUtil = 'AV1' | 'H265' | 'H264' | 'COPY';
 
 const VIDEO_PRESETS = ['veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast', 'ultrafast'] as const;
 type VideoPreset = typeof VIDEO_PRESETS[number];
@@ -24,6 +28,71 @@ type AudioLayout = typeof AUDIO_LAYOUT_OPTIONS[number];
 
 const TRACK_ACTION_OPTIONS = ['keep', 'convert', 'discard'] as const;
 type TrackAction = typeof TRACK_ACTION_OPTIONS[number];
+
+/**
+ * Derives the FFMPEG video codec string from hardware and target format selections.
+ * @param hardware The selected hardware platform.
+ * @param format The selected target video format.
+ * @returns The corresponding FFMPEG VideoCodec string.
+ */
+export function deriveFfmpegCodec(hardware: HardwarePlatformUtil, format: TargetVideoFormatUtil): VideoCodec {
+    if (format === 'COPY') return 'copy';
+
+    switch (hardware) {
+        case 'INTEL_GPU':
+            if (format === 'AV1') return 'av1_qsv';
+            if (format === 'H265') return 'hevc_qsv';
+            if (format === 'H264') return 'h264_qsv';
+            break;
+        case 'NVIDIA_GPU':
+            if (format === 'AV1') return 'av1_nvenc';
+            if (format === 'H265') return 'hevc_nvenc';
+            if (format === 'H264') return 'h264_nvenc';
+            break;
+        case 'CPU_SOFTWARE':
+            if (format === 'H265') return 'libx265';
+            if (format === 'H264') return 'libx264';
+            // AV1 for CPU (e.g., libaom-av1, svt-av1) is not in VIDEO_CODECS,
+            // so AV1 with CPU_SOFTWARE will fall through to default or needs specific handling.
+            // For now, returning a common fallback if specific CPU AV1 isn't listed.
+            if (format === 'AV1') return 'libx265'; // Fallback: Or throw error / handle in UI
+            break;
+        case 'NONE':
+            // If hardware is 'NONE', the only sensible outcome is 'copy'.
+            // Regardless of the chosen format, if hardware is NONE, we treat it as a 'copy' operation.
+            return 'copy';
+    }
+    // Fallback for unhandled combinations - default to a common software encoder.
+    // The UI should ideally prevent invalid combinations.
+    console.warn(`Unsupported hardware/format combination: ${hardware}/${format}. Defaulting to libx265.`);
+    return 'libx265';
+}
+
+/**
+ * Derives hardware and target format selections from an FFMPEG video codec string.
+ * @param codec The FFMPEG VideoCodec string.
+ * @returns An object with `hardwarePlatform` and `targetVideoFormat`.
+ */
+export function deriveHardwareAndFormat(codec: VideoCodec | undefined | null): { hardwarePlatform: HardwarePlatformUtil, targetVideoFormat: TargetVideoFormatUtil } {
+    if (!codec) { // Default if codec is undefined or null
+        return { hardwarePlatform: 'INTEL_GPU', targetVideoFormat: 'H265' };
+    }
+    switch (codec) {
+        case 'av1_qsv': return { hardwarePlatform: 'INTEL_GPU', targetVideoFormat: 'AV1' };
+        case 'hevc_qsv': return { hardwarePlatform: 'INTEL_GPU', targetVideoFormat: 'H265' };
+        case 'h264_qsv': return { hardwarePlatform: 'INTEL_GPU', targetVideoFormat: 'H264' };
+        case 'av1_nvenc': return { hardwarePlatform: 'NVIDIA_GPU', targetVideoFormat: 'AV1' };
+        case 'hevc_nvenc': return { hardwarePlatform: 'NVIDIA_GPU', targetVideoFormat: 'H265' };
+        case 'h264_nvenc': return { hardwarePlatform: 'NVIDIA_GPU', targetVideoFormat: 'H264' };
+        case 'libx265': return { hardwarePlatform: 'CPU_SOFTWARE', targetVideoFormat: 'H265' };
+        case 'libx264': return { hardwarePlatform: 'CPU_SOFTWARE', targetVideoFormat: 'H264' };
+        case 'copy': return { hardwarePlatform: 'NONE', targetVideoFormat: 'COPY' };
+        default:
+            // Fallback for unknown or older codecs
+            console.warn(`Unknown video codec "${codec}" for deriving hardware/format. Defaulting to CPU_SOFTWARE/H265.`);
+            return { hardwarePlatform: 'CPU_SOFTWARE', targetVideoFormat: 'H265' };
+    }
+}
 
 // Default values for a new preset - copied from Presets.tsx
 export const defaultPresetValues: Omit<EncodingPreset, 'id'> = {
@@ -280,7 +349,28 @@ export const getPresetSummary = (preset: EncodingPreset): string => {
     
     // Video info
     if (preset.videoCodec) {
-        parts.push(`Vid: ${preset.videoCodec}${preset.videoQuality ? ` (Q${preset.videoQuality})` : ''}`);
+        const { hardwarePlatform, targetVideoFormat } = deriveHardwareAndFormat(preset.videoCodec);
+        let formatDesc = targetVideoFormat;
+        if (targetVideoFormat === 'H265') formatDesc = 'H.265';
+        else if (targetVideoFormat === 'H264') formatDesc = 'H.264';
+
+        let hardwareDesc = '';
+        if (hardwarePlatform === 'INTEL_GPU') hardwareDesc = 'Intel GPU';
+        else if (hardwarePlatform === 'NVIDIA_GPU') hardwareDesc = 'Nvidia GPU';
+        else if (hardwarePlatform === 'CPU_SOFTWARE') hardwareDesc = 'CPU';
+        
+        if (targetVideoFormat === 'COPY') {
+            parts.push(`Vid: Keep Original`);
+        } else if (hardwarePlatform === 'NONE'){ // Should not happen if not copy, but as a safeguard
+             parts.push(`Vid: ${formatDesc}`);
+        }
+        else {
+            parts.push(`Vid: ${hardwareDesc} ${formatDesc}`);
+        }
+
+        if (preset.videoQuality && targetVideoFormat !== 'COPY') {
+             parts[parts.length-1] += ` (Q${preset.videoQuality})`;
+        }
     }
     
     // Audio codec info

@@ -348,7 +348,7 @@ export interface DialogResult {
 
 // --- Define EncodingPreset type here to be shared ---
 // (Copied from Presets.tsx / preload.cts)
-const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
+const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'hevc_nvenc', 'h264_nvenc', 'av1_nvenc', 'libx265', 'libx264', 'copy'] as const;
 type VideoCodec = typeof VIDEO_CODECS[number];
 const VIDEO_PRESETS = ['veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast', 'ultrafast'] as const;
 type VideoPreset = typeof VIDEO_PRESETS[number];
