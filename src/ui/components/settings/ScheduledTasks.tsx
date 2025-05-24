@@ -49,7 +49,7 @@ interface ScheduledTask {
   id: string;
   name: string;
   description?: string;
-  type: 'scan' | 'cleanup' | 'custom';
+  type: 'scan' | 'cleanup' | 'custom' | 'workflow';
   frequency: 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom';
   enabled: boolean;
   lastRun?: Date;
@@ -71,6 +71,8 @@ interface ElectronAPI {
   runScheduledTaskNow: (taskId: string) => Promise<void>;
   getConfigValue: (key: string) => Promise<any>;
   setConfigValue: (key: string, value: any) => Promise<void>;
+  // Add workflow methods
+  getWorkflows: () => Promise<any[]>;
 }
 
 // Preset task definitions
@@ -78,11 +80,12 @@ interface PresetTask {
   id: string;
   name: string;
   description: string;
-  type: 'scan' | 'cleanup' | 'custom';
+  type: 'scan' | 'cleanup' | 'custom' | 'workflow';
   defaultHour: number; // Default hour to run (24h format)
   defaultMinute: number;
   icon: React.ReactNode;
   cronTemplate: string; // Template for cron expression, can include {hour}, {minute}
+  isWorkflowTask?: boolean; // New flag to identify workflow tasks
 }
 
 // Format a date to a readable string
@@ -379,7 +382,158 @@ const TaskStatusBadge: React.FC<{ task: ScheduledTask }> = ({ task }) => {
   return <Badge variant="destructive">Error</Badge>;
 };
 
-// Preset task card component
+// Workflow Task Card component for read-only workflow scheduling display
+const WorkflowTaskCard: React.FC<{
+  workflow: any;
+  existingTask?: ScheduledTask;
+  onRunNow: () => void;
+  isRunning?: boolean;
+}> = ({ workflow, existingTask, onRunNow, isRunning = false }) => {
+  const isEnabled = !!existingTask?.enabled;
+  
+  // Parse schedule properties from task parameters
+  const scheduleProperties = existingTask?.parameters?.scheduleProperties || {};
+  const { scheduleType = 'daily', time = '09:00', days = [], dayOfMonth = 1, timezone = 'local' } = scheduleProperties;
+  
+  const formatScheduleDescription = () => {
+    if (!isEnabled) return 'Not scheduled';
+    
+    const [hours, minutes] = time.split(':').map(Number);
+    const formattedTime = `${hours % 12 || 12}:${minutes.toString().padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`;
+    
+    switch (scheduleType) {
+      case 'daily':
+        return `Daily at ${formattedTime}`;
+      case 'weekly':
+        if (days.length === 0) return 'Weekly (no days selected)';
+        const dayNames = days.map((d: string) => {
+          const dayMap: Record<string, string> = {
+            'mon': 'Mon', 'tue': 'Tue', 'wed': 'Wed', 'thu': 'Thu',
+            'fri': 'Fri', 'sat': 'Sat', 'sun': 'Sun'
+          };
+          return dayMap[d];
+        }).join(', ');
+        return `${dayNames} at ${formattedTime}`;
+      case 'monthly':
+        const suffix = dayOfMonth === 1 ? 'st' : dayOfMonth === 2 ? 'nd' : dayOfMonth === 3 ? 'rd' : 'th';
+        return `Monthly on the ${dayOfMonth}${suffix} at ${formattedTime}`;
+      case 'custom':
+        return `Custom: ${existingTask?.cronExpression || 'No cron expression'}`;
+      default:
+        return 'Unknown schedule';
+    }
+  };
+  
+  return (
+    <Card className={cn(
+      "transition-colors", 
+      isEnabled ? "border-primary/30" : "opacity-90"
+    )}>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className={cn(
+              "p-1.5 rounded-md", 
+              isEnabled ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+            )}>
+              <Settings className="h-4 w-4" />
+            </div>
+            <CardTitle className="text-lg">{workflow.name}</CardTitle>
+          </div>
+          <Badge variant={isEnabled ? "default" : "secondary"}>
+            {isEnabled ? "Scheduled" : "Not Scheduled"}
+          </Badge>
+        </div>
+        <CardDescription>
+          {workflow.description || `Workflow: ${workflow.name}`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col gap-4">
+          {/* Schedule information */}
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Clock className="h-3.5 w-3.5" />
+              <span>Schedule</span>
+            </div>
+            <div className="text-sm">
+              {formatScheduleDescription()}
+            </div>
+            
+            {isEnabled && timezone && (
+              <>
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Globe className="h-3.5 w-3.5" />
+                  <span>Timezone</span>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {timezone === 'local' ? 'Local System Time' : timezone}
+                </div>
+              </>
+            )}
+            
+            {existingTask?.lastRun && (
+              <>
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Calendar className="h-3.5 w-3.5" />
+                  <span>Last run</span>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {formatDate(existingTask.lastRun)}
+                </div>
+              </>
+            )}
+            
+            {existingTask?.nextRun && (
+              <>
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Calendar className="h-3.5 w-3.5" />
+                  <span>Next run</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-sm">{formatDate(existingTask.nextRun)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {formatRelativeTime(existingTask.nextRun)}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+          
+          {!isEnabled && (
+            <div className="p-3 bg-muted rounded-md">
+              <p className="text-sm text-muted-foreground">
+                To schedule this workflow, edit it in the Workflows page and configure the scheduled trigger node properties.
+              </p>
+            </div>
+          )}
+        </div>
+      </CardContent>
+      <CardFooter className="flex justify-end pt-0">
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={onRunNow}
+          disabled={!isEnabled || isRunning}
+        >
+          {isRunning ? (
+            <>
+              <div className="h-3.5 w-3.5 mr-2 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+              Running...
+            </>
+          ) : (
+            <>
+              <Play className="mr-2 h-3.5 w-3.5" />
+              Run Now
+            </>
+          )}
+        </Button>
+      </CardFooter>
+    </Card>
+  );
+};
+
+// Preset Task Card component
 const PresetTaskCard: React.FC<{
   preset: PresetTask;
   existingTask?: ScheduledTask;
@@ -390,8 +544,6 @@ const PresetTaskCard: React.FC<{
 }> = ({ preset, existingTask, onToggle, onTimeChange, onRunNow, isRunning = false }) => {
   const isEnabled = !!existingTask?.enabled;
   const { hour = preset.defaultHour, minute = preset.defaultMinute } = existingTask?.parameters || {};
-  
-  const formattedTime = `${hour % 12 || 12}:${minute.toString().padStart(2, '0')} ${hour >= 12 ? 'PM' : 'AM'}`;
   
   return (
     <Card className={cn(
@@ -510,9 +662,25 @@ const ScheduledTasks: React.FC = () => {
   const [timezone, setTimezone] = useState<string>(
     Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   );
+  const [workflows, setWorkflows] = useState<any[]>([]);
+  const [isLoadingWorkflows, setIsLoadingWorkflows] = useState(false);
   
   // Get access to Electron API with type casting
   const electronAPI = window.electron as unknown as ElectronAPI;
+  
+  // Load workflows for scheduling
+  const loadWorkflows = async () => {
+    try {
+      setIsLoadingWorkflows(true);
+      const workflowList = await electronAPI.getWorkflows();
+      setWorkflows(workflowList);
+    } catch (error) {
+      console.error('Error loading workflows:', error);
+      setWorkflows([]);
+    } finally {
+      setIsLoadingWorkflows(false);
+    }
+  };
   
   // Preset tasks definitions
   const presetTasks: PresetTask[] = [
@@ -537,6 +705,22 @@ const ScheduledTasks: React.FC = () => {
       cronTemplate: '0 {minute} {hour} * * 0', // Every Sunday at the specified hour
     }
   ];
+
+  // Generate workflow preset tasks dynamically
+  const workflowPresetTasks: PresetTask[] = workflows.map(workflow => ({
+    id: `workflow-${workflow.id}`,
+    name: `Schedule: ${workflow.name}`,
+    description: workflow.description || `Automatically run the "${workflow.name}" workflow`,
+    type: 'workflow',
+    defaultHour: 6, // 6 AM by default for workflows
+    defaultMinute: 0,
+    icon: <Settings className="h-4 w-4" />,
+    cronTemplate: '0 {minute} {hour} * * *', // Every day at the specified hour
+    isWorkflowTask: true,
+  }));
+
+  // Combine preset tasks
+  const allPresetTasks = [...presetTasks, ...workflowPresetTasks];
   
   // Load timezone preference from config
   const loadTimezonePreference = async () => {
@@ -647,7 +831,8 @@ const ScheduledTasks: React.FC = () => {
         'deleteScheduledTask',
         'runScheduledTaskNow',
         'getConfigValue',
-        'setConfigValue'
+        'setConfigValue',
+        'getWorkflows'
       ];
       
       const missingMethods = requiredMethods.filter(
@@ -662,6 +847,7 @@ const ScheduledTasks: React.FC = () => {
     
     const init = async () => {
       await loadTimezonePreference();
+      await loadWorkflows(); // Load workflows first
       await loadTasks();
     };
     
@@ -671,6 +857,11 @@ const ScheduledTasks: React.FC = () => {
   // Find a task by preset ID
   const findTaskByPresetId = (presetId: string): ScheduledTask | undefined => {
     return tasks.find(task => task.parameters?.presetId === presetId);
+  };
+
+  // Find a workflow task by workflow ID
+  const findWorkflowTask = (workflowId: string): ScheduledTask | undefined => {
+    return tasks.find(task => task.parameters?.workflowId === workflowId);
   };
   
   // Handle enabling/disabling a preset task
@@ -690,6 +881,13 @@ const ScheduledTasks: React.FC = () => {
         const hour = preset.defaultHour;
         const minute = preset.defaultMinute;
         
+        const taskParameters: Record<string, any> = {
+          presetId: preset.id,
+          hour,
+          minute,
+          timezone, // Use the current global timezone
+        };
+        
         const newTask = {
           name: preset.name,
           description: preset.description,
@@ -699,12 +897,7 @@ const ScheduledTasks: React.FC = () => {
           cronExpression: preset.cronTemplate
             .replace('{hour}', hour.toString())
             .replace('{minute}', minute.toString()),
-          parameters: {
-            presetId: preset.id,
-            hour,
-            minute,
-            timezone, // Use the current global timezone
-          }
+          parameters: taskParameters
         };
         
         console.log('Creating new task with data:', newTask);
@@ -742,13 +935,21 @@ const ScheduledTasks: React.FC = () => {
         .replace('{hour}', hour.toString())
         .replace('{minute}', minute.toString());
       
+      const updatedParameters: Record<string, any> = {
+        ...existingTask.parameters,
+        hour,
+        minute
+      };
+
+      // Ensure workflow tasks retain their workflowId
+      if (preset.isWorkflowTask && !updatedParameters['workflowId']) {
+        const workflowId = preset.id.replace('workflow-', '');
+        updatedParameters['workflowId'] = workflowId;
+      }
+      
       await electronAPI.updateScheduledTask(existingTask.id, {
         cronExpression,
-        parameters: {
-          ...existingTask.parameters,
-          hour,
-          minute
-        }
+        parameters: updatedParameters
       });
       
       // Reload tasks
@@ -834,32 +1035,75 @@ const ScheduledTasks: React.FC = () => {
       </div>
       
       {/* Loading state */}
-      {isLoading ? (
+      {isLoading || isLoadingWorkflows ? (
         <div className="flex justify-center items-center py-16 border rounded-md">
           <div className="flex flex-col items-center gap-2 text-muted-foreground">
             <div className="animate-spin w-6 h-6 border-4 border-primary border-t-transparent rounded-full"></div>
-            <span>Loading tasks...</span>
+            <span>{isLoading ? 'Loading tasks...' : 'Loading workflows...'}</span>
           </div>
         </div>
       ) : (
-        <div className="grid gap-6 md:grid-cols-2">
-          {/* Preset Task Cards */}
-          {presetTasks.map(preset => {
-            const existingTask = findTaskByPresetId(preset.id);
-            const isRunning = existingTask && taskRunningId === existingTask.id;
-            
-            return (
-              <PresetTaskCard
-                key={preset.id}
-                preset={preset}
-                existingTask={existingTask}
-                onToggle={(enabled) => handleTogglePresetTask(preset, enabled)}
-                onTimeChange={(hour, minute) => handleChangePresetTaskTime(preset, hour, minute)}
-                onRunNow={() => existingTask && handleRunTaskNow(existingTask.id)}
-                isRunning={isRunning}
-              />
-            );
-          })}
+        <div className="space-y-6">
+          {/* Workflow scheduling info */}
+          {workflows.length > 0 && (
+            <div className="p-4 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <Settings className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                <h3 className="font-medium text-blue-900 dark:text-blue-100">Workflow Scheduling</h3>
+              </div>
+              <p className="text-sm text-blue-800 dark:text-blue-200">
+                Found {workflows.length} workflow{workflows.length !== 1 ? 's' : ''} with scheduled triggers. 
+                Workflow schedules are configured in the workflow editor using the scheduled trigger node properties.
+                The cards below show the current scheduling status for each workflow.
+              </p>
+            </div>
+          )}
+          
+          {/* Workflow Task Cards */}
+          {workflows.length > 0 && (
+            <div className="space-y-4">
+              <h3 className="text-lg font-medium">Workflow Tasks</h3>
+              <div className="grid gap-6 md:grid-cols-2">
+                {workflows.map(workflow => {
+                  const existingTask = findWorkflowTask(workflow.id);
+                  const isRunning = existingTask && taskRunningId === existingTask.id;
+                  
+                  return (
+                    <WorkflowTaskCard
+                      key={workflow.id}
+                      workflow={workflow}
+                      existingTask={existingTask}
+                      onRunNow={() => existingTask && handleRunTaskNow(existingTask.id)}
+                      isRunning={isRunning}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          
+          {/* System Task Cards */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-medium">System Tasks</h3>
+            <div className="grid gap-6 md:grid-cols-2">
+              {allPresetTasks.filter(preset => !preset.isWorkflowTask).map(preset => {
+                const existingTask = findTaskByPresetId(preset.id);
+                const isRunning = existingTask && taskRunningId === existingTask.id;
+                
+                return (
+                  <PresetTaskCard
+                    key={preset.id}
+                    preset={preset}
+                    existingTask={existingTask}
+                    onToggle={(enabled) => handleTogglePresetTask(preset, enabled)}
+                    onTimeChange={(hour, minute) => handleChangePresetTaskTime(preset, hour, minute)}
+                    onRunNow={() => existingTask && handleRunTaskNow(existingTask.id)}
+                    isRunning={isRunning}
+                  />
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
       

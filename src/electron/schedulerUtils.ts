@@ -7,6 +7,8 @@ import fsSync from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { pruneOldPerformanceRecords } from './dbUtils.js';
+import { executeWorkflow } from './workflowExecutor.js';
+import crypto from 'crypto';
 
 const execAsync = promisify(exec);
 
@@ -17,7 +19,7 @@ export interface ScheduledTask {
     id: string;
     name: string;
     description?: string;
-    type: 'scan' | 'cleanup' | 'custom' | 'performance_data_pruning';
+    type: 'scan' | 'cleanup' | 'custom' | 'performance_data_pruning' | 'workflow';
     frequency: TaskFrequency;
     enabled: boolean;
     lastRun?: Date;
@@ -107,6 +109,8 @@ export class TaskScheduler {
         if (this.isInitialized) return;
 
         try {
+            console.log('[Scheduler] Starting initialization...');
+            
             // Create table if it doesn't exist
             this.db.exec(`
                 CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -124,6 +128,7 @@ export class TaskScheduler {
                     updated_at TEXT NOT NULL
                 )
             `);
+            console.log('[Scheduler] Database table created/verified');
 
             // Ensure default performance data pruning task exists
             await this.ensureDefaultPerformancePruningTask();
@@ -132,6 +137,9 @@ export class TaskScheduler {
             await this.loadTasks();
             this.isInitialized = true;
             console.log('[Scheduler] Initialized successfully');
+            
+            // Log current status
+            console.log(`[Scheduler] Status: ${this.jobs.size} active jobs, ${this.getAllTasks().length} total tasks`);
         } catch (error) {
             console.error('[Scheduler] Initialization error:', error);
             throw error;
@@ -145,6 +153,9 @@ export class TaskScheduler {
         try {
             // Cancel all existing jobs
             this.cancelAllJobs();
+
+            // First, load workflows with scheduled triggers and create/update tasks for them
+            await this.loadWorkflowTasks();
 
             // Get all tasks from the database
             const stmt = this.db.prepare(`
@@ -162,6 +173,7 @@ export class TaskScheduler {
                     frequency: taskData.frequency as TaskFrequency,
                     enabled: Boolean(taskData.enabled),
                     lastRun: taskData.last_run ? new Date(taskData.last_run) : undefined,
+                    nextRun: taskData.next_run ? new Date(taskData.next_run) : undefined,
                     cronExpression: taskData.cron_expression,
                     targetPaths: taskData.target_paths ? JSON.parse(taskData.target_paths) : undefined,
                     parameters: taskData.parameters ? JSON.parse(taskData.parameters) : undefined,
@@ -179,6 +191,189 @@ export class TaskScheduler {
         } catch (error) {
             console.error('[Scheduler] Error loading tasks:', error);
             throw error;
+        }
+    }
+
+    /**
+     * Load workflows with scheduled triggers and create/update scheduled tasks for them
+     */
+    private async loadWorkflowTasks(): Promise<void> {
+        try {
+            console.log('[Scheduler] Loading workflows with scheduled triggers...');
+
+            // Get all workflows
+            const workflowsStmt = this.db.prepare('SELECT * FROM workflows');
+            const workflows = workflowsStmt.all() as any[];
+
+            for (const workflow of workflows) {
+                // Get workflow nodes to find scheduled trigger
+                const nodesStmt = this.db.prepare('SELECT * FROM workflow_nodes WHERE workflow_id = ? AND node_type = ?');
+                const triggerNodes = nodesStmt.all(workflow.id, 'trigger') as any[];
+
+                // Find scheduled trigger node
+                const scheduledTrigger = triggerNodes.find(node => {
+                    const nodeData = JSON.parse(node.data || '{}');
+                    return nodeData.id === 'scheduled';
+                });
+
+                if (scheduledTrigger) {
+                    const nodeData = JSON.parse(scheduledTrigger.data || '{}');
+                    const properties = nodeData.properties || {};
+
+                    console.log(`[Scheduler] Found scheduled trigger for workflow ${workflow.name}:`, {
+                        workflowId: workflow.id,
+                        enabled: properties.enabled,
+                        scheduleType: properties.scheduleType,
+                        time: properties.time
+                    });
+
+                    // Check if the schedule is enabled (default to true if not specified)
+                    if (properties.enabled !== false) {
+                        console.log(`[Scheduler] Creating/updating task for enabled workflow: ${workflow.name}`);
+                        await this.createOrUpdateWorkflowTask(workflow, properties);
+                    } else {
+                        console.log(`[Scheduler] Schedule disabled for workflow: ${workflow.name}, removing task`);
+                        // If schedule is disabled, remove any existing task
+                        await this.removeWorkflowTask(workflow.id);
+                    }
+                } else {
+                    // No scheduled trigger, remove any existing task
+                    await this.removeWorkflowTask(workflow.id);
+                }
+            }
+
+            console.log('[Scheduler] Finished loading workflow tasks');
+        } catch (error) {
+            console.error('[Scheduler] Error loading workflow tasks:', error);
+        }
+    }
+
+    /**
+     * Create or update a scheduled task for a workflow based on its scheduled trigger properties
+     */
+    private async createOrUpdateWorkflowTask(workflow: any, scheduleProperties: any): Promise<void> {
+        try {
+            const taskId = `workflow_${workflow.id}`;
+            const cronExpression = this.generateCronFromScheduleProperties(scheduleProperties);
+
+            if (!cronExpression) {
+                console.warn(`[Scheduler] Could not generate cron expression for workflow ${workflow.name}`);
+                return;
+            }
+
+            // Check if task already exists
+            const existingTaskStmt = this.db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?');
+            const existingTaskData = existingTaskStmt.get(taskId) as any;
+
+            const taskData = {
+                name: `Scheduled: ${workflow.name}`,
+                description: workflow.description || `Automatically run the "${workflow.name}" workflow`,
+                type: 'workflow' as const,
+                frequency: 'custom' as TaskFrequency,
+                enabled: true,
+                cronExpression,
+                parameters: {
+                    workflowId: workflow.id,
+                    scheduleProperties,
+                    timezone: scheduleProperties.timezone || 'local'
+                }
+            };
+
+            console.log(`[Scheduler] Task data for workflow ${workflow.name}:`, {
+                taskId,
+                enabled: taskData.enabled,
+                cronExpression: taskData.cronExpression,
+                scheduleProperties
+            });
+
+            if (existingTaskData) {
+                // Update existing task
+                console.log(`[Scheduler] Updating workflow task for: ${workflow.name}`);
+                console.log(`[Scheduler] Existing task enabled status:`, existingTaskData.enabled);
+                console.log(`[Scheduler] New task enabled status:`, taskData.enabled);
+                const updatedTask = this.updateTask(taskId, taskData);
+                console.log(`[Scheduler] Updated task enabled status:`, updatedTask.enabled);
+            } else {
+                // Create new task
+                console.log(`[Scheduler] Creating workflow task for: ${workflow.name}`);
+                const newTask = this.addTask(taskData, taskId);
+                console.log(`[Scheduler] Created task enabled status:`, newTask.enabled);
+            }
+        } catch (error) {
+            console.error(`[Scheduler] Error creating/updating workflow task for ${workflow.name}:`, error);
+        }
+    }
+
+    /**
+     * Remove a workflow task if it exists
+     */
+    private async removeWorkflowTask(workflowId: string): Promise<void> {
+        try {
+            const taskId = `workflow_${workflowId}`;
+            const existingTaskStmt = this.db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?');
+            const existingTaskData = existingTaskStmt.get(taskId);
+
+            if (existingTaskData) {
+                console.log(`[Scheduler] Removing workflow task for workflow ${workflowId}`);
+                this.deleteTask(taskId);
+            }
+        } catch (error) {
+            console.error(`[Scheduler] Error removing workflow task for ${workflowId}:`, error);
+        }
+    }
+
+    /**
+     * Generate a cron expression from schedule properties
+     */
+    private generateCronFromScheduleProperties(properties: any): string | null {
+        try {
+            const { scheduleType, time, days, dayOfMonth, cronExpression } = properties;
+
+            if (scheduleType === 'custom') {
+                return cronExpression || null;
+            }
+
+            if (!time) {
+                console.warn('[Scheduler] No time specified in schedule properties');
+                return null;
+            }
+
+            const [hours, minutes] = time.split(':').map(Number);
+            if (isNaN(hours) || isNaN(minutes)) {
+                console.warn('[Scheduler] Invalid time format in schedule properties:', time);
+                return null;
+            }
+
+            // Standard cron uses 5-field format: minute hour day-of-month month day-of-week
+            switch (scheduleType) {
+                case 'daily':
+                    return `${minutes} ${hours} * * *`;
+
+                case 'weekly':
+                    if (!days || days.length === 0) {
+                        console.warn('[Scheduler] No days specified for weekly schedule');
+                        return null;
+                    }
+                    const cronDays = days.map((day: string) => {
+                        const dayMap: Record<string, string> = {
+                            'sun': '0', 'mon': '1', 'tue': '2', 'wed': '3',
+                            'thu': '4', 'fri': '5', 'sat': '6'
+                        };
+                        return dayMap[day];
+                    }).filter(Boolean).join(',');
+                    return `${minutes} ${hours} * * ${cronDays}`;
+
+                case 'monthly':
+                    const day = dayOfMonth || 1;
+                    return `${minutes} ${hours} ${day} * *`;
+
+                default:
+                    console.warn('[Scheduler] Unknown schedule type:', scheduleType);
+                    return null;
+            }
+        } catch (error) {
+            console.error('[Scheduler] Error generating cron expression:', error);
+            return null;
         }
     }
 
@@ -203,6 +398,7 @@ export class TaskScheduler {
                     frequency: taskData.frequency as TaskFrequency,
                     enabled: Boolean(taskData.enabled),
                     lastRun: taskData.last_run ? new Date(taskData.last_run) : undefined,
+                    nextRun: taskData.next_run ? new Date(taskData.next_run) : undefined,
                     cronExpression: taskData.cron_expression,
                     targetPaths: taskData.target_paths ? JSON.parse(taskData.target_paths) : undefined,
                     parameters: taskData.parameters ? JSON.parse(taskData.parameters) : undefined,
@@ -309,6 +505,7 @@ export class TaskScheduler {
                 frequency: existingTaskData.frequency as TaskFrequency,
                 enabled: Boolean(existingTaskData.enabled),
                 lastRun: existingTaskData.last_run ? new Date(existingTaskData.last_run) : undefined,
+                nextRun: existingTaskData.next_run ? new Date(existingTaskData.next_run) : undefined,
                 cronExpression: existingTaskData.cron_expression,
                 targetPaths: existingTaskData.target_paths ? JSON.parse(existingTaskData.target_paths) : undefined,
                 parameters: existingTaskData.parameters ? JSON.parse(existingTaskData.parameters) : undefined,
@@ -323,13 +520,21 @@ export class TaskScheduler {
                 updatedAt: new Date()
             };
 
-            // Update cron expression if frequency or parameters changed
-            if (updates.frequency || updates.parameters) {
+            // Update cron expression if explicitly provided, or if frequency or parameters changed
+            if (updates.cronExpression) {
+                // Use the explicitly provided cron expression
+                updatedTask.cronExpression = updates.cronExpression;
+                console.log(`[Scheduler] Using provided cron expression: ${updates.cronExpression}`);
+            } else if (updates.frequency || updates.parameters) {
+                // Generate from frequency and parameters only if no explicit cron expression
                 updatedTask.cronExpression = getCronExpression(
                     updatedTask.frequency,
                     updatedTask.parameters
                 );
+                console.log(`[Scheduler] Generated cron expression: ${updatedTask.cronExpression}`);
             }
+
+            console.log(`[Scheduler] Final cron expression for update: ${updatedTask.cronExpression}`);
 
             // Update in database
             const updateStmt = this.db.prepare(`
@@ -429,6 +634,7 @@ export class TaskScheduler {
                 frequency: existingTaskData.frequency as TaskFrequency,
                 enabled: Boolean(existingTaskData.enabled),
                 lastRun: existingTaskData.last_run ? new Date(existingTaskData.last_run) : undefined,
+                nextRun: existingTaskData.next_run ? new Date(existingTaskData.next_run) : undefined,
                 cronExpression: existingTaskData.cron_expression,
                 targetPaths: existingTaskData.target_paths ? JSON.parse(existingTaskData.target_paths) : undefined,
                 parameters: existingTaskData.parameters ? JSON.parse(existingTaskData.parameters) : undefined,
@@ -522,6 +728,7 @@ export class TaskScheduler {
             // Create the job with optional timezone
             let job;
             if (timezone) {
+                console.log(`[Scheduler] Creating job with timezone for task: ${task.id}`);
                 job = scheduleJob({ rule: cronExpression, tz: timezone }, async () => {
                     console.log(`[Scheduler] Running task: ${task.name} (${task.id})`);
                     
@@ -559,6 +766,7 @@ export class TaskScheduler {
                     }
                 });
             } else {
+                console.log(`[Scheduler] Creating job without timezone for task: ${task.id}`);
                 job = scheduleJob(cronExpression, async () => {
                     console.log(`[Scheduler] Running task: ${task.name} (${task.id})`);
                     
@@ -597,8 +805,14 @@ export class TaskScheduler {
                 });
             }
             
-            // Store the job
-            this.jobs.set(task.id, job);
+            if (job) {
+                // Store the job
+                this.jobs.set(task.id, job);
+                const nextRun = job.nextInvocation();
+                console.log(`[Scheduler] Job created successfully for task: ${task.id}. Next run: ${nextRun ? nextRun.toISOString() : 'N/A'}`);
+            } else {
+                console.error(`[Scheduler] Failed to create job for task: ${task.id}`);
+            }
         } catch (error) {
             console.error(`[Scheduler] Error scheduling task ${task.id}:`, error);
         }
@@ -622,6 +836,9 @@ export class TaskScheduler {
                     break;
                 case 'performance_data_pruning':
                     await this.executePerformancePruningTask(task);
+                    break;
+                case 'workflow':
+                    await this.executeWorkflowTask(task);
                     break;
                 default:
                     console.warn(`[Scheduler] Unknown task type: ${task.type}`);
@@ -718,6 +935,84 @@ export class TaskScheduler {
     }
 
     /**
+     * Execute a workflow task
+     */
+    private async executeWorkflowTask(task: ScheduledTask): Promise<void> {
+        console.log(`[Scheduler] Executing workflow task: ${task.name}`);
+        
+        try {
+            const workflowId = task.parameters?.workflowId;
+            if (!workflowId) {
+                throw new Error('No workflow ID specified in task parameters');
+            }
+
+            // Get the workflow to find a suitable trigger node
+            const workflowStmt = this.db.prepare('SELECT * FROM workflows WHERE id = ?');
+            const workflow = workflowStmt.get(workflowId) as any;
+            
+            if (!workflow) {
+                throw new Error(`Workflow with ID ${workflowId} not found`);
+            }
+
+            // Get workflow nodes to find a trigger
+            const nodesStmt = this.db.prepare('SELECT * FROM workflow_nodes WHERE workflow_id = ?');
+            const nodes = nodesStmt.all(workflowId) as any[];
+            
+            // Find a suitable trigger node - prefer manual trigger, but fall back to any trigger
+            let triggerNode = nodes.find(node => {
+                const nodeData = JSON.parse(node.data || '{}');
+                return nodeData.id === 'manual-trigger' && node.node_type === 'trigger';
+            });
+
+            // If no manual trigger, find any trigger node
+            if (!triggerNode) {
+                triggerNode = nodes.find(node => node.node_type === 'trigger');
+            }
+
+            if (!triggerNode) {
+                throw new Error(`No trigger node found in workflow ${workflow.name}`);
+            }
+
+            console.log(`[Scheduler] Found trigger node ${triggerNode.node_id} for workflow ${workflow.name}`);
+
+            // Generate execution ID
+            const executionId = crypto.randomUUID();
+
+            // Execute the workflow using the same mechanism as manual execution
+            const result = await executeWorkflow(workflowId, triggerNode.node_id, this.db, this.mainWindow, executionId);
+            
+            if (result.success) {
+                console.log(`[Scheduler] Workflow task ${task.name} completed successfully: ${result.message}`);
+                
+                // Send toast notification
+                if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+                    this.mainWindow.webContents.send('show-toast-notification', {
+                        title: 'Scheduled Workflow Completed',
+                        type: 'success',
+                        message: `Workflow "${workflow.name}" executed successfully`
+                    });
+                }
+            } else {
+                throw new Error(result.message || 'Workflow execution failed');
+            }
+            
+        } catch (error) {
+            console.error(`[Scheduler] Error executing workflow task ${task.name}:`, error);
+            
+            // Send error toast notification
+            if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+                this.mainWindow.webContents.send('show-toast-notification', {
+                    title: 'Scheduled Workflow Failed',
+                    type: 'error',
+                    message: error instanceof Error ? error.message : String(error)
+                });
+            }
+            
+            throw error; // Re-throw to be caught by executeTask
+        }
+    }
+
+    /**
      * Manually run a task immediately
      */
     public async runTaskNow(taskId: string): Promise<void> {
@@ -739,6 +1034,7 @@ export class TaskScheduler {
                 frequency: taskData.frequency as TaskFrequency,
                 enabled: Boolean(taskData.enabled),
                 lastRun: taskData.last_run ? new Date(taskData.last_run) : undefined,
+                nextRun: taskData.next_run ? new Date(taskData.next_run) : undefined,
                 cronExpression: taskData.cron_expression,
                 targetPaths: taskData.target_paths ? JSON.parse(taskData.target_paths) : undefined,
                 parameters: taskData.parameters ? JSON.parse(taskData.parameters) : undefined,
@@ -843,6 +1139,25 @@ export class TaskScheduler {
             }
         } catch (error) {
             console.error('[Scheduler] Error ensuring default performance pruning task:', error);
+        }
+    }
+
+    /**
+     * Reload workflow tasks - useful when workflows are updated/saved
+     */
+    public async reloadWorkflowTasks(): Promise<void> {
+        try {
+            console.log('[Scheduler] Reloading workflow tasks...');
+            await this.loadWorkflowTasks();
+            
+            // After loading workflow tasks, we need to reload all tasks to reschedule them
+            console.log('[Scheduler] Reloading all tasks to update schedules...');
+            await this.loadTasks();
+            
+            console.log('[Scheduler] Workflow tasks reloaded successfully');
+        } catch (error) {
+            console.error('[Scheduler] Error reloading workflow tasks:', error);
+            throw error;
         }
     }
 }

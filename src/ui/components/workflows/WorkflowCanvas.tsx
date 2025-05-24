@@ -167,13 +167,22 @@ const WorkflowCanvas: React.FC<WorkflowCanvasProps> = ({ onNodeSelect, selectedN
 
     console.log(`${isAutoSave ? '[AutoSave]' : '[ManualSave]'} Saving workflow:`, flowToSave.id, flowToSave.name);
     window.electron.saveWorkflow(flowToSave)
-      .then(() => {
+      .then(async () => {
         if (!isAutoSave) {
           toast.success(`Workflow '${flowToSave.name}' saved successfully!`);
         } else {
           console.log(`Workflow '${flowToSave.name}' auto-saved.`);
         }
         setHasChanges(false);
+        
+        // Reload workflow tasks in the scheduler after saving
+        try {
+          await window.electron.reloadWorkflowTasks();
+          console.log('Workflow tasks reloaded in scheduler');
+        } catch (error) {
+          console.error('Failed to reload workflow tasks:', error);
+        }
+        
         // If it was a new workflow that just got saved manually,
         // the parent (Workflows.tsx) needs to update its activeWorkflowId,
         // which will re-render this component with the new workflowId prop.

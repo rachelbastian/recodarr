@@ -473,6 +473,18 @@ interface PresetFormDataWithoutId extends Omit<EncodingPreset, 'id' | 'videoCode
 // Other fields from EncodingPreset (like name, videoPreset, etc.) are implicitly partial.
 type PresetFormDataType = Partial<PresetFormDataWithoutId> & { name?: string } & Pick<PresetFormDataWithoutId, 'hardwarePlatform' | 'targetVideoFormat'>;
 
+// Helper function to get slider value from preset string
+const presetToSliderValue = (preset: VideoPreset | undefined): number => {
+    if (!preset) return VIDEO_PRESETS.indexOf('medium'); // Default to medium if undefined
+    const index = VIDEO_PRESETS.indexOf(preset);
+    return index === -1 ? VIDEO_PRESETS.indexOf('medium') : index;
+};
+
+// Helper function to get preset string from slider value
+const sliderValueToPreset = (value: number): VideoPreset => {
+    return VIDEO_PRESETS[value] || 'medium'; // Fallback to medium
+};
+
 const Presets: React.FC = () => {
     const [presets, setPresets] = useState<EncodingPreset[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -829,15 +841,26 @@ const Presets: React.FC = () => {
                         
                             return (<>
                                 <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label htmlFor="videoPreset" className="text-right">Preset</Label>
-                                    <Select 
-                                        value={formData.videoPreset} 
-                                        onValueChange={(v: VideoPreset) => handleInputChange('videoPreset', v)} 
-                                        disabled={disablePresetQuality}
-                                    >
-                                        <SelectTrigger className="col-span-3"><SelectValue placeholder="Select preset..." /></SelectTrigger>
-                                        <SelectContent>{VIDEO_PRESETS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
-                                    </Select>
+                                    <Label htmlFor="videoPreset" className="text-right">Speed / Quality</Label>
+                                    <div className="col-span-3 space-y-2">
+                                        <Slider 
+                                            id="videoPresetSlider"
+                                            min={0}
+                                            max={VIDEO_PRESETS.length - 1}
+                                            step={1}
+                                            value={[presetToSliderValue(formData.videoPreset)]} 
+                                            onValueChange={(valueArray: number[]) => handleInputChange('videoPreset', sliderValueToPreset(valueArray[0]))} 
+                                            disabled={disablePresetQuality}
+                                            className="[&>span]:bg-accent pt-2" // pt-2 to align with other controls if label is multiline
+                                        />
+                                        <div className="flex justify-between text-xs text-muted-foreground px-1">
+                                            <span>Slowest (Best Quality)</span>
+                                            <span>Fastest (Lower Quality)</span>
+                                        </div>
+                                        <div className="text-sm text-center font-medium pt-1">
+                                            Current: <span className="text-accent">{formData.videoPreset || 'medium'}</span>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="videoQuality" className="text-right">Quality</Label>

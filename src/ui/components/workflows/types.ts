@@ -43,9 +43,13 @@ export const ALL_NODES = [
     description: 'Run on a schedule',
     icon: '⏰',
     properties: {
-      scheduledDays: [], // e.g., ['mon', 'tue']
-      startTime: '09:00', // HH:mm format
-      endTime: '17:00',   // HH:mm format
+      scheduleType: 'daily', // daily, weekly, monthly, custom
+      time: '09:00', // HH:mm format for when to run
+      days: [], // For weekly: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+      dayOfMonth: 1, // For monthly: 1-31
+      cronExpression: '', // For custom: full cron expression
+      timezone: 'local', // timezone for scheduling
+      enabled: true // whether this schedule is active
     }
   },
   

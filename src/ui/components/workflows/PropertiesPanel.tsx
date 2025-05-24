@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { formatInTimeZone } from 'date-fns-tz';
 import { Toggle } from '@/components/ui/toggle';
 import { toast } from 'sonner';
+import { Switch } from '@/components/ui/switch';
 
 interface PropertiesPanelProps {
   selectedNode: WorkflowNode | null;
@@ -85,253 +86,254 @@ const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
     }
 
     if (data.id === 'scheduled') {
-      const currentScheduledDays = (properties?.scheduledDays || []) as string[];
-      const currentStartTime = (properties?.startTime || '09:00') as string;
-      const currentEndTime = (properties?.endTime || '17:00') as string;
+      const currentScheduleType = (properties?.scheduleType || 'daily') as string;
+      const currentTime = (properties?.time || '09:00') as string;
+      const currentDays = (properties?.days || []) as string[];
+      const currentDayOfMonth = (properties?.dayOfMonth || 1) as number;
+      const currentCronExpression = (properties?.cronExpression || '') as string;
+      const currentTimezone = (properties?.timezone || 'local') as string;
+      const currentEnabled = (properties?.enabled !== false) as boolean;
 
-      const handleDayChange = (dayId: string, checked: boolean) => {
-        let newScheduledDays = [...currentScheduledDays];
+      const handleScheduleTypeChange = (scheduleType: string) => {
+        handlePropertyChange('scheduleType', scheduleType);
+        
+        // Reset relevant fields when schedule type changes
+        if (scheduleType === 'daily') {
+          handlePropertyChange('days', []);
+          handlePropertyChange('dayOfMonth', 1);
+          handlePropertyChange('cronExpression', '');
+        } else if (scheduleType === 'weekly') {
+          handlePropertyChange('dayOfMonth', 1);
+          handlePropertyChange('cronExpression', '');
+          if (currentDays.length === 0) {
+            handlePropertyChange('days', ['mon']); // Default to Monday
+          }
+        } else if (scheduleType === 'monthly') {
+          handlePropertyChange('days', []);
+          handlePropertyChange('cronExpression', '');
+        } else if (scheduleType === 'custom') {
+          handlePropertyChange('days', []);
+          handlePropertyChange('dayOfMonth', 1);
+        }
+      };
+
+      const handleTimeChange = (time: string) => {
+        handlePropertyChange('time', time);
+      };
+
+      const handleDayToggle = (dayId: string, checked: boolean) => {
+        let newDays = [...currentDays];
         if (checked) {
-          if (!newScheduledDays.includes(dayId)) {
-            newScheduledDays.push(dayId);
-            // Sort days for consistency (optional)
-            newScheduledDays.sort((a, b) => daysOfWeek.findIndex(d => d.id === a) - daysOfWeek.findIndex(d => d.id === b));
+          if (!newDays.includes(dayId)) {
+            newDays.push(dayId);
+            // Sort days for consistency
+            const dayOrder = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+            newDays.sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
           }
         } else {
-          newScheduledDays = newScheduledDays.filter(d => d !== dayId);
+          newDays = newDays.filter(d => d !== dayId);
         }
-        handlePropertyChange('scheduledDays', newScheduledDays);
-      };
-      
-      const timeToMinutes = (timeStr: string) => {
-        const [h, m] = timeStr.split(':').map(Number);
-        return h * 60 + m;
+        handlePropertyChange('days', newDays);
       };
 
-      const handleTimePartChange = (
-        timePropName: 'startTime' | 'endTime',
-        part: 'hour' | 'minute' | 'ampm',
-        value: string
-      ) => {
-        const currentTimeString = (properties?.[timePropName] || '00:00') as string;
-        let [h24, m] = currentTimeString.split(':').map(Number);
-
-        let newH12 = h24 % 12;
-        if (newH12 === 0) newH12 = 12; // 0 and 12 become 12 for 12-hour format
-
-        let currentAmPm = h24 >= 12 ? 'PM' : 'AM';
-        
-        let newH24: number;
-
-        if (part === 'hour') {
-          const selectedH12 = parseInt(value, 10);
-          if (currentAmPm === 'AM') {
-            newH24 = selectedH12 === 12 ? 0 : selectedH12; // 12 AM is 0 hours
-          } else { // PM
-            newH24 = selectedH12 === 12 ? 12 : selectedH12 + 12; // 12 PM is 12 hours
-          }
-        } else if (part === 'minute') {
-          m = parseInt(value, 10);
-          newH24 = h24; // Hour doesn't change directly
-        } else { // ampm
-          currentAmPm = value;
-          // If AM/PM changes, adjust h24 based on the current 12-hour display
-          if (currentAmPm === 'AM') {
-            newH24 = newH12 === 12 ? 0 : newH12;
-          } else { // PM
-            newH24 = newH12 === 12 ? 12 : newH12 + 12;
-          }
-        }
-        
-        const newPotentialTimeString = `${String(newH24).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-
-        if (timePropName === 'startTime') {
-          const existingEndTimeString = (properties?.endTime || '17:00') as string;
-          if (timeToMinutes(newPotentialTimeString) >= timeToMinutes(existingEndTimeString)) {
-            let [startH, startM] = newPotentialTimeString.split(':').map(Number);
-            let adjustedEndH = startH + 1;
-            let adjustedEndM = startM;
-            if (adjustedEndH >= 24) {
-              adjustedEndH = 23;
-              adjustedEndM = 59;
-            }
-            const adjustedEndTimeString = `${String(adjustedEndH).padStart(2, '0')}:${String(adjustedEndM).padStart(2, '0')}`;
-            handlePropertyChange('startTime', newPotentialTimeString);
-            handlePropertyChange('endTime', adjustedEndTimeString);
-            toast.warning('End time was automatically adjusted to be after start time.');
-          } else {
-            handlePropertyChange('startTime', newPotentialTimeString);
-          }
-        } else { // endTime
-          const existingStartTimeString = (properties?.startTime || '09:00') as string;
-          if (timeToMinutes(newPotentialTimeString) <= timeToMinutes(existingStartTimeString)) {
-            toast.error('End time must be after start time. Please select a valid end time.');
-            // Do not save the invalid end time
-          } else {
-            handlePropertyChange('endTime', newPotentialTimeString);
-          }
-        }
-      };
-      
-      const formatLocalizedTime = (timeString: string) => {
+      const formatTimeForDisplay = (timeString: string) => {
         if (!timeString || !timeString.includes(':')) return 'Invalid time';
         try {
-          // Simplified approach to avoid zonedTimeToUtc
           const [hours, minutes] = timeString.split(':').map(Number);
           if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
             return "Invalid time format";
           }
-
-          // Create a date object representing a fixed date (e.g., Jan 1, 2000) with the given hours and minutes.
-          // This date is created in the system's local timezone.
-          const dateInSystemLocal = new Date(2000, 0, 1, hours, minutes);
-
-          // Format this date as if it were in the userTimeZone.
-          // If system timezone is UTC and userTimeZone is America/Chicago:
-          // 10:00 input -> dateInSystemLocal is 10:00 UTC.
-          // formatInTimeZone will convert 10:00 UTC to 05:00 Chicago time. This is NOT what we want.
-
-          // We want to display the timeString (e.g., "10:00") as "10:00 AM (America/Chicago)"
-          // So, we parse it into h, m and reformat to 12-hour with AM/PM.
-          const h = parseInt(timeString.substring(0, 2), 10);
-          const m = parseInt(timeString.substring(3, 5), 10);
-          const ampm = h >= 12 ? 'PM' : 'AM';
-          const h12 = h % 12 || 12; // Convert 0 and 12 to 12
-          const mStr = m < 10 ? '0' + m : String(m);
-          
-          // We can't easily get the abbreviation (CDT/CST) without a more robust solution like zonedTimeToUtc
-          // or a library that can provide it based on userTimeZone and a date.
-          // So, we'll display the full timezone name or a simplified version.
-          return `${h12}:${mStr} ${ampm} (${userTimeZone.replace('_', ' ')})`;
-
+          const h12 = hours % 12 || 12;
+          const ampm = hours >= 12 ? 'PM' : 'AM';
+          const mStr = minutes < 10 ? '0' + minutes : String(minutes);
+          return `${h12}:${mStr} ${ampm}`;
         } catch (e) {
-          console.error("Error formatting time (simplified):", e);
-          return "Invalid time (manual parse)";
+          return "Invalid time";
         }
+      };
+
+      const generateCronPreview = () => {
+        if (currentScheduleType === 'custom') {
+          return currentCronExpression || 'Enter custom cron expression';
+        }
+        
+        const [hours, minutes] = currentTime.split(':').map(Number);
+        
+        if (currentScheduleType === 'daily') {
+          return `${minutes} ${hours} * * *`;
+        } else if (currentScheduleType === 'weekly') {
+          if (currentDays.length === 0) return 'Select at least one day';
+          const cronDays = currentDays.map(day => {
+            const dayMap: Record<string, string> = {
+              'sun': '0', 'mon': '1', 'tue': '2', 'wed': '3', 
+              'thu': '4', 'fri': '5', 'sat': '6'
+            };
+            return dayMap[day];
+          }).join(',');
+          return `${minutes} ${hours} * * ${cronDays}`;
+        } else if (currentScheduleType === 'monthly') {
+          return `${minutes} ${hours} ${currentDayOfMonth} * *`;
+        }
+        
+        return '';
       };
 
       return (
         <div className="space-y-6">
-          <div>
-            <Label className="text-sm font-medium mb-2 block">Scheduled Days</Label>
-            <div className="flex flex-wrap gap-2">
-              {daysOfWeek.map(day => (
-                <Toggle
-                  key={day.id}
-                  variant="outline"
-                  pressed={currentScheduledDays.includes(day.id)}
-                  onPressedChange={(pressed) => handleDayChange(day.id, pressed)}
-                  aria-label={day.label}
-                  className="data-[state=on]:bg-indigo-600 data-[state=on]:text-indigo-50"
-                >
-                  {day.short}
-                </Toggle>
-              ))}
+          {/* Schedule Enabled Toggle */}
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="text-sm font-medium">Schedule Enabled</Label>
+              <p className="text-xs text-muted-foreground">Enable or disable this schedule</p>
             </div>
+            <Switch
+              checked={currentEnabled}
+              onCheckedChange={(checked) => handlePropertyChange('enabled', checked)}
+            />
           </div>
 
           <Separator />
 
-          <div>
-            <Label className="text-sm font-medium mb-1.5 block">Start Time</Label>
-            <div className="flex gap-2 items-center">
-              <Select
-                value={String(parseInt(currentStartTime.split(':')[0], 10) % 12 || 12)}
-                onValueChange={(val) => handleTimePartChange('startTime', 'hour', val)}
-              >
-                <SelectTrigger className="w-[70px]">
-                  <SelectValue placeholder="HH" />
-                </SelectTrigger>
-                <SelectContent>
-                  {hoursArray.map(hour => (
-                    <SelectItem key={`start-h-${hour}`} value={hour}>{hour}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <span>:</span>
-              <Select
-                value={currentStartTime.split(':')[1]}
-                onValueChange={(val) => handleTimePartChange('startTime', 'minute', val)}
-              >
-                <SelectTrigger className="w-[70px]">
-                  <SelectValue placeholder="MM" />
-                </SelectTrigger>
-                <SelectContent>
-                  {minutesArray.map(minute => (
-                    <SelectItem key={`start-m-${minute}`} value={minute}>{minute}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={parseInt(currentStartTime.split(':')[0], 10) >= 12 ? 'PM' : 'AM'}
-                onValueChange={(val) => handleTimePartChange('startTime', 'ampm', val)}
-              >
-                <SelectTrigger className="w-[80px]">
-                  <SelectValue placeholder="AM/PM" />
-                </SelectTrigger>
-                <SelectContent>
-                  {amPmArray.map(ap => (
-                    <SelectItem key={`start-ap-${ap}`} value={ap}>{ap}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {currentStartTime && (
-              <p className="text-xs text-muted-foreground mt-1.5">
-                Selected: {formatLocalizedTime(currentStartTime)}
-              </p>
-            )}
+          {/* Schedule Type */}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Schedule Type</Label>
+            <Select value={currentScheduleType} onValueChange={handleScheduleTypeChange}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select schedule type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="daily">Daily</SelectItem>
+                <SelectItem value="weekly">Weekly</SelectItem>
+                <SelectItem value="monthly">Monthly</SelectItem>
+                <SelectItem value="custom">Custom (Cron)</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
-          <div>
-            <Label className="text-sm font-medium mb-1.5 block">End Time</Label>
-            <div className="flex gap-2 items-center">
-              <Select
-                value={String(parseInt(currentEndTime.split(':')[0], 10) % 12 || 12)}
-                onValueChange={(val) => handleTimePartChange('endTime', 'hour', val)}
-              >
-                <SelectTrigger className="w-[70px]">
-                  <SelectValue placeholder="HH" />
-                </SelectTrigger>
-                <SelectContent>
-                  {hoursArray.map(hour => (
-                    <SelectItem key={`end-h-${hour}`} value={hour}>{hour}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <span>:</span>
-              <Select
-                value={currentEndTime.split(':')[1]}
-                onValueChange={(val) => handleTimePartChange('endTime', 'minute', val)}
-              >
-                <SelectTrigger className="w-[70px]">
-                  <SelectValue placeholder="MM" />
-                </SelectTrigger>
-                <SelectContent>
-                  {minutesArray.map(minute => (
-                    <SelectItem key={`end-m-${minute}`} value={minute}>{minute}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={parseInt(currentEndTime.split(':')[0], 10) >= 12 ? 'PM' : 'AM'}
-                onValueChange={(val) => handleTimePartChange('endTime', 'ampm', val)}
-              >
-                <SelectTrigger className="w-[80px]">
-                  <SelectValue placeholder="AM/PM" />
-                </SelectTrigger>
-                <SelectContent>
-                  {amPmArray.map(ap => (
-                    <SelectItem key={`end-ap-${ap}`} value={ap}>{ap}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          {/* Time Selection */}
+          {currentScheduleType !== 'custom' && (
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Time</Label>
+              <div className="flex gap-2 items-center">
+                <Input
+                  type="time"
+                  value={currentTime}
+                  onChange={(e) => handleTimeChange(e.target.value)}
+                  className="w-32"
+                />
+                <span className="text-sm text-muted-foreground">
+                  ({formatTimeForDisplay(currentTime)})
+                </span>
+              </div>
             </div>
-            {currentEndTime && (
-              <p className="text-xs text-muted-foreground mt-1.5">
-                Selected: {formatLocalizedTime(currentEndTime)}
+          )}
+
+          {/* Weekly Days Selection */}
+          {currentScheduleType === 'weekly' && (
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Days of Week</Label>
+              <div className="flex flex-wrap gap-2">
+                {daysOfWeek.map(day => (
+                  <Toggle
+                    key={day.id}
+                    variant="outline"
+                    pressed={currentDays.includes(day.id)}
+                    onPressedChange={(pressed) => handleDayToggle(day.id, pressed)}
+                    aria-label={day.label}
+                    className="data-[state=on]:bg-indigo-600 data-[state=on]:text-indigo-50"
+                  >
+                    {day.short}
+                  </Toggle>
+                ))}
+              </div>
+              {currentDays.length === 0 && (
+                <p className="text-xs text-red-500">Please select at least one day</p>
+              )}
+            </div>
+          )}
+
+          {/* Monthly Day Selection */}
+          {currentScheduleType === 'monthly' && (
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Day of Month</Label>
+              <Select 
+                value={String(currentDayOfMonth)} 
+                onValueChange={(val) => handlePropertyChange('dayOfMonth', parseInt(val, 10))}
+              >
+                <SelectTrigger className="w-32">
+                  <SelectValue placeholder="Day" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                    <SelectItem key={day} value={String(day)}>{day}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Note: If the selected day doesn't exist in a month (e.g., Feb 31), it will run on the last day of that month.
               </p>
-            )}
+            </div>
+          )}
+
+          {/* Custom Cron Expression */}
+          {currentScheduleType === 'custom' && (
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Cron Expression</Label>
+              <Input
+                value={currentCronExpression}
+                onChange={(e) => handlePropertyChange('cronExpression', e.target.value)}
+                placeholder="0 9 * * *"
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground">
+                Format: minute hour day month day-of-week<br />
+                Example: "0 9 * * *" = Every day at 9:00 AM
+              </p>
+            </div>
+          )}
+
+          {/* Timezone Selection */}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Timezone</Label>
+            <Select value={currentTimezone} onValueChange={(val) => handlePropertyChange('timezone', val)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select timezone" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="local">Local System Time</SelectItem>
+                <SelectItem value="UTC">UTC</SelectItem>
+                <SelectItem value="America/New_York">Eastern Time</SelectItem>
+                <SelectItem value="America/Chicago">Central Time</SelectItem>
+                <SelectItem value="America/Denver">Mountain Time</SelectItem>
+                <SelectItem value="America/Los_Angeles">Pacific Time</SelectItem>
+                <SelectItem value="Europe/London">London</SelectItem>
+                <SelectItem value="Europe/Paris">Paris</SelectItem>
+                <SelectItem value="Asia/Tokyo">Tokyo</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Schedule Preview */}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Schedule Preview</Label>
+            <div className="p-3 bg-muted rounded-md">
+              <p className="text-sm font-mono">{generateCronPreview()}</p>
+              {currentScheduleType === 'daily' && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Runs every day at {formatTimeForDisplay(currentTime)}
+                </p>
+              )}
+              {currentScheduleType === 'weekly' && currentDays.length > 0 && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Runs on {currentDays.map(d => daysOfWeek.find(day => day.id === d)?.label).join(', ')} at {formatTimeForDisplay(currentTime)}
+                </p>
+              )}
+              {currentScheduleType === 'monthly' && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Runs on the {currentDayOfMonth}{currentDayOfMonth === 1 ? 'st' : currentDayOfMonth === 2 ? 'nd' : currentDayOfMonth === 3 ? 'rd' : 'th'} of each month at {formatTimeForDisplay(currentTime)}
+                </p>
+              )}
+            </div>
           </div>
         </div>
       );

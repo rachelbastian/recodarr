@@ -305,6 +305,10 @@ export interface IElectronAPI {
 
     // --- Performance History ---
     getPerformanceHistory: (startDate: string, endDate: string) => Promise<PerformanceHistoryRecord[]>;
+
+    // --- Scheduler Debug ---
+    debugScheduler: () => Promise<any>;
+    reloadWorkflowTasks: () => Promise<void>;
 }
 
 // --- Add LogEntry type definition --- 

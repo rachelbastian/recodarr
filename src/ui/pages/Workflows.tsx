@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/resizable";
 import { Toaster } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { Plus, Edit, Trash2, ArrowLeft, Play, MoreHorizontal } from 'lucide-react';
+import { Plus, Edit, Trash2, ArrowLeft, Play, MoreHorizontal, Clock } from 'lucide-react';
 import {
   Card,
   CardContent,
@@ -168,10 +168,11 @@ const WorkflowEditor: React.FC<{
         <Button variant="ghost" size="icon" onClick={onBack} className="mr-2">
           <ArrowLeft className="h-5 w-5" />
         </Button>
-        <div>
+        <div className="flex-1">
           <h1 className="text-2xl font-semibold">Workflow Editor</h1>
           <p className="text-muted-foreground">Create automated encoding workflows</p>
         </div>
+        <RealTimeClock />
       </div>
 
       <div className="flex-1 overflow-hidden">
@@ -458,6 +459,55 @@ const executionLogColumns: ColumnDef<ExecutionLog>[] = [
   },
 ];
 
+// Real-time clock component
+const RealTimeClock: React.FC = () => {
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const userTimeZone = 'America/Chicago'; // CST/CDT - make this configurable if needed
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="flex items-center gap-2 px-3 py-2 bg-muted/50 rounded-md border">
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            <div className="flex flex-col">
+              <span className="text-sm font-mono font-medium">
+                {formatInTimeZone(currentTime, userTimeZone, 'h:mm:ss a')}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {formatInTimeZone(currentTime, userTimeZone, 'MMM d, yyyy')}
+              </span>
+            </div>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent>
+          <div className="text-sm">
+            <p><strong>Local Time ({userTimeZone}):</strong></p>
+            <p>{formatInTimeZone(currentTime, userTimeZone, 'PPP p zzz')}</p>
+            <br />
+            <p><strong>24-Hour Format:</strong></p>
+            <p>{formatInTimeZone(currentTime, userTimeZone, 'HH:mm:ss')}</p>
+            <br />
+            <p><strong>UTC Time:</strong></p>
+            <p>{formatInTimeZone(currentTime, 'UTC', 'PPP p zzz')}</p>
+            <br />
+            <p><strong>System Time:</strong></p>
+            <p>{currentTime.toLocaleString()}</p>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+};
+
 const Workflows: React.FC = () => {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -602,6 +652,14 @@ const Workflows: React.FC = () => {
       // Save to database
       await window.electron.saveWorkflow(newWorkflow);
       
+      // Reload workflow tasks in the scheduler
+      try {
+        await window.electron.reloadWorkflowTasks();
+        console.log('Workflow tasks reloaded after creating new workflow');
+      } catch (error) {
+        console.error('Failed to reload workflow tasks after creating new workflow:', error);
+      }
+      
       // Open the workflow editor
       setActiveWorkflowId(newId);
       setShowCreateDialog(false);
@@ -648,6 +706,15 @@ const Workflows: React.FC = () => {
 
       await window.electron.saveWorkflow(updatedWorkflowData);
       toast.success(`Workflow "${updatedWorkflowData.name}" updated successfully.`);
+      
+      // Reload workflow tasks in the scheduler
+      try {
+        await window.electron.reloadWorkflowTasks();
+        console.log('Workflow tasks reloaded after renaming workflow');
+      } catch (error) {
+        console.error('Failed to reload workflow tasks after renaming workflow:', error);
+      }
+      
       setShowRenameDialog(false);
       setRenamingWorkflow(null);
       loadWorkflows(); // Refresh the list
@@ -729,12 +796,34 @@ const Workflows: React.FC = () => {
           <h1 className="text-2xl font-semibold">Workflows</h1>
           <p className="text-muted-foreground">Create, manage, and monitor your automation workflows</p>
         </div>
-        {activeTab === "workflows" && (
-          <Button onClick={handleCreateNew} className="bg-white text-gray-800 hover:bg-gray-100 border border-gray-300">
-            <Plus className="mr-2 h-4 w-4" />
-            Create Workflow
+        <div className="flex items-center gap-4">
+          <RealTimeClock />
+          {/* Debug scheduler button - temporary for debugging */}
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={async () => {
+              try {
+                const debugInfo = await window.electron.debugScheduler();
+                console.log('[Scheduler Debug Info]', debugInfo);
+                toast.info('Scheduler debug info logged to console', {
+                  description: `${debugInfo.enabledTasks || 0} enabled tasks, ${debugInfo.activeJobs || 0} active jobs`
+                });
+              } catch (error) {
+                console.error('Error getting scheduler debug info:', error);
+                toast.error('Failed to get scheduler debug info');
+              }
+            }}
+          >
+            Debug Scheduler
           </Button>
-        )}
+          {activeTab === "workflows" && (
+            <Button onClick={handleCreateNew} className="bg-white text-gray-800 hover:bg-gray-100 border border-gray-300">
+              <Plus className="mr-2 h-4 w-4" />
+              Create Workflow
+            </Button>
+          )}
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">

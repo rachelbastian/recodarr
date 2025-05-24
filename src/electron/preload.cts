@@ -190,6 +190,10 @@ type LocalElectronApi = {
     getConfigValue: (key: string) => Promise<any>;
     setConfigValue: (key: string, value: any) => Promise<boolean>;
     
+    // Debug scheduler
+    debugScheduler: () => Promise<any>;
+    reloadWorkflowTasks: () => Promise<any>;
+    
     // Workflow-related methods
     getWorkflows: () => Promise<any[]>;
     getWorkflow: (id: string) => Promise<any>;
@@ -272,6 +276,10 @@ electron.contextBridge.exposeInMainWorld("electron", {
     runScheduledTaskNow: (taskId) => ipcInvoke('scheduler:runTaskNow', taskId),
     getConfigValue: (key) => ipcInvoke('scheduler:getConfigValue', key),
     setConfigValue: (key, value) => ipcInvoke('scheduler:setConfigValue', key, value),
+    
+    // Debug scheduler
+    debugScheduler: () => ipcInvoke('scheduler:debug'),
+    reloadWorkflowTasks: () => ipcInvoke('scheduler:reloadWorkflowTasks'),
     
     // Workflow-related methods
     getWorkflows: () => ipcInvoke('get-workflows'),

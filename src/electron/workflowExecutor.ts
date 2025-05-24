@@ -80,6 +80,10 @@ async function executeNodeAction(
                 console.log(`   Action: Manual trigger processed for workflow.`);
                 break;
 
+            case 'scheduled':
+                console.log(`   Action: Scheduled trigger processed for workflow.`);
+                break;
+
             case 'send-notification':
                 const { 
                     message = 'Default notification message',
@@ -172,11 +176,14 @@ export async function executeWorkflow(
             throw new Error(`Trigger node ${triggerNodeId} not found in workflow ${workflowId}.`);
         }
         // Validate against node.data.id (template ID) and node.type (ReactFlow type from DB)
-        if (triggerNode.data?.id !== 'manual-trigger' || triggerNode.type !== 'trigger') {
-            throw new Error(`Node ${triggerNodeId} (Template: ${triggerNode.data?.id}, Type: ${triggerNode.type}) is not a valid manual trigger.`);
+        const isValidTrigger = triggerNode.type === 'trigger' && 
+            (triggerNode.data?.id === 'manual-trigger' || triggerNode.data?.id === 'scheduled');
+        
+        if (!isValidTrigger) {
+            throw new Error(`Node ${triggerNodeId} (Template: ${triggerNode.data?.id}, Type: ${triggerNode.type}) is not a valid trigger for execution.`);
         }
 
-        console.log(`[WorkflowExecutor] Successfully validated manual trigger ${triggerNodeId} for workflow ${workflow.name} (Execution ID: ${executionId}).`);
+        console.log(`[WorkflowExecutor] Successfully validated trigger ${triggerNodeId} (${triggerNode.data?.id}) for workflow ${workflow.name} (Execution ID: ${executionId}).`);
         mainWindow?.webContents.send('workflow-status', { workflowId, executionId, status: 'running', message: `Executing workflow: ${workflow.name}...` });
 
         let currentNode: WorkflowNode | undefined = triggerNode;

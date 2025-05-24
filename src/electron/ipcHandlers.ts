@@ -282,7 +282,7 @@ export function registerAppIpcHandlers(
         const { id, name, description, nodes, edges } = workflow;
         console.log(`Saving workflow: id=${id}, name=${name}, nodes=${nodes.length}, edges=${edges.length}`);
         const currentDb = getDbInstance();
-        return currentDb.transaction(() => {
+        const result = currentDb.transaction(() => {
             const existing = currentDb.prepare('SELECT id FROM workflows WHERE name = ? AND id != ?').get(name, id);
             if (existing) throw new Error(`Workflow name "${name}" already exists.`);
             const current = currentDb.prepare('SELECT id FROM workflows WHERE id = ?').get(id);
@@ -299,6 +299,19 @@ export function registerAppIpcHandlers(
             for (const edge of edges) insertEdge.run(id, edge.id, edge.source, edge.target);
             return { success: true, id };
         })();
+        
+        // Reload workflow tasks in the scheduler after saving the workflow
+        if (taskSchedulerInstance && result.success) {
+            try {
+                await taskSchedulerInstance.reloadWorkflowTasks();
+                console.log(`[Save Workflow] Scheduler reloaded workflow tasks for workflow: ${name}`);
+            } catch (error) {
+                console.error(`[Save Workflow] Error reloading workflow tasks for workflow ${name}:`, error);
+                // Don't fail the save operation if scheduler reload fails
+            }
+        }
+        
+        return result;
     });
     ipcMainInstance.handle('get-workflows', async () => getDbInstance().prepare('SELECT id, name, description, created_at, updated_at, is_active FROM workflows ORDER BY updated_at DESC').all());
     ipcMainInstance.handle('get-workflow', async (_event, workflowId: string) => {
@@ -391,8 +404,38 @@ export function registerAppIpcHandlers(
         ipcMainInstance.handle('scheduler:runTaskNow', async (_, taskId) => taskSchedulerInstance.runTaskNow(taskId));
         ipcMainInstance.handle('scheduler:getConfigValue', async (_, key) => storeInstance.get(key));
         ipcMainInstance.handle('scheduler:setConfigValue', async (_, key, value) => { storeInstance.set(key, value); return true; });
+        ipcMainInstance.handle('scheduler:reloadWorkflowTasks', async () => taskSchedulerInstance.reloadWorkflowTasks());
+        
+        // Debug handler to check scheduler status
+        ipcMainInstance.handle('scheduler:debug', async () => {
+            const allTasks = taskSchedulerInstance.getAllTasks();
+            const debugInfo = {
+                schedulerInitialized: true,
+                totalTasks: allTasks.length,
+                enabledTasks: allTasks.filter(t => t.enabled).length,
+                activeJobs: (taskSchedulerInstance as any).jobs?.size || 0, // Access private jobs map
+                tasks: allTasks.map(task => ({
+                    id: task.id,
+                    name: task.name,
+                    type: task.type,
+                    enabled: task.enabled,
+                    cronExpression: task.cronExpression,
+                    lastRun: task.lastRun?.toISOString(),
+                    nextRun: task.nextRun?.toISOString(),
+                    parameters: task.parameters
+                }))
+            };
+            console.log('[Scheduler Debug]', debugInfo);
+            return debugInfo;
+        });
     } else {
         console.warn("[IPC Setup] TaskScheduler instance not available, scheduler IPC handlers not registered.");
+        
+        // Add debug handler that reports scheduler not available
+        ipcMainInstance.handle('scheduler:debug', async () => ({
+            schedulerInitialized: false,
+            error: 'TaskScheduler instance not available'
+        }));
     }
 
     console.log("[IPC Handlers] All application IPC handlers registered.");
