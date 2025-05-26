@@ -16,7 +16,7 @@ import type {
     StreamInfo,
     EncodingPreset
 } from '../../types';
-import { loadPresets as loadPresetsUtil, getPresetById, getDefaultEncodingOptions, getAudioTrackActions, getSubtitleTrackActions } from '@/utils/presetUtil.js';
+import { loadPresets as loadPresetsUtil, getPresetById, getDefaultEncodingOptions, getAudioTrackActions, getSubtitleTrackActions, deriveFfmpegCodec, deriveHardwareAndFormat, HardwarePlatformUtil, TargetVideoFormatUtil } from '@/utils/presetUtil.js';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import queueService from '../../services/queueService.js';
 import { useNavigate } from 'react-router-dom';
@@ -57,9 +57,23 @@ const joinPaths = (dirPath: string, fileName: string): string => {
     return dirPath + '/' + fileName;
 };
 
-// Constants for UI Options - just basic ones
-const VIDEO_CODECS = ['hevc_qsv', 'h264_qsv', 'av1_qsv', 'libx265', 'libx264', 'copy'] as const;
-type VideoCodec = typeof VIDEO_CODECS[number];
+// Constants for UI Options - match Presets page
+const HARDWARE_PLATFORMS = [
+    { id: 'INTEL_GPU', label: 'Intel GPU (QuickSync Video)' },
+    { id: 'NVIDIA_GPU', label: 'Nvidia GPU (NVENC)' },
+    { id: 'CPU_SOFTWARE', label: 'CPU / Software Encoder' },
+    { id: 'NONE', label: 'None (for Copy)'},
+] as const;
+type HardwarePlatform = HardwarePlatformUtil;
+
+const TARGET_VIDEO_FORMATS = [
+    { id: 'AV1',  label: 'AV1',               description: 'Smallest File Size' },
+    { id: 'H265', label: 'H.265 (HEVC)',      description: 'Good Compression, Wide Support' },
+    { id: 'H264', label: 'H.264 (AVC)',       description: 'Best Compatibility, Larger Files' },
+    { id: 'COPY', label: 'Keep Original',     description: 'Fastest, No Quality Loss' },
+] as const;
+type TargetVideoFormat = TargetVideoFormatUtil;
+
 const VIDEO_PRESETS = ['veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast', 'ultrafast'] as const;
 type VideoPreset = typeof VIDEO_PRESETS[number];
 const VIDEO_RESOLUTIONS = ['original', '480p', '720p', '1080p', '1440p', '2160p'] as const;
@@ -118,7 +132,8 @@ const ManualEncode: React.FC = () => {
     const [selectedPresetId, setSelectedPresetId] = useState<string>('custom');
     
     // Basic Encoding Param State
-    const [videoCodec, setVideoCodec] = useState<VideoCodec>('hevc_qsv');
+    const [hardwarePlatform, setHardwarePlatform] = useState<HardwarePlatform>('INTEL_GPU');
+    const [targetVideoFormat, setTargetVideoFormat] = useState<TargetVideoFormat>('H265');
     const [videoPreset, setVideoPreset] = useState<VideoPreset>('faster');
     const [videoQuality, setVideoQuality] = useState<number>(25);
     const [videoResolution, setVideoResolution] = useState<VideoResolution>('original');
@@ -178,7 +193,8 @@ const ManualEncode: React.FC = () => {
         setFormData({ selectedFiles: [] });
         
         // Reset encoding settings to defaults
-        setVideoCodec('hevc_qsv');
+        setHardwarePlatform('INTEL_GPU');
+        setTargetVideoFormat('H265');
         setVideoPreset('faster');
         setVideoQuality(25);
         setVideoResolution('original');
@@ -367,15 +383,37 @@ const ManualEncode: React.FC = () => {
                 console.log(`ManualEncode: Using temp output path for overwrite: ${jobOutputPath}`);
             }
             
-            // Add job to queue
+            // Derive the actual video codec from hardware platform and target format
+            const actualVideoCodec = deriveFfmpegCodec(hardwarePlatform, targetVideoFormat);
+
+            // Create a preset object with current settings for the encoding process
+            const currentSettingsAsPreset: EncodingPreset = {
+                id: 'manual-encode-temp',
+                name: 'Manual Encode Settings',
+                videoCodec: actualVideoCodec,
+                videoPreset,
+                videoQuality,
+                videoResolution,
+                hwAccel,
+                audioCodecConvert,
+                audioBitrate,
+                selectedAudioLayout,
+                audioLanguageOrder,
+                subtitleLanguageOrder: [],
+                subtitleTypeOrder: [],
+                subtitleCodecConvert: 'srt',
+                removeAllSubtitles,
+            };
+
+            // Add job to queue with high priority for immediate processing
             const job = queueService.addJob(
                 inputPath,
-                jobOutputPath, // Use the temp output path we just created
-                !saveAsNew,    // Still set overwriteInput flag correctly for proper finalization
-                preset,
+                jobOutputPath,
+                !saveAsNew,
+                currentSettingsAsPreset,
                 probeData,
                 trackSelections,
-                0 // Default priority
+                100 // High priority to process immediately
             );
             
             // Make sure queue is actively processing - use the more robust method
@@ -435,7 +473,8 @@ const ManualEncode: React.FC = () => {
         
         if (presetId === 'custom') {
             // Reset to defaults for custom
-            setVideoCodec('hevc_qsv');
+            setHardwarePlatform('INTEL_GPU');
+            setTargetVideoFormat('H265');
             setVideoPreset('faster');
             setVideoQuality(25);
             setVideoResolution('original');
@@ -458,11 +497,15 @@ const ManualEncode: React.FC = () => {
             // Get default options based on the preset
             const options = getDefaultEncodingOptions(preset);
             
+            // Convert videoCodec to hardware platform and target format
+            const { hardwarePlatform: derivedHardware, targetVideoFormat: derivedFormat } = deriveHardwareAndFormat(options.videoCodec);
+            
             // Apply preset values
-            setVideoCodec(options.videoCodec as VideoCodec);
+            setHardwarePlatform(derivedHardware);
+            setTargetVideoFormat(derivedFormat);
             setVideoPreset(options.videoPreset as VideoPreset);
             setVideoQuality(options.videoQuality as number);
-            setVideoResolution(options.videoResolution as VideoResolution || 'original');
+            setVideoResolution(options.videoResolution as VideoResolution);
             setHwAccel(options.hwAccel as HwAccel);
             setAudioCodecConvert(options.audioCodecConvert as AudioCodecConvert);
             setAudioBitrate(options.audioBitrate as string);
@@ -709,7 +752,7 @@ const ManualEncode: React.FC = () => {
             };
             
             // Determine output path based on saveAsNew setting
-            let jobOutputPath = saveAsNew ? outputPath : inputPath;
+            let jobOutputPath = outputPath;
             
             // If we're overwriting, use a temp path during encoding
             if (!saveAsNew) {
@@ -721,12 +764,34 @@ const ManualEncode: React.FC = () => {
                 console.log(`ManualEncode: Using temp output path for overwrite: ${jobOutputPath}`);
             }
             
+            // Derive the actual video codec from hardware platform and target format
+            const actualVideoCodec = deriveFfmpegCodec(hardwarePlatform, targetVideoFormat);
+
+            // Create a preset object with current settings for the encoding process
+            const currentSettingsAsPreset: EncodingPreset = {
+                id: 'manual-encode-temp',
+                name: 'Manual Encode Settings',
+                videoCodec: actualVideoCodec,
+                videoPreset,
+                videoQuality,
+                videoResolution,
+                hwAccel,
+                audioCodecConvert,
+                audioBitrate,
+                selectedAudioLayout,
+                audioLanguageOrder,
+                subtitleLanguageOrder: [],
+                subtitleTypeOrder: [],
+                subtitleCodecConvert: 'srt',
+                removeAllSubtitles,
+            };
+
             // Add job to queue with high priority for immediate processing
             const job = queueService.addJob(
                 inputPath,
-                jobOutputPath, // Use the temp output path if overwriting
-                !saveAsNew,    // Keep the overwriteInput flag for proper finalization
-                preset,
+                jobOutputPath,
+                !saveAsNew,
+                currentSettingsAsPreset,
                 probeData,
                 trackSelections,
                 100 // High priority to process immediately
@@ -881,7 +946,222 @@ const ManualEncode: React.FC = () => {
             });
         }
     }, [inputPath, outputPath, saveAsNew, probeData, selectedAudioTracks, selectedSubtitleTracks, 
-        videoCodec, videoPreset, videoQuality, videoResolution, hwAccel, audioCodecConvert, audioBitrate, selectedAudioLayout,
+        hardwarePlatform, targetVideoFormat, videoPreset, videoQuality, videoResolution, hwAccel, audioCodecConvert, audioBitrate, selectedAudioLayout,
+        availablePresets, selectedPresetId, audioLanguageOrder, resetForm, selectedFolderPath]);
+
+    // Encoding Effect
+    useEffect(() => {
+        if (!isEncoding || !inputPath || !outputPath || !probeData) return;
+
+        const runEncoding = async () => {
+            try {
+                setProgress(0);
+                setStatus('Starting encoding...');
+
+                // Determine the output path (same logic as Add to Queue)
+                let jobOutputPath = outputPath;
+                if (!saveAsNew) {
+                    // If overwriting, use a temp path during encoding
+                    const dirPath = getDirPath(inputPath);
+                    const ext = getFileExtension(inputPath);
+                    const basename = getFileNameWithoutExt(inputPath);
+                    // Generate temp path with _tmp suffix for overwrite mode
+                    jobOutputPath = joinPaths(dirPath, `${basename}_tmp${ext}`);
+                    console.log(`ManualEncode: Using temp output path for overwrite: ${jobOutputPath}`);
+                }
+
+                // Derive the actual video codec from hardware platform and target format
+                const actualVideoCodec = deriveFfmpegCodec(hardwarePlatform, targetVideoFormat);
+
+                // Create a preset object with current settings for the encoding process
+                const currentSettingsAsPreset: EncodingPreset = {
+                    id: 'manual-encode-temp',
+                    name: 'Manual Encode Settings',
+                    videoCodec: actualVideoCodec,
+                    videoPreset,
+                    videoQuality,
+                    videoResolution,
+                    hwAccel,
+                    audioCodecConvert,
+                    audioBitrate,
+                    selectedAudioLayout,
+                    audioLanguageOrder,
+                    subtitleLanguageOrder: [],
+                    subtitleTypeOrder: [],
+                    subtitleCodecConvert: 'srt',
+                    removeAllSubtitles,
+                };
+
+                // Prepare track selections in the format expected by addJob
+                const trackSelections = {
+                    audio: selectedAudioTracks,
+                    subtitle: selectedSubtitleTracks
+                };
+
+                // Add job to queue with high priority for immediate processing
+                const job = queueService.addJob(
+                    inputPath,
+                    jobOutputPath, // Use the correctly determined output path
+                    !saveAsNew,    // Set overwriteInput flag correctly: true for overwrite, false for saveAsNew
+                    currentSettingsAsPreset,
+                    probeData,
+                    trackSelections,
+                    100 // High priority to process immediately
+                );
+
+                // Store the job ID for tracking this specific job
+                const trackingJobId = job.id;
+                console.log(`ManualEncode: Queue service created job with ID: ${trackingJobId}`);
+                
+                // Make sure queue is processing - use the more robust method
+                queueService.startProcessing();
+                queueService.forceProcessQueue(); // This addresses any state inconsistencies
+                
+                // Track if component is still mounted (to prevent state updates after unmount)
+                let isMounted = true;
+                
+                // Subscribe to progress through queue events - with job-specific filters
+                queueService.setEventCallbacks({
+                    onJobProgress: (updatedJob) => {
+                        // Only update UI for our specific job
+                        if (isMounted && updatedJob.id === trackingJobId) {
+                            console.log(`ManualEncode: Progress update for job ${trackingJobId}:`, 
+                                        updatedJob.progress, updatedJob.fps, 
+                                        updatedJob.frame, updatedJob.totalFrames);
+                            
+                            // Set all state updates at once to reduce renders
+                            setProgress(prevProgress => {
+                                // Only log when progress changes significantly to avoid console spam
+                                if (Math.abs(prevProgress - updatedJob.progress) > 1) {
+                                    console.log(`ManualEncode: Updating progress from ${prevProgress}% to ${updatedJob.progress}%`);
+                                }
+                                return updatedJob.progress;
+                            });
+                            
+                            setFps(updatedJob.fps ?? null);
+                            setCurrentFrame(updatedJob.frame ?? null);
+                            setTotalFrames(updatedJob.totalFrames ?? null);
+                            
+                            if (updatedJob.status === 'processing') {
+                                setStatus("Encoding in progress...");
+                            }
+                        } else if (updatedJob.id !== trackingJobId) {
+                            console.log(`ManualEncode: Ignoring progress update for job ${updatedJob.id}, waiting for ${trackingJobId}`);
+                        }
+                    },
+                    onJobCompleted: (updatedJob) => {
+                        // Only respond to our specific job completion
+                        if (isMounted && updatedJob.id === trackingJobId) {
+                            console.log(`ManualEncode: Job ${trackingJobId} completed`);
+                            setStatus(`Encoding completed successfully! File saved to: ${updatedJob.outputPath || updatedJob.inputPath}`);
+                            setProgress(100);
+                            
+                            // Check if the encoded file exists in the media database and mark it as processed
+                            // This step is critical for ensuring files encoded through ManualEncode get properly tagged
+                            (async () => {
+                                try {
+                                    // Query the database to see if this file exists in the media library
+                                    const dbResult = await electronAPI.dbQuery(
+                                        'SELECT id FROM media WHERE filePath = ?',
+                                        [!saveAsNew ? inputPath : updatedJob.outputPath]
+                                    );
+                                    
+                                    if (dbResult && dbResult.length > 0) {
+                                        const mediaId = dbResult[0].id;
+                                        console.log(`ManualEncode: Found file in database with ID ${mediaId}, updating record`);
+                                        
+                                        // Update the media record with the encoding job ID and current size
+                                        const fileSize = await electronAPI.getFileSize(!saveAsNew ? inputPath : updatedJob.outputPath);
+                                        await electronAPI.dbQuery(
+                                            'UPDATE media SET encodingJobId = ?, currentSize = ?, lastSizeCheckAt = CURRENT_TIMESTAMP WHERE id = ?',
+                                            [
+                                                updatedJob.id,
+                                                fileSize,
+                                                mediaId
+                                            ]
+                                        );
+                                        console.log(`ManualEncode: Updated database record for media ID ${mediaId}`);
+                                    } else {
+                                        console.log(`ManualEncode: File not found in media database, no record to update`);
+                                    }
+                                } catch (error) {
+                                    console.error(`ManualEncode: Error updating media database:`, error);
+                                }
+                            })();
+                            
+                            // Show success with option to encode another
+                            setSuccessMessage("Encoding completed successfully!");
+                            setShowSuccess(true);
+                            
+                            // Reset form after 3 seconds
+                            setTimeout(() => {
+                                if (isMounted) {
+                                    resetForm();
+                                    setShowSuccess(false);
+                                }
+                            }, 3000);
+                            
+                            // Show toast notification
+                            toast.success("Encoding completed", {
+                                description: `File "${getFileName(inputPath)}" was successfully encoded`
+                            });
+                        }
+                    },
+                    onJobFailed: (updatedJob) => {
+                        // Only respond to our specific job failure
+                        if (isMounted && updatedJob.id === trackingJobId) {
+                            console.log(`ManualEncode: Job ${trackingJobId} failed:`, updatedJob.error);
+                            setStatus(`Encoding failed: ${updatedJob.error || "Unknown error"}`);
+                            
+                            // Show error toast
+                            toast.error("Encoding failed", {
+                                description: updatedJob.error || "Unknown error occurred during encoding"
+                            });
+                        }
+                    }
+                });
+                
+                // Wait until job is no longer in the queue (completed or failed)
+                const checkJobStatus = () => {
+                    const currentJob = queueService.getJob(trackingJobId);
+                    if (currentJob && (currentJob.status === 'processing' || currentJob.status === 'queued')) {
+                        setTimeout(checkJobStatus, 500);
+                    } else {
+                        // Job is done, restore original callbacks
+                        if (isMounted) {
+                            queueService.setEventCallbacks({});
+                            setIsEncoding(false);
+                            
+                            // Force process queue one more time to ensure next jobs start
+                            queueService.forceProcessQueue();
+                        }
+                    }
+                };
+                
+                // Start checking status
+                checkJobStatus();
+                
+                // Return cleanup function to handle component unmount
+                return () => {
+                    isMounted = false;
+                    queueService.setEventCallbacks({});
+                };
+                
+            } catch (error) {
+                console.error("Encoding error:", error);
+                setStatus(`Encoding error: ${error instanceof Error ? error.message : String(error)}`);
+                setIsEncoding(false);
+                
+                // Show error toast
+                toast.error("Encoding error", {
+                    description: error instanceof Error ? error.message : String(error)
+                });
+            }
+        };
+
+        runEncoding();
+    }, [inputPath, outputPath, saveAsNew, probeData, selectedAudioTracks, selectedSubtitleTracks, 
+        hardwarePlatform, targetVideoFormat, videoPreset, videoQuality, videoResolution, hwAccel, audioCodecConvert, audioBitrate, selectedAudioLayout,
         availablePresets, selectedPresetId, audioLanguageOrder, resetForm, selectedFolderPath]);
 
     // --- Track Selection Dialog --- 
@@ -1070,124 +1350,347 @@ const ManualEncode: React.FC = () => {
                 <Card className="border-none shadow-sm bg-card/50">
                     <CardHeader>
                         <CardTitle className="text-xl">Encoding Settings</CardTitle>
-                        <CardDescription>Basic video and audio parameters</CardDescription>
+                        <CardDescription>Configure video and audio encoding parameters</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-6">
-                        <div className="space-y-4">
-                            <div className="space-y-2">
-                                <Label className="text-sm">Video Codec</Label>
-                                <Select value={videoCodec} onValueChange={(value: VideoCodec) => setVideoCodec(value)} disabled={isEncoding}>
-                                    <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                    <SelectContent>{VIDEO_CODECS.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                                </Select>
-                            </div>
-                            
-                            <div className="space-y-2">
-                                <Label className="text-sm">Video Preset</Label>
-                                <Select value={videoPreset} onValueChange={(value: VideoPreset) => setVideoPreset(value)} disabled={isEncoding || videoCodec === 'copy'}>
-                                    <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                    <SelectContent>{VIDEO_PRESETS.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
-                                </Select>
-                            </div>
-                            
-                            <div className="space-y-4">
-                                <div className="flex justify-between items-center">
-                                    <Label className="text-sm">Quality</Label>
-                                    <span className="text-sm text-muted-foreground">{videoQuality}</span>
-                                </div>
-                                <Slider 
-                                    value={[videoQuality]} 
-                                    min={18} 
-                                    max={38} 
-                                    step={1} 
-                                    onValueChange={([v]) => setVideoQuality(v)} 
-                                    disabled={isEncoding || videoCodec === 'copy'}
-                                    className="[&>span]:bg-indigo-600"
-                                />
-                            </div>
-                            
-                            <div className="space-y-2">
-                                <Label className="text-sm">Resolution</Label>
+                        <div className="grid gap-6 py-4">
+                            {/* Video Section */}
+                            <h4 className="font-medium text-lg -mb-2">Video</h4>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="videoCodec" className="text-right">Codec</Label>
                                 <Select 
-                                    value={videoResolution} 
-                                    onValueChange={(value: VideoResolution) => setVideoResolution(value)} 
-                                    disabled={isEncoding || videoCodec === 'copy'}
+                                    value={hardwarePlatform} 
+                                    onValueChange={(value: HardwarePlatform) => setHardwarePlatform(value)} 
+                                    disabled={isEncoding}
                                 >
-                                    <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
+                                    <SelectTrigger className="col-span-3 bg-background/50">
+                                        <SelectValue placeholder="Select video codec..." />
+                                    </SelectTrigger>
                                     <SelectContent>
-                                        {VIDEO_RESOLUTIONS.map(r => (
-                                            <SelectItem key={r} value={r}>
-                                                {r === 'original' ? 'Original' : r}
+                                        {HARDWARE_PLATFORMS.map(platform => (
+                                            <SelectItem key={platform.id} value={platform.id}>
+                                                <div className="flex items-center justify-between w-full">
+                                                    <span>{platform.label}</span>
+                                                </div>
                                             </SelectItem>
                                         ))}
                                     </SelectContent>
                                 </Select>
                             </div>
-                            
-                            <div className="space-y-2">
-                                <Label className="text-sm">Hardware Acceleration</Label>
-                                <Select value={hwAccel} onValueChange={(value: HwAccel) => setHwAccel(value)} disabled={isEncoding}>
-                                    <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                    <SelectContent>{HW_ACCEL_OPTIONS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
-                                </Select>
-                            </div>
-                            
-                            <Separator className="my-2" />
-                            
-                            <div className="space-y-2">
-                                <Label className="text-sm">Audio Codec</Label>
-                                <Select value={audioCodecConvert} onValueChange={(value: AudioCodecConvert) => setAudioCodecConvert(value)} disabled={isEncoding}>
-                                    <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                    <SelectContent>{AUDIO_CODECS_CONVERT.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                                </Select>
-                            </div>
-                            
-                            <div className="space-y-2">
-                                <Label className="text-sm">Audio Bitrate</Label>
-                                <Select value={audioBitrate} onValueChange={setAudioBitrate} disabled={isEncoding}>
-                                    <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        {audioCodecConvert === 'eac3' ? (
-                                            ['192k', '256k', '384k', '448k', '640k'].map(r => (
-                                                <SelectItem key={r} value={r}>{r}</SelectItem>
-                                            ))
-                                        ) : (
-                                            ['64k', '96k', '128k', '192k', '256k'].map(r => (
-                                                <SelectItem key={r} value={r}>{r}</SelectItem>
-                                            ))
-                                        )}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            
-                            <div className="space-y-2">
-                                <Label className="text-sm">Audio Layout</Label>
-                                <Select value={selectedAudioLayout} onValueChange={(value: AudioLayout) => setSelectedAudioLayout(value)} disabled={isEncoding}>
-                                    <SelectTrigger className="bg-background/50"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="stereo">Stereo</SelectItem>
-                                        <SelectItem value="mono">Mono</SelectItem>
-                                        <SelectItem value="surround5_1">5.1 Surround</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            
-                            <Separator className="my-2" />
-                            
-                            <div className="flex items-center space-x-2">
-                                <Checkbox
-                                    id="remove-all-subtitles"
-                                    checked={removeAllSubtitles}
-                                    onCheckedChange={(checked) => setRemoveAllSubtitles(checked as boolean)}
-                                    disabled={isEncoding || isAddingToQueue}
-                                />
-                                <Label
-                                    htmlFor="remove-all-subtitles"
-                                    className="text-sm font-normal leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="targetVideoFormat" className="text-right">Format</Label>
+                                <Select 
+                                    value={targetVideoFormat} 
+                                    onValueChange={(value: TargetVideoFormat) => setTargetVideoFormat(value)} 
+                                    disabled={isEncoding}
                                 >
-                                    Remove all subtitles from output
-                                </Label>
+                                    <SelectTrigger className="col-span-3 bg-background/50">
+                                        <SelectValue placeholder="Select target format" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {TARGET_VIDEO_FORMATS.map(format => (
+                                            <SelectItem key={format.id} value={format.id}>
+                                                <div className="flex items-center justify-between w-full">
+                                                    <span>{format.label}</span>
+                                                    <span className="text-xs text-muted-foreground ml-2">{format.description}</span>
+                                                </div>
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
                             </div>
+
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="videoPreset" className="text-right">Speed / Quality</Label>
+                                <div className="col-span-3 space-y-2">
+                                    <Select 
+                                        value={videoPreset} 
+                                        onValueChange={(value: VideoPreset) => setVideoPreset(value)} 
+                                        disabled={isEncoding || hardwarePlatform === 'NONE'}
+                                    >
+                                        <SelectTrigger className="bg-background/50">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {VIDEO_PRESETS.map(preset => {
+                                                const presetInfo = (() => {
+                                                    switch(preset) {
+                                                        case 'veryslow': return { label: 'Very Slow', description: 'Best Quality, Slowest Speed' };
+                                                        case 'slower': return { label: 'Slower', description: 'Better Quality, Slow Speed' };
+                                                        case 'slow': return { label: 'Slow', description: 'Good Quality, Moderate Speed' };
+                                                        case 'medium': return { label: 'Medium', description: 'Balanced Quality & Speed' };
+                                                        case 'fast': return { label: 'Fast', description: 'Moderate Quality, Good Speed' };
+                                                        case 'faster': return { label: 'Faster', description: 'Lower Quality, Fast Speed' };
+                                                        case 'veryfast': return { label: 'Very Fast', description: 'Basic Quality, Very Fast' };
+                                                        case 'ultrafast': return { label: 'Ultra Fast', description: 'Minimal Quality, Fastest Speed' };
+                                                        default: return { label: preset, description: '' };
+                                                    }
+                                                })();
+                                                
+                                                return (
+                                                    <SelectItem key={preset} value={preset}>
+                                                        <div className="flex items-center justify-between w-full">
+                                                            <span>{presetInfo.label}</span>
+                                                            <span className="text-xs text-muted-foreground ml-2">{presetInfo.description}</span>
+                                                        </div>
+                                                    </SelectItem>
+                                                );
+                                            })}
+                                        </SelectContent>
+                                    </Select>
+                                    <p className="text-xs text-muted-foreground">
+                                        Controls the speed vs quality tradeoff for encoding
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="videoQuality" className="text-right">Quality</Label>
+                                <div className="col-span-3 flex items-center gap-4">
+                                    <div className="flex-1 space-y-2">
+                                        <Slider 
+                                            value={[videoQuality]} 
+                                            min={18} 
+                                            max={38} 
+                                            step={1} 
+                                            onValueChange={([v]) => setVideoQuality(v)} 
+                                            disabled={isEncoding || hardwarePlatform === 'NONE'}
+                                            className="w-full [&>*[role=slider]]:h-4 [&>*[role=slider]]:w-4 [&>*[role=slider]]:bg-indigo-500 [&>*[role=slider]]:border-2 [&>*[role=slider]]:border-indigo-400 [&>*[role=slider]]:shadow-md [&>*[role=slider]]:transition-all [&>*[role=slider]]:hover:bg-indigo-400 [&>*[role=slider]]:hover:scale-110 [&>span[data-orientation=horizontal]]:h-2 [&>span[data-orientation=horizontal]]:bg-muted [&>span[data-orientation=horizontal]]:rounded-full [&_.bg-primary]:bg-indigo-500"
+                                        />
+                                        <div className="flex justify-between text-xs text-muted-foreground px-1">
+                                            <span>Highest Quality</span>
+                                            <span>Lowest Quality</span>
+                                        </div>
+                                    </div>
+                                    <span className="text-sm w-8 text-right font-medium text-indigo-400">{videoQuality}</span>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="videoResolution" className="text-right">Resolution</Label>
+                                <Select 
+                                    value={videoResolution} 
+                                    onValueChange={(value: VideoResolution) => setVideoResolution(value)} 
+                                    disabled={isEncoding || hardwarePlatform === 'NONE'}
+                                >
+                                    <SelectTrigger className="col-span-3 bg-background/50">
+                                        <SelectValue placeholder="Select resolution..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {VIDEO_RESOLUTIONS.map(r => {
+                                            let label = r === 'original' ? 'Original' : r.toUpperCase();
+                                            let description = '';
+                                            
+                                            switch(r) {
+                                                case 'original': description = 'Keep Original Resolution'; break;
+                                                case '480p': description = 'SD'; break;
+                                                case '720p': description = 'HD'; break;
+                                                case '1080p': description = 'Full HD'; break;
+                                                case '1440p': description = '2K'; break;
+                                                case '2160p': description = '4K'; break;
+                                            }
+                                            
+                                            return (
+                                                <SelectItem key={r} value={r}>
+                                                    <div className="flex items-center justify-between w-full">
+                                                        <span>{label}</span>
+                                                        {description && <span className="text-xs text-muted-foreground ml-2">{description}</span>}
+                                                    </div>
+                                                </SelectItem>
+                                            );
+                                        })}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="hwAccel" className="text-right">Hardware Acceleration</Label>
+                                <Select 
+                                    value={hwAccel} 
+                                    onValueChange={(value: HwAccel) => setHwAccel(value)} 
+                                    disabled={isEncoding}
+                                >
+                                    <SelectTrigger className="col-span-3 bg-background/50">
+                                        <SelectValue placeholder="Select hardware acceleration..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {HW_ACCEL_OPTIONS.map(option => {
+                                            const hwInfo = (() => {
+                                                switch(option) {
+                                                    case 'auto': return { label: 'Auto', description: 'Automatically Detect Best Option' };
+                                                    case 'qsv': return { label: 'Intel QuickSync', description: 'Intel GPU Hardware Acceleration' };
+                                                    case 'nvenc': return { label: 'Nvidia NVENC', description: 'Nvidia GPU Hardware Acceleration' };
+                                                    case 'cuda': return { label: 'CUDA', description: 'Nvidia CUDA Acceleration' };
+                                                    case 'none': return { label: 'None', description: 'CPU Only, No Hardware Acceleration' };
+                                                    default: return { label: option, description: '' };
+                                                }
+                                            })();
+                                            
+                                            return (
+                                                <SelectItem key={option} value={option}>
+                                                    <div className="flex items-center justify-between w-full">
+                                                        <span>{hwInfo.label}</span>
+                                                        <span className="text-xs text-muted-foreground ml-2">{hwInfo.description}</span>
+                                                    </div>
+                                                </SelectItem>
+                                            );
+                                        })}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <Separator />
+
+                            {/* Audio Section */}
+                            <h4 className="font-medium text-lg -mb-2">Audio (Conversion)</h4>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="audioCodec" className="text-right">Codec</Label>
+                                <Select 
+                                    value={audioCodecConvert} 
+                                    onValueChange={(value: AudioCodecConvert) => setAudioCodecConvert(value)} 
+                                    disabled={isEncoding}
+                                >
+                                    <SelectTrigger className="col-span-3 bg-background/50">
+                                        <SelectValue placeholder="Select audio codec..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {AUDIO_CODECS_CONVERT.map(codec => {
+                                            const codecInfo = (() => {
+                                                switch(codec) {
+                                                    case 'libopus': 
+                                                        return { label: 'Opus', description: 'Best Quality, Smallest Size' };
+                                                    case 'aac': 
+                                                        return { label: 'AAC', description: 'Wide Compatibility' };
+                                                    case 'eac3': 
+                                                        return { label: 'Enhanced AC-3', description: 'Surround Sound Support' };
+                                                    default:
+                                                        return { label: codec, description: '' };
+                                                }
+                                            })();
+                                            
+                                            return (
+                                                <SelectItem key={codec} value={codec}>
+                                                    <div className="flex items-center justify-between w-full">
+                                                        <span>{codecInfo.label}</span>
+                                                        <span className="text-xs text-muted-foreground ml-2">{codecInfo.description}</span>
+                                                    </div>
+                                                </SelectItem>
+                                            );
+                                        })}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="audioBitrate" className="text-right">Bitrate</Label>
+                                <Select 
+                                    value={audioBitrate} 
+                                    onValueChange={setAudioBitrate} 
+                                    disabled={isEncoding}
+                                >
+                                    <SelectTrigger className="col-span-3 bg-background/50">
+                                        <SelectValue placeholder="Select bitrate..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {(audioCodecConvert === 'eac3' ? 
+                                            ['192k', '256k', '384k', '448k', '640k'] : 
+                                            ['64k', '96k', '128k', '192k', '256k', '320k', '384k', '448k', '640k']
+                                        ).map(bitrate => {
+                                            const bitrateInfo = (() => {
+                                                switch(bitrate) {
+                                                    case '64k': 
+                                                        return { label: '64 kbps', description: 'Very Low Quality, Tiny Files' };
+                                                    case '96k': 
+                                                        return { label: '96 kbps', description: 'Low Quality, Small Files' };
+                                                    case '128k': 
+                                                        return { label: '128 kbps', description: 'Good Quality, Balanced' };
+                                                    case '192k': 
+                                                        return { label: '192 kbps', description: 'High Quality, Recommended' };
+                                                    case '256k': 
+                                                        return { label: '256 kbps', description: 'Very High Quality' };
+                                                    case '320k': 
+                                                        return { label: '320 kbps', description: 'Premium Quality' };
+                                                    case '384k': 
+                                                        return { label: '384 kbps', description: 'Audiophile Quality' };
+                                                    case '448k': 
+                                                        return { label: '448 kbps', description: 'Studio Quality' };
+                                                    case '640k': 
+                                                        return { label: '640 kbps', description: 'Maximum Quality, Large Files' };
+                                                    default:
+                                                        return { label: bitrate, description: '' };
+                                                }
+                                            })();
+                                            
+                                            return (
+                                                <SelectItem key={bitrate} value={bitrate}>
+                                                    <div className="flex items-center justify-between w-full">
+                                                        <span>{bitrateInfo.label}</span>
+                                                        <span className="text-xs text-muted-foreground ml-2">{bitrateInfo.description}</span>
+                                                    </div>
+                                                </SelectItem>
+                                            );
+                                        })}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="audioLayout" className="text-right">Layout</Label>
+                                <Select 
+                                    value={selectedAudioLayout} 
+                                    onValueChange={(value: AudioLayout) => setSelectedAudioLayout(value)} 
+                                    disabled={isEncoding}
+                                >
+                                    <SelectTrigger className="col-span-3 bg-background/50">
+                                        <SelectValue placeholder="Select layout..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="mono">
+                                            <div className="flex items-center justify-between w-full">
+                                                <span>Mono</span>
+                                                <span className="text-xs text-muted-foreground ml-2">Single Channel, Smallest Files</span>
+                                            </div>
+                                        </SelectItem>
+                                        <SelectItem value="stereo">
+                                            <div className="flex items-center justify-between w-full">
+                                                <span>Stereo</span>
+                                                <span className="text-xs text-muted-foreground ml-2">Two Channels, Standard</span>
+                                            </div>
+                                        </SelectItem>
+                                        <SelectItem value="surround5_1">
+                                            <div className="flex items-center justify-between w-full">
+                                                <span>5.1 Surround</span>
+                                                <span className="text-xs text-muted-foreground ml-2">Multi-Channel, Home Theater</span>
+                                            </div>
+                                        </SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <Separator />
+
+                            {/* Subtitles Section */}
+                            <h4 className="font-medium text-lg -mb-2">Subtitles</h4>
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <Label htmlFor="removeAllSubtitles" className="text-right">Subtitle Handling</Label>
+                                <div className="col-span-3 flex items-center space-x-2">
+                                    <Checkbox
+                                        id="removeAllSubtitles"
+                                        checked={removeAllSubtitles}
+                                        onCheckedChange={(checked) => setRemoveAllSubtitles(checked as boolean)}
+                                        disabled={isEncoding || isAddingToQueue}
+                                    />
+                                    <Label htmlFor="removeAllSubtitles" className="text-sm font-normal">Remove all subtitles from output</Label>
+                                </div>
+                            </div>
+                            {!removeAllSubtitles && (
+                                <div className="grid grid-cols-4 items-center gap-4">
+                                    <div className="col-span-4 text-center text-muted-foreground text-sm py-2">
+                                        Individual subtitle tracks can be configured in the Track Selection section above when a single file is loaded
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </CardContent>
                 </Card>
