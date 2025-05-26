@@ -190,7 +190,16 @@ export function buildEncodingOptions(
       (selectedSubtitleTracks[s.index] === 'keep' || selectedSubtitleTracks[s.index] === 'convert')
     );
   
-  if (subtitlesToMap.length > 0) {
+  // Check if all subtitle tracks are marked as 'discard' (i.e., removeAllSubtitles is true)
+  const allSubtitleTracks = probeData.streams.filter(s => s.codec_type === 'subtitle');
+  const allSubtitlesDiscarded = allSubtitleTracks.length > 0 && 
+    allSubtitleTracks.every(s => selectedSubtitleTracks[s.index] === 'discard');
+  
+  if (allSubtitlesDiscarded) {
+    // Explicitly set mapSubtitle to empty array to indicate no subtitles should be included
+    options.mapSubtitle = [];
+    console.log('BuildEncodingOptions: All subtitles marked for removal - setting mapSubtitle to empty array');
+  } else if (subtitlesToMap.length > 0) {
     // Convert subtitle streams to DTOs with metadata
     let subtitleStreamDTOs = subtitlesToMap.map(s => {
       // Identify subtitle type

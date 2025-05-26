@@ -385,6 +385,7 @@ interface EncodingPreset {
     // --- Subtitle Preferences ---
     subtitleLanguageOrder?: string[]; // Ordered array of subtitle language codes in priority order
     subtitleTypeOrder?: string[]; // Ordered array of subtitle types (forced, sdh, cc, etc.) in priority order
+    removeAllSubtitles?: boolean; // Flag to remove all subtitle streams from output
 }
 // --- End EncodingPreset type definition --- 
 

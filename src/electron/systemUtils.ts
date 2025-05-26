@@ -21,6 +21,15 @@ let systemStatsTimer: NodeJS.Timeout | null = null;
 let storeInstance: Store | null = null;
 let performanceHistoryTimer: NodeJS.Timeout | null = null;
 
+// New variables for 1-minute averaging
+let performanceDataBuffer: Array<{
+    timestamp: Date;
+    cpuLoad: number | null;
+    gpuLoad: number | null;
+    memoryLoad: number | null;
+}> = [];
+let performanceAveragingTimer: NodeJS.Timeout | null = null;
+
 // Constants used by system utils - these should match what's in main.ts or be passed in
 const ENABLE_PS_GPU_KEY = 'enablePsGpuMonitoring';
 const SELECTED_GPU_KEY = 'selectedGpuModel';
@@ -104,6 +113,44 @@ async function getSystemStatsInternal(): Promise<SystemStats> {
     }
 }
 
+// Helper function to calculate average performance over the buffer period
+function calculateAveragePerformance(): {
+    avgCpuLoad: number | null;
+    avgGpuLoad: number | null; 
+    avgMemoryLoad: number | null;
+} {
+    if (performanceDataBuffer.length === 0) {
+        return { avgCpuLoad: null, avgGpuLoad: null, avgMemoryLoad: null };
+    }
+
+    const validEntries = performanceDataBuffer.filter(entry => 
+        entry.cpuLoad !== null || entry.gpuLoad !== null || entry.memoryLoad !== null
+    );
+
+    if (validEntries.length === 0) {
+        return { avgCpuLoad: null, avgGpuLoad: null, avgMemoryLoad: null };
+    }
+
+    // Calculate averages for each metric, excluding null values
+    const cpuValues = validEntries.filter(e => e.cpuLoad !== null).map(e => e.cpuLoad!);
+    const gpuValues = validEntries.filter(e => e.gpuLoad !== null).map(e => e.gpuLoad!);
+    const memoryValues = validEntries.filter(e => e.memoryLoad !== null).map(e => e.memoryLoad!);
+
+    const avgCpuLoad = cpuValues.length > 0 
+        ? Math.round((cpuValues.reduce((sum, val) => sum + val, 0) / cpuValues.length) * 10) / 10
+        : null;
+    
+    const avgGpuLoad = gpuValues.length > 0 
+        ? Math.round((gpuValues.reduce((sum, val) => sum + val, 0) / gpuValues.length) * 10) / 10
+        : null;
+        
+    const avgMemoryLoad = memoryValues.length > 0 
+        ? Math.round((memoryValues.reduce((sum, val) => sum + val, 0) / memoryValues.length) * 10) / 10
+        : null;
+
+    return { avgCpuLoad, avgGpuLoad, avgMemoryLoad };
+}
+
 // --- Exported Functions ---
 export function initializeSystemUtils(sInstance: Store) {
     storeInstance = sInstance;
@@ -121,6 +168,10 @@ export function startSystemStatsPolling(window: BrowserWindow | null) {
     }
     if (systemStatsTimer) clearInterval(systemStatsTimer);
     if (performanceHistoryTimer) clearInterval(performanceHistoryTimer);
+    if (performanceAveragingTimer) clearInterval(performanceAveragingTimer);
+    
+    // Clear any existing buffer data
+    performanceDataBuffer = [];
     
     console.log("[SystemUtils] Starting system stats polling for UI updates.");
     systemStatsTimer = setInterval(async () => { 
@@ -130,28 +181,64 @@ export function startSystemStatsPolling(window: BrowserWindow | null) {
         }
     }, 2000);
 
-    console.log("[SystemUtils] Starting performance history logging (every 15 seconds).");
+    console.log("[SystemUtils] Starting performance data collection (every 15 seconds for 1-minute averaging).");
     performanceHistoryTimer = setInterval(async () => {
+        try {
+            const stats = await getSystemStatsInternal();
+            if (stats.error) {
+                console.warn("[SystemUtils] Skipping performance data collection due to error:", stats.error);
+                return;
+            }
+            
+            // Add current stats to buffer for averaging
+            performanceDataBuffer.push({
+                timestamp: new Date(),
+                cpuLoad: typeof stats.cpuLoad === 'number' ? stats.cpuLoad : null,
+                gpuLoad: typeof stats.gpuLoad === 'number' ? stats.gpuLoad : null,
+                memoryLoad: typeof stats.memLoad === 'number' ? stats.memLoad : null
+            });
+            
+            // Keep buffer manageable - remove entries older than 70 seconds to avoid memory growth
+            const cutoffTime = new Date(Date.now() - 70000);
+            performanceDataBuffer = performanceDataBuffer.filter(entry => entry.timestamp > cutoffTime);
+            
+        } catch (error) {
+            console.error("[SystemUtils] Error collecting performance data:", error);
+        }
+    }, 15000);
+
+    console.log("[SystemUtils] Starting performance history averaging (every 1 minute).");
+    performanceAveragingTimer = setInterval(async () => {
         try {
             const db = getDbInstance();
             if (!db) {
                 console.error("[SystemUtils] DB instance not available for performance history logging.");
                 return;
             }
-            const stats = await getSystemStatsInternal();
-            if (stats.error) {
-                console.warn("[SystemUtils] Skipping performance history record due to error in stats retrieval:", stats.error);
-                return;
+            
+            // Calculate average from buffer and store in database
+            const averages = calculateAveragePerformance();
+            
+            if (averages.avgCpuLoad !== null || averages.avgGpuLoad !== null || averages.avgMemoryLoad !== null) {
+                insertPerformanceRecord(db, averages.avgCpuLoad, averages.avgGpuLoad, averages.avgMemoryLoad);
+                console.log("[SystemUtils] Inserted averaged performance record:", {
+                    cpu: averages.avgCpuLoad, 
+                    gpu: averages.avgGpuLoad, 
+                    memory: averages.avgMemoryLoad,
+                    dataPoints: performanceDataBuffer.length
+                });
+            } else {
+                console.log("[SystemUtils] No valid performance data to average this minute.");
             }
-            const cpuLoad = typeof stats.cpuLoad === 'number' ? stats.cpuLoad : null;
-            const systemMemLoad = typeof stats.memLoad === 'number' ? stats.memLoad : null;
-            const gpuEngineLoad = typeof stats.gpuLoad === 'number' ? stats.gpuLoad : null;
-
-            insertPerformanceRecord(db, cpuLoad, gpuEngineLoad, systemMemLoad);
+            
+            // Clear buffer after averaging (keep last 15 seconds for overlap)
+            const keepAfterTime = new Date(Date.now() - 15000);
+            performanceDataBuffer = performanceDataBuffer.filter(entry => entry.timestamp > keepAfterTime);
+            
         } catch (error) {
-            console.error("[SystemUtils] Error logging performance history:", error);
+            console.error("[SystemUtils] Error logging averaged performance history:", error);
         }
-    }, 15000);
+    }, 60000); // Every 60 seconds (1 minute)
 
     setTimeout(() => {
         try {
@@ -175,6 +262,15 @@ export function stopSystemStatsPolling() {
     if (performanceHistoryTimer) {
         clearInterval(performanceHistoryTimer);
         performanceHistoryTimer = null;
-        console.log("[SystemUtils] Stopped performance history logging.");
+        console.log("[SystemUtils] Stopped performance data collection.");
     }
+    if (performanceAveragingTimer) {
+        clearInterval(performanceAveragingTimer);
+        performanceAveragingTimer = null;
+        console.log("[SystemUtils] Stopped performance averaging timer.");
+    }
+    
+    // Clear the performance data buffer
+    performanceDataBuffer = [];
+    console.log("[SystemUtils] Cleared performance data buffer.");
 }

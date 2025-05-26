@@ -87,6 +87,14 @@ export const getPresets = async (db: Database.Database): Promise<EncodingPreset[
                 result.subtitleTypeOrder = [];
             }
 
+            // Handle removeAllSubtitles (stored as INTEGER in DB, convert to boolean)
+            if (typeof result.removeAllSubtitles === 'number') {
+                result.removeAllSubtitles = Boolean(result.removeAllSubtitles);
+            } else if (result.removeAllSubtitles === null || result.removeAllSubtitles === undefined) {
+                // Default to false for backward compatibility
+                result.removeAllSubtitles = false;
+            }
+
             // Clean up old fields from the result sent to UI
             delete result.preferredAudioLanguages;
             delete result.keepOriginalAudio;
@@ -107,11 +115,18 @@ export const savePreset = async (db: Database.Database, preset: any): Promise<En
     if (!db) throw new Error("Database not initialized");
     
     // Destructure known fields, including the new ones
-    const { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings } = preset;
+    const { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, removeAllSubtitles, ...settings } = preset;
     console.log(`Processing save request for preset ID: ${id}, Name: ${name}`);
 
     // Process settings for storage
     const processedSettings = { ...settings };
+    
+    // Handle removeAllSubtitles (convert boolean to integer for DB storage)
+    if (typeof removeAllSubtitles === 'boolean') {
+        processedSettings.removeAllSubtitles = removeAllSubtitles ? 1 : 0;
+    } else if (removeAllSubtitles === undefined || removeAllSubtitles === null) {
+        processedSettings.removeAllSubtitles = 0; // Default to false (0)
+    }
     
     // Serialize array fields to JSON strings
     let serializedAudioOrder: string | null = null;
@@ -178,7 +193,7 @@ export const savePreset = async (db: Database.Database, preset: any): Promise<En
             const info = stmt.run(params);
             console.log(`Update result: Changes=${info.changes}`);
             // Return the original preset structure received from UI
-            return { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings }; 
+            return { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, removeAllSubtitles, ...settings }; 
         } else {
             console.log(`Inserting new preset with ID: ${id}, Name: ${name}`);
             const insertFields = Object.keys(processedSettings).filter(key => processedSettings[key] !== null);
@@ -210,7 +225,7 @@ export const savePreset = async (db: Database.Database, preset: any): Promise<En
             console.log(`Insert result: Changes=${info.changes}, LastInsertRowid=${info.lastInsertRowid}`);
             
             // Return the original preset structure received from UI
-            return { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, ...settings };
+            return { id, name, audioLanguageOrder, subtitleLanguageOrder, subtitleTypeOrder, removeAllSubtitles, ...settings };
         }
     } catch (error) {
         console.error(`Error saving preset (ID: ${id}, Name: ${name}):`, error);
@@ -294,6 +309,8 @@ export const initializePresetTable = async (db: Database.Database): Promise<void
         // Add migrations for the new subtitle order columns
         if (!presetsColumns.includes('subtitleLanguageOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN subtitleLanguageOrder TEXT`);
         if (!presetsColumns.includes('subtitleTypeOrder')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN subtitleTypeOrder TEXT`);
+        // Add migration for the removeAllSubtitles column
+        if (!presetsColumns.includes('removeAllSubtitles')) presetMigrations.push(`ALTER TABLE encoding_presets ADD COLUMN removeAllSubtitles INTEGER`);
 
         if (presetMigrations.length > 0) {
             console.log('Starting database migration transaction for encoding_presets table...');

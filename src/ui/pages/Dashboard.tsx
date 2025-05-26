@@ -27,7 +27,8 @@ import {
     Legend, 
     ResponsiveContainer,
     Area,
-    AreaChart
+    AreaChart,
+    ComposedChart
 } from 'recharts'; // Import Recharts components
 import { Badge } from "@/components/ui/badge";
 import { 
@@ -36,7 +37,7 @@ import {
     TooltipProvider,
     TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Film, Music, Maximize2, FileVideo, FileAudio, FolderOpen } from 'lucide-react';
+import { Film, Music, Maximize2, FileVideo, FileAudio, FolderOpen, Check } from 'lucide-react';
 
 // Helper to format bytes
 function formatBytes(bytes: number | null, decimals = 2): string {
@@ -64,6 +65,8 @@ interface LargestFileData {
     title: string;
     filePath: string;
     currentSize: number;
+    originalSize: number;
+    encodingJobId?: string | null;
     videoCodec?: string | null;
     audioCodec?: string | null;
     resolutionWidth?: number | null;
@@ -311,7 +314,7 @@ const Dashboard: React.FC = () => {
             // Updated query to include codec and resolution information
             const largestFilesResults = await window.electron.dbQuery(
                 `SELECT 
-                    m.id, m.title, m.filePath, m.currentSize, 
+                    m.id, m.title, m.filePath, m.currentSize, m.originalSize, m.encodingJobId,
                     m.videoCodec, m.audioCodec, 
                     m.resolutionWidth, m.resolutionHeight
                 FROM media AS m
@@ -349,12 +352,28 @@ const Dashboard: React.FC = () => {
                 startDate.toISOString(), 
                 endDate.toISOString()
             ) as PerformanceHistoryRecord[];
-            const formattedData = historyResults.map(record => ({
-                time: new Date(record.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                cpu: record.cpu_load,
-                gpu: record.gpu_load,
-                memory: record.memory_load,
-            }));
+            
+            const formattedData = historyResults.map(record => {
+                // SQLite returns timestamps in UTC format like "2024-01-01 12:00:00"
+                // We need to explicitly parse it as UTC and convert to local time
+                let localDate: Date;
+                
+                if (record.timestamp.includes('T')) {
+                    // ISO format (with T separator)
+                    localDate = new Date(record.timestamp);
+                } else {
+                    // SQLite format "YYYY-MM-DD HH:MM:SS" - treat as UTC
+                    localDate = new Date(record.timestamp + ' UTC');
+                }
+                
+                return {
+                    time: localDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    cpu: record.cpu_load,
+                    gpu: record.gpu_load,
+                    memory: record.memory_load,
+                };
+            });
+            
             setPerformanceHistory(formattedData);
         } catch (err) {
             console.error("Error fetching performance history:", err);
@@ -458,7 +477,7 @@ const Dashboard: React.FC = () => {
             ) : performanceHistory.length > 0 ? (
               <div className="rounded-xl border bg-card/30 p-6 backdrop-blur-sm transition-all hover:shadow-md hover:bg-card/40">
                 <div className="mb-3 flex flex-col sm:flex-row sm:justify-between sm:items-center">
-                  <h3 className="text-lg font-medium text-foreground">CPU & GPU Utilization</h3>
+                  <h3 className="text-lg font-medium text-foreground">CPU, GPU & Memory Utilization</h3>
                   <div className="flex items-center gap-4 mt-2 sm:mt-0">
                     <div className="flex items-center gap-2">
                       <div className="w-3 h-3 rounded-full bg-[#8b5cf6]" />
@@ -468,20 +487,20 @@ const Dashboard: React.FC = () => {
                       <div className="w-3 h-3 rounded-full bg-[#3b82f6]" />
                       <span className="text-sm text-muted-foreground">GPU</span>
                     </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full bg-[#eab308]" />
+                      <span className="text-sm text-muted-foreground">Memory</span>
+                    </div>
                   </div>
                 </div>
                 
                 <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={performanceHistory} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}>
+                    <ComposedChart data={performanceHistory} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}>
                       <defs>
                         <linearGradient id="colorCpu" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.8}/>
                           <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0}/>
-                        </linearGradient>
-                        <linearGradient id="colorGpu" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.8}/>
-                          <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
                         </linearGradient>
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.15} vertical={false} />
@@ -503,6 +522,8 @@ const Dashboard: React.FC = () => {
                         tickMargin={10}
                       />
                       <Tooltip content={<CustomTooltip />} />
+                      
+                      {/* CPU - Base layer with gradient */}
                       <Area 
                         type="monotone" 
                         dataKey="cpu" 
@@ -513,17 +534,31 @@ const Dashboard: React.FC = () => {
                         name="CPU Load"
                         activeDot={{ r: 6, strokeWidth: 0 }}
                       />
-                      <Area 
+                      
+                      {/* Memory - Yellow glowing line (middle layer) */}
+                      <Line 
+                        type="stepAfter" 
+                        dataKey="memory" 
+                        stroke="#eab308" 
+                        strokeWidth={3} 
+                        dot={false}
+                        name="Memory Load"
+                        activeDot={{ r: 6, strokeWidth: 0, fill: "#eab308", filter: "drop-shadow(0px 0px 8px #eab308)" }}
+                        style={{ filter: "drop-shadow(0px 0px 4px #eab308)" }}
+                      />
+                      
+                      {/* GPU - Blue glowing line (top layer) */}
+                      <Line 
                         type="monotone" 
                         dataKey="gpu" 
                         stroke="#3b82f6" 
-                        strokeWidth={2} 
-                        fillOpacity={1} 
-                        fill="url(#colorGpu)" 
+                        strokeWidth={3} 
+                        dot={false}
                         name="GPU Load"
-                        activeDot={{ r: 6, strokeWidth: 0 }}
+                        activeDot={{ r: 6, strokeWidth: 0, fill: "#3b82f6", filter: "drop-shadow(0px 0px 8px #3b82f6)" }}
+                        style={{ filter: "drop-shadow(0px 0px 4px #3b82f6)" }}
                       />
-                    </AreaChart>
+                    </ComposedChart>
                   </ResponsiveContainer>
                 </div>
               </div>
@@ -581,7 +616,7 @@ const Dashboard: React.FC = () => {
             </div>
           </div>
 
-          {/* Largest Files Section - Updated with modern card-based layout */}
+          {/* Largest Files Section - Updated with Media page styling and responsive sizing */}
           <div className="space-y-4">
             <h2 className="text-xl font-semibold tracking-tight">Largest Files</h2>
             <div className="rounded-xl border bg-card/30 p-6 backdrop-blur-sm">
@@ -590,93 +625,130 @@ const Dashboard: React.FC = () => {
                   <p className="text-muted-foreground">Loading data...</p>
                 </div>
               ) : largestFiles.length > 0 ? (
-                <ScrollArea className="h-[400px] rounded-lg">
+                <ScrollArea 
+                  className="rounded-lg"
+                  style={{ height: largestFiles.length < 10 ? `${Math.max(largestFiles.length * 120, 240)}px` : '400px' }}
+                >
                   <div className="flex flex-col gap-2">
                     {largestFiles.map((file) => (
-                      <div key={file.id} className="border border-border/40 rounded-lg p-3 hover:bg-card/50 transition-colors">
-                        <div className="flex justify-between">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center mb-2">
-                              <span className="font-medium truncate max-w-[500px]" title={file.title}>
-                                {file.title}
-                              </span>
-                            </div>
-                            
-                            <div className="text-xs text-muted-foreground mb-2 truncate" title={file.filePath}>
-                              <FolderOpen className="inline-block h-3 w-3 mr-1" />
-                              {file.filePath.split(/[/\\]/).slice(0, -1).join('/')}
-                            </div>
-                            
-                            <div className="flex flex-wrap gap-1.5">
-                              <TooltipProvider delayDuration={200}>
-                                <UITooltip>
-                                  <TooltipTrigger asChild>
-                                    <Badge variant="secondary" className="text-xs bg-card/70">
-                                      <Film className="h-3 w-3 mr-1" />
-                                      {file.resolutionWidth && file.resolutionHeight ? `${file.resolutionWidth}×${file.resolutionHeight}` : 'Unknown'}
-                                    </Badge>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top" className="text-xs bg-card">
-                                    <p>Resolution: {file.resolutionWidth && file.resolutionHeight ? `${file.resolutionWidth}×${file.resolutionHeight}` : 'Unknown'}</p>
-                                  </TooltipContent>
-                                </UITooltip>
-                                
-                                {file.resolutionHeight && (
+                      <div key={file.id} className="border rounded-lg hover:border-primary transition-colors bg-card overflow-hidden">
+                        <div className="p-4">
+                          <div className="grid grid-cols-[1fr_auto] gap-3 items-start w-full">
+                            {/* Main content column */}
+                            <div className="min-w-0 pr-6 relative">
+                              <div className="flex items-baseline min-w-0">
+                                <div className="w-10 flex-shrink-0 relative">
+                                  <span className="text-xs font-medium text-muted-foreground">Title:</span>
+                                  <div className="absolute right-0 top-0 bottom-0 w-px h-full bg-border"></div>
+                                </div>
+                                <h3 className="font-medium text-base truncate flex-1 pl-2" title={file.title}>
+                                  {file.title}
+                                </h3>
+                              </div>
+                              
+                              <div className="flex items-center mt-1.5 min-w-0">
+                                <div className="w-10 flex-shrink-0 relative">
+                                  <span className="text-xs font-medium text-muted-foreground">Path:</span>
+                                  <div className="absolute right-0 top-0 bottom-0 w-px h-full bg-border"></div>
+                                </div>
+                                <div className="text-[10px] text-muted-foreground/60 truncate flex-1 pl-2" title={file.filePath}>
+                                  <FolderOpen className="inline-block h-3 w-3 mr-1" />
+                                  {file.filePath.split(/[/\\]/).slice(0, -1).join('/')}
+                                </div>
+                              </div>
+                              
+                              {/* Tags section at the bottom */}
+                              <div className="flex flex-wrap gap-1.5 mt-3 ml-10">
+                                <TooltipProvider delayDuration={200}>
                                   <UITooltip>
                                     <TooltipTrigger asChild>
-                                      <Badge variant="outline" className="text-xs bg-card/70">
-                                        <Maximize2 className="h-3 w-3 mr-1" />
-                                        {file.resolutionHeight >= 4320 ? '8K' :
-                                          file.resolutionHeight >= 2160 ? '4K' :
-                                          file.resolutionHeight >= 1440 ? '2K' :
-                                          file.resolutionHeight >= 1080 ? 'HD' :
-                                          file.resolutionHeight >= 720 ? 'HD' : 'SD'}
+                                      <Badge variant="outline" className="text-xs bg-background/50">
+                                        <Film className="h-2.5 w-2.5 mr-1" />
+                                        {file.resolutionWidth && file.resolutionHeight ? `${file.resolutionWidth}×${file.resolutionHeight}` : 'Unknown'}
                                       </Badge>
                                     </TooltipTrigger>
-                                    <TooltipContent side="top" className="text-xs bg-card">
-                                      <p>Quality: {file.resolutionHeight >= 4320 ? '8K' :
-                                        file.resolutionHeight >= 2160 ? '4K' :
-                                        file.resolutionHeight >= 1440 ? '2K' :
-                                        file.resolutionHeight >= 1080 ? 'Full HD' :
-                                        file.resolutionHeight >= 720 ? 'HD' : 'Standard Definition'}</p>
+                                    <TooltipContent side="top" className="text-xs">
+                                      <p>Resolution: {file.resolutionWidth && file.resolutionHeight ? `${file.resolutionWidth}×${file.resolutionHeight}` : 'Unknown'}</p>
                                     </TooltipContent>
                                   </UITooltip>
-                                )}
-                                
-                                {file.videoCodec && (
-                                  <UITooltip>
-                                    <TooltipTrigger asChild>
-                                      <div className="inline-flex">
-                                        <VideoCodecIcon codec={file.videoCodec} />
-                                      </div>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top" className="text-xs bg-card">
-                                      <p>Video Codec: {file.videoCodec}</p>
-                                    </TooltipContent>
-                                  </UITooltip>
-                                )}
-                                
-                                {file.audioCodec && (
-                                  <UITooltip>
-                                    <TooltipTrigger asChild>
-                                      <div className="inline-flex">
-                                        <AudioCodecIcon codec={file.audioCodec} />
-                                      </div>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="top" className="text-xs bg-card">
-                                      <p>Audio Codec: {file.audioCodec}</p>
-                                    </TooltipContent>
-                                  </UITooltip>
-                                )}
-                              </TooltipProvider>
+                                  
+                                  {file.resolutionHeight && (
+                                    <UITooltip>
+                                      <TooltipTrigger asChild>
+                                        <Badge variant="outline" className="text-xs bg-background/50">
+                                          <Maximize2 className="h-2.5 w-2.5 mr-1" />
+                                          {file.resolutionHeight >= 4320 ? '8K' :
+                                            file.resolutionHeight >= 2160 ? '4K' :
+                                            file.resolutionHeight >= 1440 ? '2K' :
+                                            file.resolutionHeight >= 1080 ? '1080P' :
+                                            file.resolutionHeight >= 720 ? '720P' :
+                                            file.resolutionHeight >= 480 ? '480P' : 'SD'}
+                                        </Badge>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top" className="text-xs">
+                                        <p>Quality: {file.resolutionHeight >= 4320 ? '8K' :
+                                          file.resolutionHeight >= 2160 ? '4K' :
+                                          file.resolutionHeight >= 1440 ? '2K' :
+                                          file.resolutionHeight >= 1080 ? 'Full HD' :
+                                          file.resolutionHeight >= 720 ? 'HD' : 'Standard Definition'}</p>
+                                      </TooltipContent>
+                                    </UITooltip>
+                                  )}
+                                  
+                                  {file.videoCodec && (
+                                    <UITooltip>
+                                      <TooltipTrigger asChild>
+                                        <Badge variant="outline" className="text-xs bg-background/50">
+                                          <FileVideo className="h-2.5 w-2.5 mr-1" />
+                                          {file.videoCodec}
+                                        </Badge>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top" className="text-xs">
+                                        <p>Video Codec: {file.videoCodec}</p>
+                                      </TooltipContent>
+                                    </UITooltip>
+                                  )}
+                                  
+                                  {file.audioCodec && (
+                                    <UITooltip>
+                                      <TooltipTrigger asChild>
+                                        <Badge variant="outline" className="text-xs bg-background/50">
+                                          <FileAudio className="h-2.5 w-2.5 mr-1" />
+                                          {file.audioCodec}
+                                        </Badge>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top" className="text-xs">
+                                        <p>Audio Codec: {file.audioCodec}</p>
+                                      </TooltipContent>
+                                    </UITooltip>
+                                  )}
+                                </TooltipProvider>
+                              </div>
+                              
+                              {/* Vertical divider */}
+                              <div className="absolute right-3 top-0 bottom-0 w-px bg-border"></div>
                             </div>
-                          </div>
-                          
-                          <div className="flex items-center ml-4">
-                            <div className="bg-primary px-3 py-1.5 rounded-md text-primary-foreground shadow-sm ring-1 ring-primary/20 transition-all hover:ring-primary/40" style={{ boxShadow: '0 0 10px rgba(99, 102, 241, 0.3)' }}>
-                              <span className="text-sm font-mono font-bold">
-                                {formatBytes(file.currentSize)}
-                              </span>
+                            
+                            {/* Right side column with size */}
+                            <div className="flex flex-col items-end space-y-2 min-w-[130px] pl-3">
+                              <div className="flex items-center gap-2">
+                                {file.encodingJobId ? (
+                                  <Badge variant="outline" className="text-xs bg-green-500/10 text-green-500 border-green-500/20 hover:bg-green-500/20">
+                                    <Check className="h-3 w-3 mr-1" />
+                                    Processed
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-500 border-amber-500/20 hover:bg-amber-500/20">
+                                    Not Processed
+                                  </Badge>
+                                )}
+                              </div>
+                              
+                              <div className="flex gap-1 items-baseline">
+                                <span className="font-medium text-sm">{formatBytes(file.currentSize)}</span>
+                                <span className="text-xs text-muted-foreground">/</span>
+                                <span className="text-xs text-muted-foreground">{formatBytes(file.originalSize)}</span>
+                              </div>
                             </div>
                           </div>
                         </div>

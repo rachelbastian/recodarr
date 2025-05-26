@@ -468,6 +468,7 @@ type VideoCodec = typeof ALL_FFMPEG_VIDEO_CODECS[number];
 interface PresetFormDataWithoutId extends Omit<EncodingPreset, 'id' | 'videoCodec'> {
   hardwarePlatform: HardwarePlatform;
   targetVideoFormat: TargetVideoFormat;
+  removeAllSubtitles?: boolean;
 }
 // This type is for the form's state. It includes UI-specific fields.
 // Other fields from EncodingPreset (like name, videoPreset, etc.) are implicitly partial.
@@ -536,6 +537,7 @@ const Presets: React.FC = () => {
                 const newFormat = value as TargetVideoFormat;
                 if (newFormat === 'COPY') {
                     newState.hardwarePlatform = 'NONE';
+                // @ts-ignore - TypeScript incorrectly narrows types here
                 } else if (prev.hardwarePlatform === 'NONE' && newFormat !== 'COPY') {
                     newState.hardwarePlatform = 'INTEL_GPU'; // Default back if un-copying
                 }
@@ -543,10 +545,12 @@ const Presets: React.FC = () => {
             
             if (field === 'hardwarePlatform') {
                 const newHardware = value as HardwarePlatform;
-                if (newHardware === 'NONE' && newState.targetVideoFormat !== 'COPY') {
+                if (newHardware === 'NONE') {
+                    // If setting hardware to NONE, force targetVideoFormat to COPY (regardless of current value)
                     newState.targetVideoFormat = 'COPY';
                 }
                 // If hardware changes and format was COPY, but new hardware is not NONE, set a default format
+                // @ts-ignore - TypeScript incorrectly narrows types here
                 else if (newHardware !== 'NONE' && newState.targetVideoFormat === 'COPY') {
                      newState.targetVideoFormat = 'H265'; // Default to H265 if hardware is selected
                 }
@@ -580,6 +584,7 @@ const Presets: React.FC = () => {
             audioLanguageOrder: defaultPresetValues.audioLanguageOrder ?? [],
             subtitleLanguageOrder: defaultPresetValues.subtitleLanguageOrder ?? [],
             subtitleTypeOrder: defaultPresetValues.subtitleTypeOrder ?? [],
+            removeAllSubtitles: false,
         });
         setFormError(null);
         setIsDialogOpen(true);
@@ -598,6 +603,7 @@ const Presets: React.FC = () => {
             audioLanguageOrder: preset.audioLanguageOrder ?? [], 
             subtitleLanguageOrder: preset.subtitleLanguageOrder ?? [],
             subtitleTypeOrder: preset.subtitleTypeOrder ?? [],
+            removeAllSubtitles: preset.removeAllSubtitles ?? false, // Use the actual preset value
         }); 
         setFormError(null);
         setIsDialogOpen(true);
@@ -632,9 +638,10 @@ const Presets: React.FC = () => {
                 audioBitrate: formData.audioBitrate || defaultPresetValues.audioBitrate,
                 selectedAudioLayout: formData.selectedAudioLayout || defaultPresetValues.selectedAudioLayout,
                 audioLanguageOrder: formData.audioLanguageOrder ?? [],
-                subtitleCodecConvert: formData.subtitleCodecConvert || defaultPresetValues.subtitleCodecConvert,
-                subtitleLanguageOrder: formData.subtitleLanguageOrder ?? [],
-                subtitleTypeOrder: formData.subtitleTypeOrder ?? [],
+                subtitleCodecConvert: 'srt', // Always use SRT for maximum compatibility
+                subtitleLanguageOrder: formData.removeAllSubtitles ? [] : (formData.subtitleLanguageOrder ?? []),
+                subtitleTypeOrder: formData.removeAllSubtitles ? [] : (formData.subtitleTypeOrder ?? []),
+                removeAllSubtitles: formData.removeAllSubtitles ?? false, // Add the missing field
             };
             
             const completePresetToSave: EncodingPreset = {
@@ -851,31 +858,34 @@ const Presets: React.FC = () => {
                                             value={[presetToSliderValue(formData.videoPreset)]} 
                                             onValueChange={(valueArray: number[]) => handleInputChange('videoPreset', sliderValueToPreset(valueArray[0]))} 
                                             disabled={disablePresetQuality}
-                                            className="[&>span]:bg-accent pt-2" // pt-2 to align with other controls if label is multiline
+                                            className="w-full [&>*[role=slider]]:h-4 [&>*[role=slider]]:w-4 [&>*[role=slider]]:bg-indigo-500 [&>*[role=slider]]:border-2 [&>*[role=slider]]:border-indigo-400 [&>*[role=slider]]:shadow-md [&>*[role=slider]]:transition-all [&>*[role=slider]]:hover:bg-indigo-400 [&>*[role=slider]]:hover:scale-110 [&>span[data-orientation=horizontal]]:h-2 [&>span[data-orientation=horizontal]]:bg-muted [&>span[data-orientation=horizontal]]:rounded-full [&_.bg-primary]:bg-indigo-500"
                                         />
                                         <div className="flex justify-between text-xs text-muted-foreground px-1">
                                             <span>Slowest (Best Quality)</span>
                                             <span>Fastest (Lower Quality)</span>
-                                        </div>
-                                        <div className="text-sm text-center font-medium pt-1">
-                                            Current: <span className="text-accent">{formData.videoPreset || 'medium'}</span>
                                         </div>
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
                                     <Label htmlFor="videoQuality" className="text-right">Quality</Label>
                                     <div className="col-span-3 flex items-center gap-4">
-                                        <Slider 
-                                            id="videoQuality"
-                                            value={[Number(formData.videoQuality ?? defaultPresetValues.videoQuality)]} 
-                                            min={18} 
-                                            max={38} 
-                                            step={1} 
-                                            onValueChange={(v) => handleSliderChange('videoQuality', v as unknown as number[])} 
-                                            disabled={disablePresetQuality}
-                                            className="flex-1 [&>span]:bg-accent"
-                                        />
-                                        <span className="text-sm w-8 text-right">{formData.videoQuality ?? defaultPresetValues.videoQuality}</span>
+                                        <div className="flex-1 space-y-2">
+                                            <Slider 
+                                                id="videoQuality"
+                                                value={[Number(formData.videoQuality ?? defaultPresetValues.videoQuality)]} 
+                                                min={18} 
+                                                max={38} 
+                                                step={1} 
+                                                onValueChange={(v) => handleSliderChange('videoQuality', v as unknown as number[])} 
+                                                disabled={disablePresetQuality}
+                                                className="w-full [&>*[role=slider]]:h-4 [&>*[role=slider]]:w-4 [&>*[role=slider]]:bg-indigo-500 [&>*[role=slider]]:border-2 [&>*[role=slider]]:border-indigo-400 [&>*[role=slider]]:shadow-md [&>*[role=slider]]:transition-all [&>*[role=slider]]:hover:bg-indigo-400 [&>*[role=slider]]:hover:scale-110 [&>span[data-orientation=horizontal]]:h-2 [&>span[data-orientation=horizontal]]:bg-muted [&>span[data-orientation=horizontal]]:rounded-full [&_.bg-primary]:bg-indigo-500"
+                                            />
+                                            <div className="flex justify-between text-xs text-muted-foreground px-1">
+                                                <span>Highest Quality</span>
+                                                <span>Lowest Quality</span>
+                                            </div>
+                                        </div>
+                                        <span className="text-sm w-8 text-right font-medium text-indigo-400">{formData.videoQuality ?? defaultPresetValues.videoQuality}</span>
                                     </div>
                                 </div>
                                 <div className="grid grid-cols-4 items-center gap-4">
@@ -887,7 +897,28 @@ const Presets: React.FC = () => {
                                     >
                                         <SelectTrigger className="col-span-3"><SelectValue placeholder="Select resolution..." /></SelectTrigger>
                                         <SelectContent>
-                                            {VIDEO_RESOLUTIONS.map(r => <SelectItem key={r} value={r}>{r === 'original' ? 'Original' : r.toUpperCase()}</SelectItem>)}
+                                            {VIDEO_RESOLUTIONS.map(r => {
+                                                // Create resolution labels
+                                                let label = r === 'original' ? 'Original' : r.toUpperCase();
+                                                let description = '';
+                                                
+                                                switch(r) {
+                                                    case '480p': description = 'SD'; break;
+                                                    case '720p': description = 'HD'; break;
+                                                    case '1080p': description = 'Full HD'; break;
+                                                    case '1440p': description = '2K'; break;
+                                                    case '2160p': description = '4K'; break;
+                                                }
+                                                
+                                                return (
+                                                    <SelectItem key={r} value={r}>
+                                                        <div className="flex items-center justify-between w-full">
+                                                            <span>{label}</span>
+                                                            {description && <span className="text-xs text-muted-foreground ml-2">{description}</span>}
+                                                        </div>
+                                                    </SelectItem>
+                                                );
+                                            })}
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -901,7 +932,31 @@ const Presets: React.FC = () => {
                             <Label htmlFor="audioCodecConvert" className="text-right">Codec</Label>
                             <Select value={formData.audioCodecConvert} onValueChange={(v: AudioCodecConvert) => handleInputChange('audioCodecConvert', v)}>
                                 <SelectTrigger className="col-span-3"><SelectValue placeholder="Select audio codec..." /></SelectTrigger>
-                                <SelectContent>{AUDIO_CODECS_CONVERT.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                                <SelectContent>
+                                    {AUDIO_CODECS_CONVERT.map(codec => {
+                                        const codecInfo = (() => {
+                                            switch(codec) {
+                                                case 'libopus': 
+                                                    return { label: 'Opus', description: 'Best Quality, Smallest Size' };
+                                                case 'aac': 
+                                                    return { label: 'AAC', description: 'Wide Compatibility' };
+                                                case 'eac3': 
+                                                    return { label: 'Enhanced AC-3', description: 'Surround Sound Support' };
+                                                default:
+                                                    return { label: codec, description: '' };
+                                            }
+                                        })();
+                                        
+                                        return (
+                                            <SelectItem key={codec} value={codec}>
+                                                <div className="flex items-center justify-between w-full">
+                                                    <span>{codecInfo.label}</span>
+                                                    <span className="text-xs text-muted-foreground ml-2">{codecInfo.description}</span>
+                                                </div>
+                                            </SelectItem>
+                                        );
+                                    })}
+                                </SelectContent>
                             </Select>
                         </div>
                          <div className="grid grid-cols-4 items-center gap-4">
@@ -909,9 +964,41 @@ const Presets: React.FC = () => {
                             <Select value={formData.audioBitrate} onValueChange={(v: string) => handleInputChange('audioBitrate', v)}>
                                 <SelectTrigger className="col-span-3"><SelectValue placeholder="Select bitrate..." /></SelectTrigger>
                                 <SelectContent>
-                                    {['64k', '96k', '128k', '192k', '256k', '320k', '384k', '448k', '640k'].map(r => (
-                                        <SelectItem key={r} value={r}>{r}</SelectItem>
-                                    ))}
+                                    {['64k', '96k', '128k', '192k', '256k', '320k', '384k', '448k', '640k'].map(bitrate => {
+                                        const bitrateInfo = (() => {
+                                            switch(bitrate) {
+                                                case '64k': 
+                                                    return { label: '64 kbps', description: 'Very Low Quality, Tiny Files' };
+                                                case '96k': 
+                                                    return { label: '96 kbps', description: 'Low Quality, Small Files' };
+                                                case '128k': 
+                                                    return { label: '128 kbps', description: 'Good Quality, Balanced' };
+                                                case '192k': 
+                                                    return { label: '192 kbps', description: 'High Quality, Recommended' };
+                                                case '256k': 
+                                                    return { label: '256 kbps', description: 'Very High Quality' };
+                                                case '320k': 
+                                                    return { label: '320 kbps', description: 'Premium Quality' };
+                                                case '384k': 
+                                                    return { label: '384 kbps', description: 'Audiophile Quality' };
+                                                case '448k': 
+                                                    return { label: '448 kbps', description: 'Studio Quality' };
+                                                case '640k': 
+                                                    return { label: '640 kbps', description: 'Maximum Quality, Large Files' };
+                                                default:
+                                                    return { label: bitrate, description: '' };
+                                            }
+                                        })();
+                                        
+                                        return (
+                                            <SelectItem key={bitrate} value={bitrate}>
+                                                <div className="flex items-center justify-between w-full">
+                                                    <span>{bitrateInfo.label}</span>
+                                                    <span className="text-xs text-muted-foreground ml-2">{bitrateInfo.description}</span>
+                                                </div>
+                                            </SelectItem>
+                                        );
+                                    })}
                                 </SelectContent>
                             </Select>
                         </div>
@@ -919,7 +1006,31 @@ const Presets: React.FC = () => {
                             <Label htmlFor="selectedAudioLayout" className="text-right">Layout</Label>
                             <Select value={formData.selectedAudioLayout} onValueChange={(v: AudioLayout) => handleInputChange('selectedAudioLayout', v)}>
                                 <SelectTrigger className="col-span-3"><SelectValue placeholder="Select layout..." /></SelectTrigger>
-                                <SelectContent>{AUDIO_LAYOUT_OPTIONS.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}</SelectContent>
+                                <SelectContent>
+                                    {AUDIO_LAYOUT_OPTIONS.map(layout => {
+                                        const layoutInfo = (() => {
+                                            switch(layout) {
+                                                case 'mono': 
+                                                    return { label: 'Mono', description: 'Single Channel, Smallest Files' };
+                                                case 'stereo': 
+                                                    return { label: 'Stereo', description: 'Two Channels, Standard' };
+                                                case 'surround5_1': 
+                                                    return { label: '5.1 Surround', description: 'Multi-Channel, Home Theater' };
+                                                default:
+                                                    return { label: layout, description: '' };
+                                            }
+                                        })();
+                                        
+                                        return (
+                                            <SelectItem key={layout} value={layout}>
+                                                <div className="flex items-center justify-between w-full">
+                                                    <span>{layoutInfo.label}</span>
+                                                    <span className="text-xs text-muted-foreground ml-2">{layoutInfo.description}</span>
+                                                </div>
+                                            </SelectItem>
+                                        );
+                                    })}
+                                </SelectContent>
                             </Select>
                         </div>
                         
@@ -940,39 +1051,61 @@ const Presets: React.FC = () => {
 
                         <h4 className="font-medium text-lg -mb-2">Subtitles (Conversion)</h4>
                         <div className="grid grid-cols-4 items-center gap-4">
-                            <Label htmlFor="subtitleCodecConvert" className="text-right">Format</Label>
-                            <Select value={formData.subtitleCodecConvert} onValueChange={(v: SubtitleCodecConvert) => handleInputChange('subtitleCodecConvert', v)}>
-                                <SelectTrigger className="col-span-3"><SelectValue placeholder="Select format..." /></SelectTrigger>
-                                <SelectContent>{SUBTITLE_CODECS_CONVERT.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                            </Select>
+                            <Label htmlFor="removeAllSubtitles" className="text-right">Subtitle Handling</Label>
+                            <div className="col-span-3 flex items-center space-x-2">
+                                <Checkbox 
+                                    id="removeAllSubtitles"
+                                    checked={formData.removeAllSubtitles || false}
+                                    onCheckedChange={(checked) => handleInputChange('removeAllSubtitles', checked)}
+                                />
+                                <Label htmlFor="removeAllSubtitles" className="text-sm font-normal">Remove all subtitles</Label>
+                            </div>
                         </div>
 
                         <Separator />
                         
                         <h4 className="font-medium text-lg -mb-2">Subtitle Language Order</h4>
-                        <div className="grid grid-cols-4 items-start gap-4">
-                            <Label className="text-right pt-2">Language Preference</Label>
-                            <div className="col-span-3">
-                                <SubtitleOrderSelector 
-                                    orderedLanguages={formData.subtitleLanguageOrder || []} 
-                                    onChange={(newOrder) => handleInputChange('subtitleLanguageOrder', newOrder)} 
-                                />
+                        {!formData.removeAllSubtitles && (
+                            <div className="grid grid-cols-4 items-start gap-4">
+                                <Label className="text-right pt-2">Language Preference</Label>
+                                <div className="col-span-3">
+                                    <SubtitleOrderSelector 
+                                        orderedLanguages={formData.subtitleLanguageOrder || []} 
+                                        onChange={(newOrder) => handleInputChange('subtitleLanguageOrder', newOrder)} 
+                                    />
+                                </div>
                             </div>
-                        </div>
+                        )}
+                        {formData.removeAllSubtitles && (
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <div className="col-span-4 text-center text-muted-foreground text-sm py-4">
+                                    All subtitles will be removed from the output
+                                </div>
+                            </div>
+                        )}
                         
                         <h4 className="font-medium text-lg -mb-2 mt-4">Subtitle Type Order</h4>
-                        <div className="grid grid-cols-4 items-start gap-4">
-                            <Label className="text-right pt-2">Type Preference</Label>
-                            <div className="col-span-3">
-                                <SubtitleTypeOrderSelector 
-                                    orderedTypes={formData.subtitleTypeOrder || []} 
-                                    onChange={(newOrder) => handleInputChange('subtitleTypeOrder', newOrder)} 
-                                />
-                                <p className="text-xs text-muted-foreground mt-2">
-                                    For multiple subtitles of the same language, prioritize according to this type order.
-                                </p>
+                        {!formData.removeAllSubtitles && (
+                            <div className="grid grid-cols-4 items-start gap-4">
+                                <Label className="text-right pt-2">Type Preference</Label>
+                                <div className="col-span-3">
+                                    <SubtitleTypeOrderSelector 
+                                        orderedTypes={formData.subtitleTypeOrder || []} 
+                                        onChange={(newOrder) => handleInputChange('subtitleTypeOrder', newOrder)} 
+                                    />
+                                    <p className="text-xs text-muted-foreground mt-2">
+                                        For multiple subtitles of the same language, prioritize according to this type order.
+                                    </p>
+                                </div>
                             </div>
-                        </div>
+                        )}
+                        {formData.removeAllSubtitles && (
+                            <div className="grid grid-cols-4 items-center gap-4">
+                                <div className="col-span-4 text-center text-muted-foreground text-sm py-2">
+                                    Subtitle type preferences are disabled when removing all subtitles
+                                </div>
+                            </div>
+                        )}
 
                     </div>
                     <DialogFooter>

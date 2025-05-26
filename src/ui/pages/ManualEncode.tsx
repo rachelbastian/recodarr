@@ -128,6 +128,12 @@ const ManualEncode: React.FC = () => {
     const [selectedAudioLayout, setSelectedAudioLayout] = useState<AudioLayout>('stereo');
     const [audioLanguageOrder, setAudioLanguageOrder] = useState<string[]>(['eng', 'original']);
     
+    // Subtitle Settings State
+    const [subtitleLanguageOrder, setSubtitleLanguageOrder] = useState<string[]>(['eng']);
+    const [subtitleTypeOrder, setSubtitleTypeOrder] = useState<string[]>(['forced', 'normal', 'sdh']);
+    const [subtitleCodecConvert, setSubtitleCodecConvert] = useState<string>('srt');
+    const [removeAllSubtitles, setRemoveAllSubtitles] = useState<boolean>(false);
+    
     // Track Selection State
     const [selectedAudioTracks, setSelectedAudioTracks] = useState<{ [index: number]: TrackAction }>({});
     const [selectedSubtitleTracks, setSelectedSubtitleTracks] = useState<{ [index: number]: TrackAction }>({});
@@ -170,6 +176,22 @@ const ManualEncode: React.FC = () => {
         setTotalFrames(null);
         setSelectedFolderPath(null);
         setFormData({ selectedFiles: [] });
+        
+        // Reset encoding settings to defaults
+        setVideoCodec('hevc_qsv');
+        setVideoPreset('faster');
+        setVideoQuality(25);
+        setVideoResolution('original');
+        setHwAccel('auto');
+        setAudioCodecConvert('libopus');
+        setAudioBitrate('128k');
+        setSelectedAudioLayout('stereo');
+        setAudioLanguageOrder(['eng', 'original']);
+        setSubtitleLanguageOrder(['eng']);
+        setSubtitleTypeOrder(['forced', 'normal', 'sdh']);
+        setSubtitleCodecConvert('srt');
+        setRemoveAllSubtitles(false);
+        setSelectedPresetId('custom');
     }, []);
 
     // Queue-related functions
@@ -422,6 +444,10 @@ const ManualEncode: React.FC = () => {
             setAudioBitrate('128k');
             setSelectedAudioLayout('stereo');
             setAudioLanguageOrder(['eng', 'original']);
+            setSubtitleLanguageOrder(['eng']);
+            setSubtitleTypeOrder(['forced', 'normal', 'sdh']);
+            setSubtitleCodecConvert('srt');
+            setRemoveAllSubtitles(false);
             return;
         }
         
@@ -442,6 +468,10 @@ const ManualEncode: React.FC = () => {
             setAudioBitrate(options.audioBitrate as string);
             setSelectedAudioLayout(options.selectedAudioLayout as AudioLayout);
             setAudioLanguageOrder(options.audioLanguageOrder as string[]);
+            setSubtitleLanguageOrder(options.subtitleLanguageOrder as string[]);
+            setSubtitleTypeOrder(options.subtitleTypeOrder as string[]);
+            setSubtitleCodecConvert(options.subtitleCodecConvert as string);
+            setRemoveAllSubtitles(options.removeAllSubtitles as boolean);
             
             // If we have probeData, also apply track selection based on preset
             if (probeData?.streams) {
@@ -453,6 +483,22 @@ const ManualEncode: React.FC = () => {
             }
         }
     }, [availablePresets, probeData]);
+
+    // Effect to update track selections when removeAllSubtitles changes
+    useEffect(() => {
+        if (removeAllSubtitles && probeData?.streams) {
+            // When removeAllSubtitles is enabled, set all subtitle tracks to 'discard'
+            const subtitleStreams = probeData.streams.filter(s => s.codec_type === 'subtitle');
+            const newSubtitleTracks: { [index: number]: TrackAction } = {};
+            
+            subtitleStreams.forEach(stream => {
+                newSubtitleTracks[stream.index] = 'discard';
+            });
+            
+            setSelectedSubtitleTracks(newSubtitleTracks);
+            console.log('ManualEncode: removeAllSubtitles enabled - setting all subtitle tracks to discard');
+        }
+    }, [removeAllSubtitles, probeData]);
 
     // Effect to update default audioBitrate when audioCodec changes
     useEffect(() => {
@@ -1124,6 +1170,23 @@ const ManualEncode: React.FC = () => {
                                         <SelectItem value="surround5_1">5.1 Surround</SelectItem>
                                     </SelectContent>
                                 </Select>
+                            </div>
+                            
+                            <Separator className="my-2" />
+                            
+                            <div className="flex items-center space-x-2">
+                                <Checkbox
+                                    id="remove-all-subtitles"
+                                    checked={removeAllSubtitles}
+                                    onCheckedChange={(checked) => setRemoveAllSubtitles(checked as boolean)}
+                                    disabled={isEncoding || isAddingToQueue}
+                                />
+                                <Label
+                                    htmlFor="remove-all-subtitles"
+                                    className="text-sm font-normal leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                                >
+                                    Remove all subtitles from output
+                                </Label>
                             </div>
                         </div>
                     </CardContent>

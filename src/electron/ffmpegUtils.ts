@@ -372,19 +372,26 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
                     outputOpts.push('-disposition:a:0', 'default');
                 }
             }
-            // Iterate over mapSubtitle array
-            if (options.mapSubtitle && Array.isArray(options.mapSubtitle)) {
-                options.mapSubtitle.forEach((map, index) => {
-                    outputOpts.push('-map', map + '?');
-                    
-                    // Set subtitle disposition - make the first one default
-                    if (index === 0) {
-                        outputOpts.push(`-disposition:s:${index}`, 'default');
-                        writeLog(`[Info] Setting subtitle stream ${index} as default`);
-                    } else {
-                        outputOpts.push(`-disposition:s:${index}`, 'none');
-                    }
-                });
+            // Handle subtitle mapping
+            if (options.mapSubtitle !== undefined) {
+                if (Array.isArray(options.mapSubtitle) && options.mapSubtitle.length === 0) {
+                    // Empty array means explicitly exclude all subtitles
+                    outputOpts.push('-sn'); // No subtitles
+                    writeLog('[Info] Explicitly excluding all subtitles (-sn flag)');
+                } else if (Array.isArray(options.mapSubtitle) && options.mapSubtitle.length > 0) {
+                    // Map specific subtitle streams
+                    options.mapSubtitle.forEach((map, index) => {
+                        outputOpts.push('-map', map + '?');
+                        
+                        // Set subtitle disposition - make the first one default
+                        if (index === 0) {
+                            outputOpts.push(`-disposition:s:${index}`, 'default');
+                            writeLog(`[Info] Setting subtitle stream ${index} as default`);
+                        } else {
+                            outputOpts.push(`-disposition:s:${index}`, 'none');
+                        }
+                    });
+                }
             }
 
             // 2. Video Codec & Options

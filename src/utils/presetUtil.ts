@@ -109,6 +109,7 @@ export const defaultPresetValues: Omit<EncodingPreset, 'id'> = {
     subtitleLanguageOrder: ['eng'], // Default to English subtitles
     subtitleTypeOrder: ['forced', 'normal', 'sdh'], // Default type order
     subtitleCodecConvert: 'srt',
+    removeAllSubtitles: false, // Default to keeping subtitles
 };
 
 /**
@@ -158,6 +159,7 @@ export const getDefaultEncodingOptions = (preset: EncodingPreset | undefined) =>
         audioLanguageOrder: preset.audioLanguageOrder ?? defaultPresetValues.audioLanguageOrder,
         subtitleLanguageOrder: preset.subtitleLanguageOrder ?? defaultPresetValues.subtitleLanguageOrder,
         subtitleTypeOrder: preset.subtitleTypeOrder ?? defaultPresetValues.subtitleTypeOrder,
+        removeAllSubtitles: preset.removeAllSubtitles ?? defaultPresetValues.removeAllSubtitles,
     };
 };
 
@@ -171,6 +173,12 @@ export const getAudioTrackActions = (
     const audioStreams = streams.filter(s => s.codec_type === 'audio');
     const audioDefaults: { [index: number]: TrackAction } = {};
 
+    console.log(`[Preset Track Select] Processing ${audioStreams.length} audio streams`);
+    audioStreams.forEach(stream => {
+        const lang = stream.tags?.language?.toLowerCase() || 'unknown';
+        console.log(`  - Stream ${stream.index}: ${lang} (${stream.codec_name})`);
+    });
+
     if (!preset || !Array.isArray(preset.audioLanguageOrder) || preset.audioLanguageOrder.length === 0) {
         // Default selection for custom mode (or invalid preset): convert first audio track, discard others
         let firstAudioFound = false;
@@ -178,8 +186,11 @@ export const getAudioTrackActions = (
             audioDefaults[stream.index] = !firstAudioFound ? 'convert' : 'discard';
             firstAudioFound = true;
         });
+        console.log(`[Preset Track Select] No preset audio order, using default (first track convert)`);
         return audioDefaults;
     }
+
+    console.log(`[Preset Track Select] Using preset audio order: [${preset.audioLanguageOrder.join(', ')}]`);
 
     // Apply preset-based audio track selection
     const presetLangsLower = preset.audioLanguageOrder.map((lang: string) => lang.toLowerCase());
@@ -191,11 +202,25 @@ export const getAudioTrackActions = (
     // Process each language in the preset's order
     for (const langCode of presetLangsLower) {
         if (langCode === 'original') {
-            const firstAudioStream = audioStreams[0];
-            if (firstAudioStream && !selectedIndices.includes(firstAudioStream.index)) {
-                console.log(`[Preset Track Select] Found match for "original": Index ${firstAudioStream.index}`);
-                selectedIndices.push(firstAudioStream.index);
+            // Find the audio stream with the lowest index (the true "first" track in the file)
+            const firstAudioStream = audioStreams.reduce((lowest, current) => 
+                (lowest.index < current.index) ? lowest : current
+            );
+            
+            if (firstAudioStream) {
+                const originalLang = firstAudioStream.tags?.language?.toLowerCase() || 'unknown';
+                console.log(`[Preset Track Select] Processing "original" track - Index ${firstAudioStream.index} (${originalLang})`);
+                
+                // Always include the original track (first audio stream by index), even if already selected
+                if (!selectedIndices.includes(firstAudioStream.index)) {
+                    console.log(`[Preset Track Select] Adding "original" track: Index ${firstAudioStream.index} (${originalLang})`);
+                    selectedIndices.push(firstAudioStream.index);
+                } else {
+                    console.log(`[Preset Track Select] "original" track (Index ${firstAudioStream.index}, ${originalLang}) already selected by previous language match`);
+                }
                 matchedPresetLangs.add(langCode);
+            } else {
+                console.log(`[Preset Track Select] No audio streams found for "original"`);
             }
             continue;
         }
@@ -207,21 +232,26 @@ export const getAudioTrackActions = (
         );
 
         if (foundStreams.length > 0) {
-            console.log(`[Preset Track Select] Found ${foundStreams.length} match(es) for "${langCode}".`);
+            console.log(`[Preset Track Select] Found ${foundStreams.length} match(es) for "${langCode}"`);
             foundStreams.forEach((streamToSelect: StreamInfo) => {
                 if (!selectedIndices.includes(streamToSelect.index)) {
                     selectedIndices.push(streamToSelect.index);
-                    console.log(`  - Adding Index ${streamToSelect.index}`);
+                    console.log(`  - Adding ${langCode} track: Index ${streamToSelect.index}`);
                 }
             });
             matchedPresetLangs.add(langCode);
+        } else {
+            console.log(`[Preset Track Select] No available tracks found for "${langCode}" (might be selected already or doesn't exist)`);
         }
     }
+
+    console.log(`[Preset Track Select] Selected track indices: [${selectedIndices.join(', ')}]`);
 
     // Set track actions based on the found indices
     audioStreams.forEach((stream: StreamInfo) => {
         // Mark tracks in selectedIndices for conversion, others for discard
         audioDefaults[stream.index] = selectedIndices.includes(stream.index) ? 'convert' : 'discard';
+        console.log(`[Preset Track Select] Stream ${stream.index}: ${audioDefaults[stream.index]}`);
     });
 
     return audioDefaults;
@@ -236,6 +266,15 @@ export const getSubtitleTrackActions = (
 ): { [index: number]: TrackAction } => {
     const subtitleDefaults: { [index: number]: TrackAction } = {};
     const subtitleStreams = streams.filter(s => s.codec_type === 'subtitle');
+
+    // If preset specifies to remove all subtitles, discard all subtitle streams
+    if (preset?.removeAllSubtitles) {
+        subtitleStreams.forEach((stream: StreamInfo) => {
+            subtitleDefaults[stream.index] = 'discard';
+            console.log(`[Preset Track Select] Setting subtitle ${stream.index} to 'discard' - removeAllSubtitles enabled`);
+        });
+        return subtitleDefaults;
+    }
 
     if (!preset || !Array.isArray(preset.subtitleLanguageOrder) || preset.subtitleLanguageOrder.length === 0) {
         // Default selection for custom mode (or invalid preset): keep English subtitles
@@ -350,7 +389,7 @@ export const getPresetSummary = (preset: EncodingPreset): string => {
     // Video info
     if (preset.videoCodec) {
         const { hardwarePlatform, targetVideoFormat } = deriveHardwareAndFormat(preset.videoCodec);
-        let formatDesc = targetVideoFormat;
+        let formatDesc: string = targetVideoFormat;
         if (targetVideoFormat === 'H265') formatDesc = 'H.265';
         else if (targetVideoFormat === 'H264') formatDesc = 'H.264';
 
@@ -394,7 +433,9 @@ export const getPresetSummary = (preset: EncodingPreset): string => {
     }
     
     // Subtitle language/type summary
-    if (Array.isArray(preset.subtitleLanguageOrder) && preset.subtitleLanguageOrder.length > 0) {
+    if (preset.removeAllSubtitles) {
+        parts.push('Sub: No Subtitles');
+    } else if (Array.isArray(preset.subtitleLanguageOrder) && preset.subtitleLanguageOrder.length > 0) {
         const langSummary = preset.subtitleLanguageOrder
             .slice(0, 2) // Show first 2
             .join(', ');
