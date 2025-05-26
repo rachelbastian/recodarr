@@ -128,6 +128,8 @@ export function registerAppIpcHandlers(
     ipcMainInstance.handle("setPsGpuMonitoringEnabled", async (_event, isEnabled: boolean) => storeInstance.set('enablePsGpuMonitoring', isEnabled));
     ipcMainInstance.handle("get-manual-gpu-vram", async () => storeInstance.get('manualGpuVramMb', null) as number | null);
     ipcMainInstance.handle("set-manual-gpu-vram", async (_event, vramMb: number | null) => { if (vramMb === null || typeof vramMb !== 'number' || vramMb <= 0) { storeInstance.delete('manualGpuVramMb'); console.log("Cleared manual GPU VRAM override."); } else { storeInstance.set('manualGpuVramMb', vramMb); console.log(`Set manual GPU VRAM override to: ${vramMb} MB`); } });
+    ipcMainInstance.handle("getRunInBackground", async () => storeInstance.get('runInBackground', false) as boolean);
+    ipcMainInstance.handle("setRunInBackground", async (_event, enabled: boolean) => { storeInstance.set('runInBackground', enabled); console.log(`Set run in background preference to: ${enabled}`); });
 
     // Scanner Triggers
     ipcMainInstance.handle('trigger-scan', async () => { 

@@ -166,6 +166,8 @@ type LocalElectronApi = {
     setSelectedGpu: (model: string | null) => Promise<void>;
     getPsGpuMonitoringEnabled: () => Promise<boolean>;
     setPsGpuMonitoringEnabled: (isEnabled: boolean) => Promise<void>;
+    getRunInBackground: () => Promise<boolean>;
+    setRunInBackground: (enabled: boolean) => Promise<void>;
     dbQuery: (sql: string, params?: any[]) => Promise<any>;
     getWatchedFolders: () => Promise<WatchedFolder[]>;
     addWatchedFolder: (folderInfo: Omit<WatchedFolder, 'path'>) => Promise<WatchedFolder | null>;
@@ -253,6 +255,8 @@ electron.contextBridge.exposeInMainWorld("electron", {
     setSelectedGpu: (model) => ipcInvoke("setSelectedGpu", model),
     getPsGpuMonitoringEnabled: () => ipcInvoke("getPsGpuMonitoringEnabled"),
     setPsGpuMonitoringEnabled: (isEnabled) => ipcInvoke("setPsGpuMonitoringEnabled", isEnabled),
+    getRunInBackground: () => ipcInvoke("getRunInBackground"),
+    setRunInBackground: (enabled) => ipcInvoke("setRunInBackground", enabled),
     dbQuery: (sql, params = []) => ipcInvoke("db-query", sql, params),
     getWatchedFolders: () => ipcInvoke('get-watched-folders'),
     addWatchedFolder: (folderInfo) => ipcInvoke('add-watched-folder', folderInfo),

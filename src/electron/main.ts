@@ -43,6 +43,7 @@ const SELECTED_GPU_KEY = 'selectedGpuModel';
 const ENABLE_PS_GPU_KEY = 'enablePsGpuMonitoring';
 const WATCHED_FOLDERS_KEY = 'watchedFolders';
 const MANUAL_GPU_VRAM_MB_KEY = 'manualGpuVramMb';
+const RUN_IN_BACKGROUND_KEY = 'runInBackground';
 
 let isScanning = false;
 let fileWatcher: FileWatcher | null = null;
@@ -50,6 +51,7 @@ let splashScreen: BrowserWindow | null = null;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let taskScheduler: TaskScheduler | null = null;
+let isAppQuitting = false;
 const APP_STARTUP_TIMEOUT = 30000;
 
 function setupTray() {
@@ -61,7 +63,7 @@ function setupTray() {
         { type: 'separator' },
         { label: 'Restart App', click: () => { app.relaunch(); app.exit(); } },
         { type: 'separator' },
-        { label: 'Exit', click: () => { app.quit(); } }
+        { label: 'Exit', click: () => { isAppQuitting = true; app.quit(); } }
     ]);
     tray.setContextMenu(contextMenu);
     tray.on('click', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
@@ -117,6 +119,16 @@ app.on("ready", async () => {
 
     mainWindow = new BrowserWindow({ width: 1450, height: 750, icon: getIconPath(), show: false, backgroundColor: '#232836', titleBarStyle: 'default', titleBarOverlay: process.platform === 'win32' ? { color: '#686b76', symbolColor: '#ffffff', height: 32 } : false, webPreferences: { preload: getPreloadPath() } });
     setMainWindow(mainWindow);
+
+    // Handle window close behavior based on run in background setting
+    mainWindow.on('close', (event) => {
+        const runInBackground = store.get(RUN_IN_BACKGROUND_KEY, false) as boolean;
+        if (runInBackground && !isAppQuitting) {
+            event.preventDefault();
+            mainWindow?.hide();
+            console.log('[Main Process] App minimized to tray (run in background enabled)');
+        }
+    });
 
     const logDir = path.join(app.getPath('userData'), 'encoding_logs');
     try {
@@ -181,12 +193,17 @@ app.on("ready", async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    isAppQuitting = true;
     if (taskScheduler) taskScheduler.shutdown();
     app.quit();
   }
 });
 
 app.on('activate', () => { /* Standard macOS activate behavior can be added if needed */ });
+
+app.on('before-quit', () => {
+    isAppQuitting = true;
+});
 
 app.on('will-quit', () => {
     stopWatching(); 

@@ -261,9 +261,11 @@ export interface IElectronAPI {
     subscribeSystemStats: (callback: (data: SystemStatsData) => void) => UnsubscribeFunction;
     getAvailableGpus: () => Promise<GpuInfo[]>;
     getSelectedGpu: () => Promise<string | null>;
-    setSelectedGpu: (model: string) => Promise<void>;
+    setSelectedGpu: (model: string | null) => Promise<void>;
     getPsGpuMonitoringEnabled: () => Promise<boolean>;
     setPsGpuMonitoringEnabled: (isEnabled: boolean) => Promise<void>;
+    getRunInBackground: () => Promise<boolean>;
+    setRunInBackground: (enabled: boolean) => Promise<void>;
     dbQuery: <T = any>(sql: string, params?: any[]) => Promise<T[]>;
     getWatchedFolders: () => Promise<WatchedFolder[]>;
     addWatchedFolder: (folderInfo: Omit<WatchedFolder, 'path'>) => Promise<WatchedFolder | null>;
@@ -272,7 +274,7 @@ export interface IElectronAPI {
     triggerFolderScan: (folderPath: string) => Promise<void>;
     subscribeScanStatus: (callback: (data: ScanStatus) => void) => UnsubscribeFunction;
     getManualGpuVram: () => Promise<number | null>;
-    setManualGpuVram: (vramMb: number) => Promise<void>;
+    setManualGpuVram: (vramMb: number | null) => Promise<void>;
     getHardwareInfo: () => Promise<HardwareInfo[]>;
     updateHardwarePriority: (deviceId: string, priority: number) => Promise<void>;
     updateHardwareEnabled: (deviceId: string, isEnabled: boolean) => Promise<void>;
