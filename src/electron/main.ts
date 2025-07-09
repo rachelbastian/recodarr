@@ -40,10 +40,10 @@ try {
 
 const store = new Store();
 const SELECTED_GPU_KEY = 'selectedGpuModel';
-const ENABLE_PS_GPU_KEY = 'enablePsGpuMonitoring';
 const WATCHED_FOLDERS_KEY = 'watchedFolders';
 const MANUAL_GPU_VRAM_MB_KEY = 'manualGpuVramMb';
 const RUN_IN_BACKGROUND_KEY = 'runInBackground';
+const INTEL_PRESENTMON_ENABLED_KEY = 'intelPresentMonEnabled';
 
 let isScanning = false;
 let fileWatcher: FileWatcher | null = null;

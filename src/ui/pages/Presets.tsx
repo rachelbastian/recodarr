@@ -623,6 +623,22 @@ const Presets: React.FC = () => {
         }
 
         const finalVideoCodec = deriveFfmpegCodec(formData.hardwarePlatform, formData.targetVideoFormat);
+        
+        // Derive hwAccel setting from hardware platform selection
+        const finalHwAccel = (() => {
+            switch (formData.hardwarePlatform) {
+                case 'INTEL_GPU':
+                    return 'qsv'; // Use qsv for Intel GPU acceleration
+                case 'NVIDIA_GPU':
+                    return 'nvenc';
+                case 'CPU_SOFTWARE':
+                    return 'none';
+                case 'NONE':
+                    return 'none';
+                default:
+                    return 'auto';
+            }
+        })();
 
         try {
             // Create a new object for saving, excluding UI-specific fields from formData
@@ -633,7 +649,7 @@ const Presets: React.FC = () => {
                 videoPreset: formData.videoPreset || defaultPresetValues.videoPreset,
                 videoQuality: formData.videoQuality ?? defaultPresetValues.videoQuality,
                 videoResolution: formData.videoResolution || defaultPresetValues.videoResolution,
-                hwAccel: formData.hwAccel || defaultPresetValues.hwAccel, // Keep hwAccel for now
+                hwAccel: finalHwAccel, // Use derived hwAccel from hardware platform
                 audioCodecConvert: formData.audioCodecConvert || defaultPresetValues.audioCodecConvert,
                 audioBitrate: formData.audioBitrate || defaultPresetValues.audioBitrate,
                 selectedAudioLayout: formData.selectedAudioLayout || defaultPresetValues.selectedAudioLayout,

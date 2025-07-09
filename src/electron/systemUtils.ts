@@ -1,9 +1,14 @@
 import si from 'systeminformation';
 import Store from 'electron-store';
-import { exec } from 'child_process';
-import { Buffer } from 'buffer';
 import { BrowserWindow } from 'electron';
 import { getDbInstance, insertPerformanceRecord, pruneOldPerformanceRecords } from './dbUtils.js';
+import { 
+    initializeIntelPresentMon, 
+    getIntelGpuMetrics, 
+    isIntelGpuDetected, 
+    shutdownIntelPresentMon,
+    isIntelPresentMonAvailable 
+} from './intelPresentMon.js';
 
 // --- Types (copied from main.ts or a shared types file) ---
 interface SystemStats { 
@@ -13,6 +18,10 @@ interface SystemStats {
     gpuMemoryUsed: number | null; 
     gpuMemoryTotal: number | null; 
     gpuMemoryUsagePercent: number | null; 
+    // Additional Intel GPU metrics (when PresentMon is available)
+    gpuTemperature?: number | null; // GPU temperature in Celsius
+    gpuPowerDraw?: number | null; // GPU power draw in watts
+    intelPresentMonActive?: boolean; // Indicates if Intel PresentMon is being used for metrics
     error?: string 
 };
 
@@ -31,30 +40,11 @@ let performanceDataBuffer: Array<{
 let performanceAveragingTimer: NodeJS.Timeout | null = null;
 
 // Constants used by system utils - these should match what's in main.ts or be passed in
-const ENABLE_PS_GPU_KEY = 'enablePsGpuMonitoring';
 const SELECTED_GPU_KEY = 'selectedGpuModel';
 const MANUAL_GPU_VRAM_MB_KEY = 'manualGpuVramMb';
+const INTEL_PRESENTMON_ENABLED_KEY = 'intelPresentMonEnabled';
 
 // --- Internal Helper Functions ---
-function runPsCommand(command: string): Promise<string> {
-    if (!storeInstance) {
-        console.error("[SystemUtils] Store not initialized for runPsCommand.");
-        return Promise.reject("Store not initialized");
-    }
-    console.log(`[DEBUG] PowerShell command requested: ${command.substring(0, 50)}${command.length > 50 ? '...' : ''}`);
-    if ((command.includes('Get-Counter') || command.includes('\\GPU')) && !storeInstance.get(ENABLE_PS_GPU_KEY, false)) {
-        console.log('[DEBUG] Skipping PowerShell GPU monitoring command due to setting disabled');
-        return Promise.resolve('');
-    }
-    return new Promise((resolve, reject) => {
-        const encodedCommand = Buffer.from(command, 'utf16le').toString('base64');
-        exec(`powershell.exe -EncodedCommand ${encodedCommand}`, (error, stdout) => {
-            if (error) { console.error(`PS exec error for encoded command [${command.substring(0, 50)}...]: ${error}`); return reject(error); }
-            resolve(stdout.trim());
-        });
-    });
-}
-
 const findGpu = (controllers: si.Systeminformation.GraphicsControllerData[], preferredModel: string | null) => {
     if (preferredModel) { const preferred = controllers.find(gpu => gpu.model === preferredModel); if (preferred) return preferred; }
     return controllers.find(gpu => !gpu.vendor?.includes('Microsoft')) || controllers[0] || null;
@@ -67,27 +57,71 @@ async function getSystemStatsInternal(): Promise<SystemStats> {
     }
     try {
         const [cpuData, memData] = await Promise.all([si.currentLoad(), si.mem()]);
-        const psGpuEnabled = storeInstance.get(ENABLE_PS_GPU_KEY, false) as boolean;
-        let gpuLoadPs: number | null = null, gpuMemoryUsedPsMb: number | null = null;
 
-        if (psGpuEnabled) {
-            const gpuUtilCmd = `(Get-Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage').CounterSamples | Where-Object {$_.CookedValue -ne $null} | Measure-Object -Sum CookedValue | Select-Object -ExpandProperty Sum`;
-            const gpuMemUsedCmd = `(Get-Counter '\\GPU Process Memory(*)\\Local Usage').CounterSamples | Where-Object {$_.CookedValue -ne $null} | Measure-Object -Sum CookedValue | Select-Object -ExpandProperty Sum`;
-            try { 
-                const [util, mem] = await Promise.all([runPsCommand(gpuUtilCmd), runPsCommand(gpuMemUsedCmd)]); 
-                gpuLoadPs = util ? parseFloat(util) : null; 
-                gpuMemoryUsedPsMb = mem ? parseFloat(mem) / (1024 * 1024) : null; 
-            } catch (psErr) { 
-                console.error("[SystemUtils] Error with PS Get-Counter:", psErr); 
-            }
-        }
-
+        // Get GPU data with Intel PresentMon integration
+        let gpuLoad: number | null = null;
+        let gpuMemoryUsedMb: number | null = null;
         let gpuMemoryTotalSiMb: number | null = null;
+        let gpuTemperature: number | null = null;
+        let gpuPowerDraw: number | null = null;
+        let intelPresentMonActive = false;
+
         try { 
             const gpuData = await si.graphics(); 
             const prefModel = storeInstance.get(SELECTED_GPU_KEY) as string | null; 
             const targetGpu = findGpu(gpuData.controllers, prefModel); 
-            gpuMemoryTotalSiMb = targetGpu?.memoryTotal ?? null; 
+            
+            // Check if Intel PresentMon is enabled in settings
+            const isPresentMonEnabled = storeInstance.get(INTEL_PRESENTMON_ENABLED_KEY, true) as boolean;
+            
+            // Check if we have an Intel GPU and PresentMon is available and enabled
+            const useIntelPresentMon = isPresentMonEnabled && 
+                targetGpu && 
+                isIntelGpuDetected(targetGpu.vendor) && 
+                isIntelPresentMonAvailable();
+
+            if (useIntelPresentMon) {
+                console.log("[SystemUtils] Using Intel PresentMon for GPU metrics");
+                const intelMetrics = await getIntelGpuMetrics();
+                
+                if (!intelMetrics.error) {
+                    gpuLoad = intelMetrics.gpuUtilization;
+                    gpuMemoryUsedMb = intelMetrics.gpuMemoryUsed;
+                    gpuMemoryTotalSiMb = intelMetrics.gpuMemoryTotal;
+                    gpuTemperature = intelMetrics.gpuTemperature;
+                    gpuPowerDraw = intelMetrics.gpuPowerDraw;
+                    intelPresentMonActive = true;
+                    console.log("[SystemUtils] Intel PresentMon metrics:", {
+                        utilization: gpuLoad,
+                        memoryUsed: gpuMemoryUsedMb,
+                        memoryTotal: gpuMemoryTotalSiMb,
+                        temperature: gpuTemperature,
+                        powerDraw: gpuPowerDraw
+                    });
+                } else {
+                    console.warn("[SystemUtils] Intel PresentMon error, falling back to systeminformation:", intelMetrics.error);
+                    // Fallback to systeminformation
+                    gpuMemoryTotalSiMb = targetGpu?.memoryTotal ?? null;
+                    gpuMemoryUsedMb = targetGpu?.memoryUsed ?? null;
+                    gpuLoad = targetGpu?.utilizationGpu ?? null;
+                }
+            } else {
+                // Use systeminformation for non-Intel GPUs or when PresentMon is unavailable/disabled
+                if (targetGpu) {
+                    gpuMemoryTotalSiMb = targetGpu.memoryTotal ?? null;
+                    gpuMemoryUsedMb = targetGpu.memoryUsed ?? null;
+                    gpuLoad = targetGpu.utilizationGpu ?? null;
+                    
+                    // Only log this occasionally when Intel GPU is detected but PresentMon is disabled/unavailable
+                    if (isIntelGpuDetected(targetGpu.vendor) && Math.random() < 0.01) {
+                        if (!isPresentMonEnabled) {
+                            console.log("[SystemUtils] Intel GPU detected but PresentMon disabled in settings, using systeminformation fallback");
+                        } else if (!isIntelPresentMonAvailable()) {
+                            console.log("[SystemUtils] Intel GPU detected but PresentMon unavailable, using systeminformation fallback");
+                        }
+                    }
+                }
+            }
         } catch (siErr) { 
             console.error("[SystemUtils] Error fetching GPU graphics via SI:", siErr); 
         }
@@ -95,17 +129,20 @@ async function getSystemStatsInternal(): Promise<SystemStats> {
         const manualVramMb = storeInstance.get(MANUAL_GPU_VRAM_MB_KEY) as number | null;
         const effectiveTotalVramMb = manualVramMb ?? gpuMemoryTotalSiMb;
         let gpuMemoryUsagePercent: number | null = null;
-        if (gpuMemoryUsedPsMb !== null && effectiveTotalVramMb !== null && effectiveTotalVramMb > 0) {
-            gpuMemoryUsagePercent = (gpuMemoryUsedPsMb / effectiveTotalVramMb) * 100;
+        if (gpuMemoryUsedMb !== null && effectiveTotalVramMb !== null && effectiveTotalVramMb > 0) {
+            gpuMemoryUsagePercent = (gpuMemoryUsedMb / effectiveTotalVramMb) * 100;
         }
 
         return { 
             cpuLoad: cpuData.currentLoad, 
             memLoad: (memData.active / memData.total) * 100, 
-            gpuLoad: gpuLoadPs, 
-            gpuMemoryUsed: gpuMemoryUsedPsMb, 
+            gpuLoad, 
+            gpuMemoryUsed: gpuMemoryUsedMb, 
             gpuMemoryTotal: effectiveTotalVramMb, 
-            gpuMemoryUsagePercent 
+            gpuMemoryUsagePercent,
+            gpuTemperature: gpuTemperature,
+            gpuPowerDraw: gpuPowerDraw,
+            intelPresentMonActive: intelPresentMonActive
         };
     } catch (e) { 
         console.error("[SystemUtils] Error fetching system stats:", e); 
@@ -155,6 +192,26 @@ function calculateAveragePerformance(): {
 export function initializeSystemUtils(sInstance: Store) {
     storeInstance = sInstance;
     console.log("[SystemUtils] Initialized with store instance.");
+    
+    // Check if Intel PresentMon is enabled in settings (default to true for backward compatibility)
+    const isPresentMonEnabled = storeInstance.get(INTEL_PRESENTMON_ENABLED_KEY, true) as boolean;
+    
+    if (isPresentMonEnabled) {
+        // Initialize Intel PresentMon asynchronously
+        initializeIntelPresentMon()
+            .then(success => {
+                if (success) {
+                    console.log("[SystemUtils] Intel PresentMon successfully initialized");
+                } else {
+                    console.log("[SystemUtils] Intel PresentMon initialization skipped or failed");
+                }
+            })
+            .catch(error => {
+                console.error("[SystemUtils] Error during Intel PresentMon initialization:", error);
+            });
+    } else {
+        console.log("[SystemUtils] Intel PresentMon disabled in settings, skipping initialization");
+    }
 }
 
 export function startSystemStatsPolling(window: BrowserWindow | null) {
@@ -273,4 +330,13 @@ export function stopSystemStatsPolling() {
     // Clear the performance data buffer
     performanceDataBuffer = [];
     console.log("[SystemUtils] Cleared performance data buffer.");
+    
+    // Shutdown Intel PresentMon
+    shutdownIntelPresentMon()
+        .then(() => {
+            console.log("[SystemUtils] Intel PresentMon shutdown completed");
+        })
+        .catch(error => {
+            console.error("[SystemUtils] Error during Intel PresentMon shutdown:", error);
+        });
 }

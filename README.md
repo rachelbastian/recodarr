@@ -8,8 +8,7 @@ Automatic Library Monitoring and Indexing.
     Fully Searchable and indexed in a localdb
 Workflow editor
     Easily Create conditional workflows to automate your library encode without overloading your system. 
-System Monitor for CPU/GPU Stats (AMD/Nvidia)
-Powershell Integration for Intel IGPU's and ARC (WARNING: MAY TRIGGER AV USE AT OWN DISCRETION!)
+System Monitor for CPU/GPU/Memory Stats (Compatible with AMD/Nvidia/Intel)
 
 ## Project Setup
 #### Designed for Windows

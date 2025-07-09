@@ -101,7 +101,7 @@ export const defaultPresetValues: Omit<EncodingPreset, 'id'> = {
     videoPreset: 'faster',
     videoQuality: 25,
     videoResolution: 'original',
-    hwAccel: 'auto',
+    hwAccel: 'qsv', // Default to Intel GPU acceleration
     audioCodecConvert: 'libopus',
     audioBitrate: '128k',
     selectedAudioLayout: 'stereo',
@@ -119,11 +119,14 @@ export const loadPresets = async (electronAPI: IElectronAPI): Promise<EncodingPr
     try {
         const presets = await electronAPI.getPresets();
         // Ensure audioLanguageOrder is always an array, even if null from DB
+        // Also fix hwAccel setting for existing presets that might have 'qsv' set
         return presets.map((p: EncodingPreset) => ({ 
             ...p, 
             audioLanguageOrder: p.audioLanguageOrder ?? [],
             subtitleLanguageOrder: p.subtitleLanguageOrder ?? [],
-            subtitleTypeOrder: p.subtitleTypeOrder ?? []
+            subtitleTypeOrder: p.subtitleTypeOrder ?? [],
+            // Keep hwAccel as-is since qsv is valid
+            hwAccel: p.hwAccel
         }));
     } catch (error) {
         console.error("Failed to load presets:", error);

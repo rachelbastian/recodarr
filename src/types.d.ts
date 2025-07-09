@@ -163,6 +163,10 @@ export interface SystemStats {
     gpuMemoryUsed: number | null;
     gpuMemoryTotal: number | null;
     gpuMemoryUsagePercent?: number | null; // Added optional GPU memory usage percentage
+    // Additional Intel GPU metrics (when PresentMon is available)
+    gpuTemperature?: number | null; // GPU temperature in Celsius
+    gpuPowerDraw?: number | null; // GPU power draw in watts
+    intelPresentMonActive?: boolean; // Indicates if Intel PresentMon is being used for metrics
     error?: string;
 };
 export interface StaticData {
@@ -190,9 +194,7 @@ declare interface EventPayloadMapping {
     getAvailableGpus: GpuInfo[];
     getSelectedGpu: string | null;
     setSelectedGpu: void; 
-    getPsGpuMonitoringEnabled: boolean;
-    setPsGpuMonitoringEnabled: void; 
-    'db-query': any; 
+    'db-query': any;
     'get-watched-folders': WatchedFolder[];
     'add-watched-folder': WatchedFolder | null; 
     'remove-watched-folder': void; 
@@ -262,10 +264,10 @@ export interface IElectronAPI {
     getAvailableGpus: () => Promise<GpuInfo[]>;
     getSelectedGpu: () => Promise<string | null>;
     setSelectedGpu: (model: string | null) => Promise<void>;
-    getPsGpuMonitoringEnabled: () => Promise<boolean>;
-    setPsGpuMonitoringEnabled: (isEnabled: boolean) => Promise<void>;
     getRunInBackground: () => Promise<boolean>;
     setRunInBackground: (enabled: boolean) => Promise<void>;
+    getIntelPresentMonEnabled: () => Promise<boolean>;
+    setIntelPresentMonEnabled: (enabled: boolean) => Promise<void>;
     dbQuery: <T = any>(sql: string, params?: any[]) => Promise<T[]>;
     getWatchedFolders: () => Promise<WatchedFolder[]>;
     addWatchedFolder: (folderInfo: Omit<WatchedFolder, 'path'>) => Promise<WatchedFolder | null>;

@@ -5,7 +5,12 @@
         "dist-react"
     ],
     "extraResources": [
-        "dist-electron/preload.cjs"
+        "dist-electron/preload.cjs",
+        {
+            "from": "src/resources/presentmon",
+            "to": "presentmon",
+            "filter": ["**/*"]
+        }
     ],
     "icon": "./src/ui/assets/icon_logo_recodarr.png",
     "mac": {

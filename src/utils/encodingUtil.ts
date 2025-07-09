@@ -26,8 +26,17 @@ export function buildEncodingOptions(
     inputPath,
     outputPath,
     overwriteInput,
-    // Hardware acceleration from preset
-    hwAccel: preset?.hwAccel !== 'none' ? preset?.hwAccel : undefined,
+    // Hardware acceleration from preset - derive from video codec if not properly set
+    hwAccel: (() => {
+        const originalHwAccel = preset?.hwAccel;
+        console.log(`[EncodingUtil] Original preset hwAccel: ${originalHwAccel}, videoCodec: ${preset?.videoCodec}`);
+        
+        // Always use the preset's hwAccel setting as-is
+        // This ensures we respect the user's hardware selection
+        const hwAccelValue = preset?.hwAccel || 'qsv';
+        console.log(`[EncodingUtil] Using preset hwAccel: ${hwAccelValue}`);
+        return hwAccelValue;
+    })(),
     // Add our custom metadata tag
     metadataOutput: ['RECODARR_ENCODED_BY_APP=true'],
   };
@@ -70,10 +79,7 @@ export function buildEncodingOptions(
         
         const resolution = preset?.videoResolution;
         if (resolution && exactResolutions[resolution]) {
-          // 1. Set the -s parameter for exact resolution
-          options.resolution = exactResolutions[resolution];
-          
-          // 2. Also set the videoFilter for better aspect ratio handling
+          // Use only videoFilter for scaling (better compatibility with Intel GPU)
           options.videoFilter = resolutionMap[resolution];
         }
       }

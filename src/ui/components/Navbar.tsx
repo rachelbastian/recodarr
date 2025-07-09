@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Settings, BarChart2, Search, Library, PlusCircle, Film, Share2, ListOrdered, SlidersHorizontal, ListChecks } from 'lucide-react';
+import { Home, Settings, BarChart2, Search, Library, PlusCircle, Film, Share2, ListOrdered, SlidersHorizontal, ListChecks, Zap } from 'lucide-react';
 import { cn } from "@/lib/utils";
 import { Button } from "src/components/ui/button";
 import { useTheme } from './ThemeProvider';
@@ -70,6 +70,7 @@ const Navbar: React.FC = () => {
           <SidebarItem icon={<Share2 className="h-4 w-4" />} label="Workflows" href="/workflows" active={isActive('/workflows')} />
           
           <SidebarItem icon={<ListOrdered className="h-4 w-4" />} label="Encoding" href="/encoding" active={isActive('/encoding')} />
+          <SidebarItem icon={<Zap className="h-4 w-4" />} label="Auto Reduction" href="/automatic-reduction" active={isActive('/automatic-reduction')} />
           <SidebarItem icon={<ListChecks className="h-4 w-4" />} label="Queue" href="/queue" active={isActive('/queue')} />
           <SidebarItem icon={<SlidersHorizontal className="h-4 w-4" />} label="Presets" href="/presets" active={isActive('/presets')} />
           

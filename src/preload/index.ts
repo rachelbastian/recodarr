@@ -34,9 +34,7 @@ interface IElectronAPI {
   // Settings
   getAvailableGpus: () => Promise<any[]>;
   getSelectedGpu: () => Promise<string | null>;
-  setSelectedGpu: (gpuModel: string | null) => Promise<void>;
-  getPsGpuMonitoringEnabled: () => Promise<boolean>;
-  setPsGpuMonitoringEnabled: (enabled: boolean) => Promise<void>;
+  setSelectedGpu: (model: string | null) => Promise<void>;
   getManualGpuVram: () => Promise<number | null>;
   setManualGpuVram: (vramMb: number | null) => Promise<void>;
   getAppSettings: () => Promise<any>;
@@ -89,13 +87,10 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.invoke('system:updateHardwareEnabled', id, enabled),
   
   // Settings
-  getAvailableGpus: () => ipcRenderer.invoke('settings:getAvailableGpus'),
-  getSelectedGpu: () => ipcRenderer.invoke('settings:getSelectedGpu'),
-  setSelectedGpu: (gpuModel: string | null) => 
-    ipcRenderer.invoke('settings:setSelectedGpu', gpuModel),
-  getPsGpuMonitoringEnabled: () => ipcRenderer.invoke('settings:getPsGpuMonitoringEnabled'),
-  setPsGpuMonitoringEnabled: (enabled: boolean) => 
-    ipcRenderer.invoke('settings:setPsGpuMonitoringEnabled', enabled),
+  getAvailableGpus: () => ipcRenderer.invoke('getAvailableGpus'),
+  getSelectedGpu: () => ipcRenderer.invoke('getSelectedGpu'),
+  setSelectedGpu: (model: string | null) => 
+    ipcRenderer.invoke('setSelectedGpu', model),
   getManualGpuVram: () => ipcRenderer.invoke('settings:getManualGpuVram'),
   setManualGpuVram: (vramMb: number | null) => 
     ipcRenderer.invoke('settings:setManualGpuVram', vramMb),

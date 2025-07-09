@@ -327,10 +327,37 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             const command = ffmpeg(options.inputPath);
 
             // --- Input Options --- 
+            // Check if using Intel GPU codecs
+            const isIntelGPU = options.videoCodec && ['hevc_qsv', 'h264_qsv', 'av1_qsv'].includes(options.videoCodec);
+            
+            if (isIntelGPU) {
+                console.log(`[Encoding Process] Intel GPU acceleration detected for codec: ${options.videoCodec}`);
+                writeLog(`[Info] Intel GPU acceleration enabled for codec: ${options.videoCodec}`);
+            }
+            
             if (options.hwAccel && options.hwAccel !== 'none' && options.hwAccel !== 'auto') {
                 command.inputOption(`-hwaccel ${options.hwAccel}`);
+                // Add Intel GPU specific options when explicitly using qsv
+                if (options.hwAccel === 'qsv') {
+                    command.inputOption('-hwaccel_output_format qsv');
+                    writeLog(`[Info] Added Intel GPU acceleration: -hwaccel qsv -hwaccel_output_format qsv`);
+                } else {
+                    writeLog(`[Info] Added hardware acceleration: -hwaccel ${options.hwAccel}`);
+                }
             } else if (options.hwAccel === 'auto') {
                 command.inputOption('-hwaccel auto');
+                // Add Intel GPU specific options if using Intel codec
+                if (isIntelGPU) {
+                    command.inputOption('-hwaccel_output_format qsv');
+                    writeLog(`[Info] Added Intel GPU acceleration with auto: -hwaccel auto -hwaccel_output_format qsv`);
+                } else {
+                    writeLog(`[Info] Added auto hardware acceleration: -hwaccel auto`);
+                }
+            } else if (isIntelGPU) {
+                // Fallback: Auto-enable Intel GPU acceleration when using Intel codecs but no explicit hwAccel
+                command.inputOption('-hwaccel qsv');
+                command.inputOption('-hwaccel_output_format qsv');
+                writeLog(`[Info] Auto-enabled Intel GPU acceleration for Intel codec: -hwaccel qsv -hwaccel_output_format qsv`);
             }
             if (options.duration) {
                 command.duration(options.duration); // Duration is handled differently
@@ -398,6 +425,11 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
             if (options.videoCodec && options.mapVideo) { 
                 outputOpts.push('-c:v', options.videoCodec);
                 if (options.videoCodec !== 'copy') { 
+                    // Add fps_mode passthrough for Intel GPU codecs
+                    if (isIntelGPU) {
+                        outputOpts.push('-fps_mode', 'passthrough');
+                        writeLog(`[Info] Added -fps_mode passthrough for Intel GPU codec`);
+                    }
                     if (options.videoPreset) outputOpts.push('-preset:v', options.videoPreset); 
                     if (options.videoQuality) {
                         if (['libx264', 'libx265'].includes(options.videoCodec)) {
@@ -408,6 +440,25 @@ export async function startEncodingProcess(options: EncodingOptions): Promise<En
                     }
                     if (options.lookAhead !== undefined) outputOpts.push('-look_ahead', String(options.lookAhead)); 
                     if (options.pixelFormat) outputOpts.push('-pix_fmt', options.pixelFormat);
+                    
+                    // Add Intel GPU specific optimizations
+                    if (isIntelGPU) {
+                        // Add look_ahead_depth for better quality
+                        outputOpts.push('-look_ahead_depth', '99');
+                        // Enable extended bitrate control for better quality
+                        outputOpts.push('-extbrc', '1');
+                        // Set appropriate video tag for HEVC
+                        if (options.videoCodec === 'hevc_qsv') {
+                            outputOpts.push('-vtag', 'hvc1');
+                        }
+                        // Increase muxing queue size for better performance
+                        outputOpts.push('-max_muxing_queue_size', '4096');
+                        
+                        writeLog(`[Info] Added Intel GPU optimizations: look_ahead_depth=99, extbrc=1, max_muxing_queue_size=4096`);
+                        if (options.videoCodec === 'hevc_qsv') {
+                            writeLog(`[Info] Added HEVC video tag: hvc1`);
+                        }
+                    }
                     
                     // Apply resolution setting (takes precedence)
                     if (options.resolution) {
