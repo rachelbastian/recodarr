@@ -1,0 +1,2 @@
+# This file ensures the presentmon directory is tracked in git
+# Place the Intel PresentMon API DLL (PresentMonAPI2.dll) in this directory for enhanced Intel GPU monitoring 
