@@ -6,10 +6,6 @@ import { WatchedFolder, SUPPORTED_EXTENSIONS, addMediaToDb, scanSingleFolder } f
 import { probeFile } from './ffprobeUtils.js';
 import * as fs from 'fs/promises';
 import fsSync from 'fs';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execAsync = promisify(exec);
 
 // Interface for file stats cache
 interface FileStats {
@@ -82,9 +78,17 @@ export class FileWatcher {
                 // Delay loading the database entries to after the UI is shown
                 setTimeout(() => {
                     console.log("[FileWatcher] Starting deferred database loading");
+                    
+                    // Add timeout protection for database loading
+                    const dbLoadTimeout = setTimeout(() => {
+                        console.warn("[FileWatcher] Database loading timed out after 5 minutes, continuing without full cache");
+                    }, 5 * 60 * 1000); // 5 minute timeout
+                    
                     this.loadExistingFilesFromDb().then(() => {
+                        clearTimeout(dbLoadTimeout);
                         console.log(`[FileWatcher] Loaded ${this.fileStatsCache.size} existing files from database`);
                     }).catch(error => {
+                        clearTimeout(dbLoadTimeout);
                         console.error("[FileWatcher] Error in deferred database loading:", error);
                     });
                     
@@ -131,77 +135,102 @@ export class FileWatcher {
 
             console.log(`[FileWatcher] Found ${existingFiles.length} existing files in database`);
             
-            // Process files in smaller batches to avoid memory issues
-            const BATCH_SIZE = 100; // Process 100 files at a time
+            // Dynamic limits based on library size to prevent system overload
+            let MAX_FILES_TO_CACHE: number;
+            let BATCH_SIZE: number;
+            let BATCH_DELAY: number;
+            
+            if (existingFiles.length > 50000) {
+                // Very large library - minimal caching
+                MAX_FILES_TO_CACHE = 5000;
+                BATCH_SIZE = 10;
+                BATCH_DELAY = 100;
+                console.log(`[FileWatcher] Very large library detected (${existingFiles.length} files). Using conservative processing.`);
+            } else if (existingFiles.length > 20000) {
+                // Large library - reduced caching
+                MAX_FILES_TO_CACHE = 10000;
+                BATCH_SIZE = 15;
+                BATCH_DELAY = 75;
+                console.log(`[FileWatcher] Large library detected (${existingFiles.length} files). Using reduced processing.`);
+            } else {
+                // Normal library - standard caching
+                MAX_FILES_TO_CACHE = existingFiles.length;
+                BATCH_SIZE = 20;
+                BATCH_DELAY = 50;
+            }
+            
+            const filesToProcess = existingFiles.slice(0, MAX_FILES_TO_CACHE);
+            
+            if (existingFiles.length > MAX_FILES_TO_CACHE) {
+                console.log(`[FileWatcher] Processing ${MAX_FILES_TO_CACHE} of ${existingFiles.length} files for startup cache.`);
+            }
+            
+            // Process files in batches with dynamic sizing
             let processedCount = 0;
             let successCount = 0;
             let errorCount = 0;
             
-            // Function to process a batch of files
+            // Function to process a batch of files asynchronously
             const processBatch = async (batch: typeof existingFiles) => {
-                for (const file of batch) {
+                const promises = batch.map(async (file) => {
                     try {
                         // Skip files with empty or null paths
                         if (!file.filePath) {
                             errorCount++;
-                            continue;
+                            return;
                         }
                         
-                        // Use try/catch per file to prevent one bad file from crashing everything
                         try {
-                            // Only check if file exists synchronously to avoid too many promises
-                            if (fsSync.existsSync(file.filePath)) {
-                                try {
-                                    const stats = fsSync.statSync(file.filePath);
-                                    this.fileStatsCache.set(file.filePath, {
-                                        path: file.filePath,
-                                        size: stats.size,
-                                        mtimeMs: stats.mtimeMs,
-                                        ctimeMs: stats.ctimeMs,
-                                        lastChecked: Date.now()
-                                    });
-                                    successCount++;
-                                } catch (statError) {
-                                    // Skip files with stat errors
-                                    console.warn(`[FileWatcher] Couldn't stat file ${file.filePath}: ${statError}`);
-                                    errorCount++;
-                                }
-                            } else {
-                                // File doesn't exist, count as error but don't log to reduce noise
-                                errorCount++;
-                            }
-                        } catch (fsError) {
-                            // This catch block is for any unexpected errors with fsSync.existsSync
-                            console.warn(`[FileWatcher] Error checking file ${file.filePath}: ${fsError}`);
+                            // Use async file operations to avoid blocking
+                            await fs.access(file.filePath, fs.constants.F_OK);
+                            const stats = await fs.stat(file.filePath);
+                            
+                            this.fileStatsCache.set(file.filePath, {
+                                path: file.filePath,
+                                size: stats.size,
+                                mtimeMs: stats.mtimeMs,
+                                ctimeMs: stats.ctimeMs,
+                                lastChecked: Date.now()
+                            });
+                            successCount++;
+                        } catch {
+                            // File doesn't exist or can't be accessed
                             errorCount++;
                         }
                     } catch (generalError) {
-                        // Catch-all protection against any unexpected issues
                         console.error('[FileWatcher] Unexpected error processing file entry:', generalError);
                         errorCount++;
                     }
                     
                     processedCount++;
-                }
+                });
+                
+                // Wait for all promises in the batch to complete
+                await Promise.allSettled(promises);
                 
                 // Log progress occasionally
-                if (processedCount % 500 === 0 || processedCount === existingFiles.length) {
-                    console.log(`[FileWatcher] Processed ${processedCount}/${existingFiles.length} files (${successCount} cached, ${errorCount} errors)`);
+                if (processedCount % 500 === 0 || processedCount === filesToProcess.length) {
+                    console.log(`[FileWatcher] Processed ${processedCount}/${filesToProcess.length} files (${successCount} cached, ${errorCount} errors)`);
                 }
             };
             
-            // Process all files in batches
-            for (let i = 0; i < existingFiles.length; i += BATCH_SIZE) {
-                const batch = existingFiles.slice(i, i + BATCH_SIZE);
+            // Process all files in batches with proper yielding
+            for (let i = 0; i < filesToProcess.length; i += BATCH_SIZE) {
+                const batch = filesToProcess.slice(i, i + BATCH_SIZE);
                 await processBatch(batch);
                 
-                // Brief pause between batches to allow other operations
-                if (i + BATCH_SIZE < existingFiles.length) {
-                    await new Promise(resolve => setTimeout(resolve, 10));
+                // Dynamic pause between batches to ensure UI responsiveness
+                if (i + BATCH_SIZE < filesToProcess.length) {
+                    await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
                 }
             }
             
             console.log(`[FileWatcher] Successfully cached stats for ${this.fileStatsCache.size} files (${errorCount} errors)`);
+            
+            // For very large libraries, notify that not all files were cached
+            if (existingFiles.length > MAX_FILES_TO_CACHE) {
+                console.log(`[FileWatcher] Note: ${existingFiles.length - MAX_FILES_TO_CACHE} additional files will be processed on-demand`);
+            }
         } catch (error) {
             console.error('[FileWatcher] Error loading files from database:', error);
         }
@@ -217,7 +246,7 @@ export class FileWatcher {
             // Configure watcher with options optimized for performance during startup
             this.watcher = chokidar.watch([], {  // Start with empty array
                 ignored: [
-                    /(^|[\\\/])\../,  // ignore dotfiles
+                    /(^|[\\/])\../,  // ignore dotfiles
                     /.*_tmp.*\.(?:mkv|mp4|avi|mov|wmv|flv|webm)$/i, // temp encoding files
                     /(\/|\\)\.recycle(\/|\\).*/i, // Ignore recycle/trash folders
                     /\$RECYCLE\.BIN/i,  // Ignore Windows recycle bin
@@ -306,7 +335,7 @@ export class FileWatcher {
         
         try {
             // Add paths in very small batches to prevent UI freezing
-            const BATCH_SIZE = 1; // Add only one directory at a time
+            const PATH_BATCH_SIZE = 1; // Add only one directory at a time
             
             // Function to add a batch of paths
             const addPathBatch = (index: number) => {
@@ -320,14 +349,14 @@ export class FileWatcher {
                 }
                 
                 // Get the next path to add
-                const path = pathsToWatch[index];
+                const pathToAdd = pathsToWatch[index];
                 
                 // Add with robust options for ongoing monitoring
                 try {
-                    console.log(`[FileWatcher] Adding path ${index+1}/${pathsToWatch.length}: ${path}`);
+                    console.log(`[FileWatcher] Adding path ${index+1}/${pathsToWatch.length}: ${pathToAdd}`);
                     
                     // Add the path with more robust options
-                    this.watcher?.add(path);
+                    this.watcher?.add(pathToAdd);
                     
                     // Report progress to UI periodically
                     if (index % 5 === 0 || index === pathsToWatch.length - 1) {
@@ -338,11 +367,11 @@ export class FileWatcher {
                         });
                     }
                 } catch (err) {
-                    console.error(`[FileWatcher] Error adding path ${path}:`, err);
+                    console.error(`[FileWatcher] Error adding path ${pathToAdd}:`, err);
                 }
                 
                 // Add next path after a longer delay to keep UI responsive
-                setTimeout(() => addPathBatch(index + 1), 2000); // 2 second between paths
+                setTimeout(() => addPathBatch(index + 1), 2000); // 2 seconds between paths
             };
             
             // Start adding paths
@@ -538,7 +567,7 @@ export class FileWatcher {
      */
     private startPeriodicDeepScan(intervalMs: number): void {
         // Set up interval for periodic deep scans
-        const deepScanInterval = setInterval(() => {
+        setInterval(() => {
             if (!this.deepScanInProgress) {
                 console.log('[FileWatcher] Starting scheduled deep scan');
                 this.performDeepScan().catch(err => {
@@ -792,8 +821,8 @@ export class FileWatcher {
         const paths = this.watchedFolders.map(f => f.path);
         const previouslyInaccessible = new Set(
             Array.from(this.networkDriveStatus.entries())
-                .filter(([_, status]) => !status.isAccessible)
-                .map(([path, _]) => path)
+                .filter(([, status]) => !status.isAccessible)
+                .map(([path]) => path)
         );
         
         const currentlyInaccessible = await this.checkNetworkDrives(paths);
@@ -851,7 +880,7 @@ export class FileWatcher {
     /**
      * Send notification to UI via mainWindow
      */
-    private notifyUI(event: string, data: any): void {
+    private notifyUI(event: string, data: unknown): void {
         if (this.mainWindow && !this.mainWindow.isDestroyed()) {
             this.mainWindow.webContents.send(`filewatcher-${event}`, data);
         }
@@ -921,34 +950,46 @@ export class FileWatcher {
                 batchNumber++;
                 const batch = files.slice(i, i + BATCH_SIZE);
                 
-                // Start a transaction for better performance
-                this.db.transaction(() => {
-                    for (const file of batch) {
-                        processedCount++;
-                        
-                        // Skip files with empty or null paths
-                        if (!file.filePath) continue;
-                        
-                        try {
-                            // Check if file exists
-                            if (!fsSync.existsSync(file.filePath)) {
-                                // File doesn't exist, remove from database
-                                deleteStmt.run(file.id);
-                                deletedCount++;
-                                
-                                // Also remove from our cache if it exists
-                                this.fileStatsCache.delete(file.filePath);
-                                
-                                // Debug logging (limit to avoid flooding logs)
-                                if (deletedCount <= 20 || deletedCount % 100 === 0) {
-                                    console.log(`[FileWatcher] Removed deleted file from database: ${file.filePath}`);
-                                }
-                            }
-                        } catch (error) {
-                            console.warn(`[FileWatcher] Error checking file existence: ${file.filePath}`, error);
-                        }
+                // Process batch asynchronously
+                const batchPromises = batch.map(async (file) => {
+                    processedCount++;
+                    
+                    // Skip files with empty or null paths
+                    if (!file.filePath) return;
+                    
+                    try {
+                        // Use async file check to avoid blocking
+                        await fs.access(file.filePath, fs.constants.F_OK);
+                        // File exists, no action needed
+                    } catch {
+                        // File doesn't exist, mark for deletion
+                        return { id: file.id, filePath: file.filePath };
                     }
-                })();
+                });
+                
+                // Wait for all file checks to complete
+                const results = await Promise.allSettled(batchPromises);
+                const filesToDelete = results
+                    .filter(result => result.status === 'fulfilled' && result.value)
+                    .map(result => (result as PromiseFulfilledResult<any>).value);
+                
+                // Delete files in a transaction for better performance
+                if (filesToDelete.length > 0) {
+                    this.db.transaction(() => {
+                        for (const file of filesToDelete) {
+                            deleteStmt.run(file.id);
+                            deletedCount++;
+                            
+                            // Also remove from our cache if it exists
+                            this.fileStatsCache.delete(file.filePath);
+                            
+                            // Debug logging (limit to avoid flooding logs)
+                            if (deletedCount <= 20 || deletedCount % 100 === 0) {
+                                console.log(`[FileWatcher] Removed deleted file from database: ${file.filePath}`);
+                            }
+                        }
+                    })();
+                }
                 
                 // Log progress periodically
                 if (batchNumber % 10 === 0 || (i + BATCH_SIZE) >= files.length) {

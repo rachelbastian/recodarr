@@ -496,6 +496,9 @@ export async function initializeDatabase(appGetPath: GetPathFn): Promise<Databas
         // Initialize performance_history table (NEW ADDITION)
         initializePerformanceHistoryTable(newDb);
 
+        // Initialize Full-Text Search table for media
+        await initializeMediaFtsTable(newDb);
+
         dbInstance = newDb;
         console.log("[DB Setup] Database instance configured.");
         return dbInstance;

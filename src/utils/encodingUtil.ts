@@ -33,7 +33,7 @@ export function buildEncodingOptions(
         
         // Always use the preset's hwAccel setting as-is
         // This ensures we respect the user's hardware selection
-        const hwAccelValue = preset?.hwAccel || 'qsv';
+        const hwAccelValue = preset?.hwAccel || 'auto';
         console.log(`[EncodingUtil] Using preset hwAccel: ${hwAccelValue}`);
         return hwAccelValue;
     })(),

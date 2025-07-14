@@ -30,6 +30,7 @@ export interface EncodingJob {
   priority: number; // Higher numbers = higher priority
   addedAt: Date;
   processingEndTime?: string;
+  mediaId?: number; // Optional media database ID for updating on completion
 }
 
 // Queue configuration
@@ -214,7 +215,8 @@ class EncodingQueueService {
       audio: { [index: number]: TrackAction },
       subtitle: { [index: number]: TrackAction }
     },
-    priority: number = 0
+    priority: number = 0,
+    mediaId?: number
   ): EncodingJob {
     const id = `job_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     
@@ -229,7 +231,8 @@ class EncodingQueueService {
       status: 'queued',
       progress: 0,
       priority,
-      addedAt: new Date()
+      addedAt: new Date(),
+      mediaId
     };
     
     // Add job to queue
@@ -597,7 +600,7 @@ class EncodingQueueService {
   /**
    * Handle job completion
    */
-  private handleJobCompletion(jobId: string, result: EncodingResult): void {
+  private async handleJobCompletion(jobId: string, result: EncodingResult): Promise<void> {
     console.log(`QueueService: Job ${jobId} completed with result:`, result.success);
 
     // Find the job in the queue
@@ -617,6 +620,19 @@ class EncodingQueueService {
       job.status = 'failed';
       job.error = result.error || 'Unknown error occurred during encoding';
       console.error(`QueueService: Job ${jobId} failed:`, job.error);
+      
+      // Clear encodingJobId from database for failed jobs if mediaId is available
+      if (job.mediaId) {
+        try {
+          await electronAPI.dbQuery(
+            'UPDATE media SET encodingJobId = NULL WHERE id = ?',
+            [job.mediaId]
+          );
+          console.log(`QueueService: Cleared encodingJobId for failed encoding job ${jobId}, media ID ${job.mediaId}`);
+        } catch (dbError) {
+          console.error(`QueueService: Failed to clear encodingJobId for failed encoding job ${jobId}:`, dbError);
+        }
+      }
       
       // Save updated queue
       this.saveQueueState();
@@ -648,6 +664,19 @@ class EncodingQueueService {
     } else {
       job.status = 'completed';
       
+      // Update database to mark as processed if mediaId is available
+      if (job.mediaId) {
+        try {
+          await electronAPI.dbQuery(
+            'UPDATE media SET encodingJobId = ? WHERE id = ?',
+            [job.id, job.mediaId]
+          );
+          console.log(`QueueService: Updated media record ${job.mediaId} with job ID ${job.id}`);
+        } catch (dbError) {
+          console.error(`QueueService: Failed to update media record for job ${jobId}:`, dbError);
+        }
+      }
+      
       // Save updated queue
       this.saveQueueState();
       
@@ -678,6 +707,20 @@ class EncodingQueueService {
       console.error(`QueueService: Missing required paths for job ${jobId}. inputPath: ${inputPath}, outputPath: ${outputPath}`);
       job.error = "Missing required file paths for finalization";
       job.status = 'failed';
+      
+      // Clear encodingJobId from database for failed jobs if mediaId is available
+      if (job.mediaId) {
+        try {
+          await electronAPI.dbQuery(
+            'UPDATE media SET encodingJobId = NULL WHERE id = ?',
+            [job.mediaId]
+          );
+          console.log(`QueueService: Cleared encodingJobId for missing paths job ${jobId}, media ID ${job.mediaId}`);
+        } catch (dbError) {
+          console.error(`QueueService: Failed to clear encodingJobId for missing paths job ${jobId}:`, dbError);
+        }
+      }
+      
       this.saveQueueState();
       
       if (this.eventCallbacks.onJobFailed) {
@@ -749,6 +792,19 @@ class EncodingQueueService {
         job.outputPath = inputPath; // Since we replaced the input file
         job.status = 'completed';
         
+        // Update database to mark as processed if mediaId is available
+        if (job.mediaId) {
+          try {
+            await electronAPI.dbQuery(
+              'UPDATE media SET encodingJobId = ? WHERE id = ?',
+              [job.id, job.mediaId]
+            );
+            console.log(`QueueService: Updated media record ${job.mediaId} with job ID ${job.id}`);
+          } catch (dbError) {
+            console.error(`QueueService: Failed to update media record for job ${jobId}:`, dbError);
+          }
+        }
+        
         this.saveQueueState();
         
         // Notify listeners
@@ -761,6 +817,19 @@ class EncodingQueueService {
         job.error = result.error || "Failed to finalize encoded file";
         job.status = 'failed';
         
+        // Clear encodingJobId from database for failed jobs if mediaId is available
+        if (job.mediaId) {
+          try {
+            await electronAPI.dbQuery(
+              'UPDATE media SET encodingJobId = NULL WHERE id = ?',
+              [job.mediaId]
+            );
+            console.log(`QueueService: Cleared encodingJobId for failed finalization job ${jobId}, media ID ${job.mediaId}`);
+          } catch (dbError) {
+            console.error(`QueueService: Failed to clear encodingJobId for failed finalization job ${jobId}:`, dbError);
+          }
+        }
+        
         this.saveQueueState();
         
         if (this.eventCallbacks.onJobFailed) {
@@ -772,6 +841,19 @@ class EncodingQueueService {
       console.error(`QueueService: Error finalizing file for job ${jobId}:`, error);
       job.error = `Error finalizing file: ${error instanceof Error ? error.message : String(error)}`;
       job.status = 'failed';
+      
+      // Clear encodingJobId from database for failed jobs if mediaId is available
+      if (job.mediaId) {
+        try {
+          await electronAPI.dbQuery(
+            'UPDATE media SET encodingJobId = NULL WHERE id = ?',
+            [job.mediaId]
+          );
+          console.log(`QueueService: Cleared encodingJobId for unexpected error job ${jobId}, media ID ${job.mediaId}`);
+        } catch (dbError) {
+          console.error(`QueueService: Failed to clear encodingJobId for unexpected error job ${jobId}:`, dbError);
+        }
+      }
       
       this.saveQueueState();
       
@@ -867,7 +949,7 @@ class EncodingQueueService {
   /**
    * Handle job error
    */
-  private handleJobError(jobId: string, error: string): void {
+  private async handleJobError(jobId: string, error: string): Promise<void> {
     const job = this.queue.find(j => j.id === jobId);
     
     if (!job) {
@@ -877,6 +959,19 @@ class EncodingQueueService {
     // Update job status
     job.status = 'failed';
     job.error = error;
+    
+    // Clear encodingJobId from database for failed jobs if mediaId is available
+    if (job.mediaId) {
+      try {
+        await electronAPI.dbQuery(
+          'UPDATE media SET encodingJobId = NULL WHERE id = ?',
+          [job.mediaId]
+        );
+        console.log(`QueueService: Cleared encodingJobId for failed job ${jobId}, media ID ${job.mediaId}`);
+      } catch (dbError) {
+        console.error(`QueueService: Failed to clear encodingJobId for failed job ${jobId}:`, dbError);
+      }
+    }
     
     // Remove from processing set
     this.processing.delete(jobId);
@@ -968,7 +1063,7 @@ class EncodingQueueService {
       }
       
       // Update job with result
-      this.handleJobCompletion(job.id, result);
+      await this.handleJobCompletion(job.id, result);
       
       // Clean up
       unsubscribe();
@@ -977,7 +1072,7 @@ class EncodingQueueService {
     } catch (error) {
       // Handle error
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.handleJobError(job.id, errorMessage);
+      await this.handleJobError(job.id, errorMessage);
       
       // Clean up
       const unsubscribe = this.unsubscribeFunctions.get(job.id);

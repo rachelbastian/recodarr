@@ -527,6 +527,12 @@ const Presets: React.FC = () => {
     }, []);
 
     const handleInputChange = (field: keyof PresetFormDataType, value: any) => {
+        // Handle name field separately to avoid processing issues
+        if (field === 'name') {
+            setFormData(prev => ({ ...prev, name: value }));
+            return;
+        }
+        
         const processedValue = value === '' ? undefined : value;
         
         setFormData(prev => {
@@ -628,7 +634,7 @@ const Presets: React.FC = () => {
         const finalHwAccel = (() => {
             switch (formData.hardwarePlatform) {
                 case 'INTEL_GPU':
-                    return 'qsv'; // Use qsv for Intel GPU acceleration
+                    return 'auto'; // Use auto for Intel GPU to avoid hardware crashes
                 case 'NVIDIA_GPU':
                     return 'nvenc';
                 case 'CPU_SOFTWARE':

@@ -242,13 +242,8 @@ const AutomaticReduction: React.FC = () => {
                             audio: audioTrackSelections,
                             subtitle: subtitleTrackSelections
                         },
-                        50 // Medium priority
-                    );
-
-                    // Update media record with job ID for tracking
-                    await electronAPI.dbQuery(
-                        'UPDATE media SET encodingJobId = ? WHERE id = ?',
-                        [job.id, mediaItem.id]
+                        50, // Medium priority
+                        mediaItem.id // Pass media item ID for database update on completion
                     );
 
                     addedCount++;
